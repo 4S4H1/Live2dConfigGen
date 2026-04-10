@@ -1,4 +1,6 @@
 # L2D Config Editor
+todo：
+蓝图提示
 
 基于 `PyQt6` 的节点式 L2D 配置编辑器。
 
