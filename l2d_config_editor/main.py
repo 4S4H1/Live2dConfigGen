@@ -7,8 +7,17 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import QApplication
 
-from .main_window import MainWindow
-from .styles import APP_STYLE
+PACKAGE_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = PACKAGE_DIR.parent
+
+if __package__ in {None, ""}:
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from l2d_config_editor.main_window import MainWindow
+    from l2d_config_editor.styles import APP_STYLE
+else:
+    from .main_window import MainWindow
+    from .styles import APP_STYLE
 
 
 def main() -> int:
@@ -16,7 +25,7 @@ def main() -> int:
     app.setApplicationName("L2D Config Editor")
     app.setStyle("Fusion")
     app.setStyleSheet(APP_STYLE)
-    window = MainWindow(Path.cwd())
+    window = MainWindow(PROJECT_ROOT)
     window.show()
     return app.exec()
 

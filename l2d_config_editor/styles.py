@@ -62,6 +62,21 @@ QListWidget::item:selected {
 QCheckBox {
     spacing: 6px;
 }
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border: 1px solid #6f88ab;
+    border-radius: 4px;
+    background: #223044;
+}
+QCheckBox::indicator:checked {
+    background: #4d7cb6;
+    border: 1px solid #8db8f5;
+}
+QCheckBox::indicator:unchecked:hover,
+QCheckBox::indicator:checked:hover {
+    border: 1px solid #a6c7f5;
+}
 QStatusBar {
     background: #243043;
     border-top: 1px solid #3c4a61;
@@ -74,6 +89,40 @@ QFrame#searchPanel {
     background: rgba(40, 51, 69, 0.92);
     border: 1px solid #45556f;
     border-radius: 12px;
+}
+QFrame#inlineNodeForm {
+    background: transparent;
+    border: none;
+}
+QFrame#inlineNodeForm QLabel {
+    background: transparent;
+    color: #eef4ff;
+}
+QFrame#inlineNodeForm QLineEdit,
+QFrame#inlineNodeForm QPlainTextEdit,
+QFrame#inlineNodeForm QDateEdit,
+QFrame#inlineNodeForm QComboBox {
+    background: rgba(36, 49, 69, 0.68);
+    border: 1px solid rgba(122, 150, 196, 0.48);
+    border-radius: 8px;
+}
+QFrame#inlineNodeForm QLineEdit:focus,
+QFrame#inlineNodeForm QPlainTextEdit:focus,
+QFrame#inlineNodeForm QDateEdit:focus,
+QFrame#inlineNodeForm QComboBox:focus {
+    border: 1px solid rgba(168, 204, 255, 0.92);
+    background: rgba(40, 55, 77, 0.9);
+}
+QFrame#inlineNodeForm QCheckBox {
+    background: transparent;
+}
+QFrame#inlineNodeForm QCheckBox::indicator {
+    background: rgba(36, 49, 69, 0.86);
+    border: 1px solid rgba(168, 204, 255, 0.68);
+}
+QFrame#inlineNodeForm QCheckBox::indicator:checked {
+    background: rgba(120, 177, 255, 0.85);
+    border: 1px solid rgba(216, 234, 255, 0.92);
 }
 QLabel#searchTitle, QLabel#sectionTitle, QLabel#validationSummaryTitle {
     color: #f0f5ff;

@@ -25,6 +25,7 @@ class FieldSchema:
     key: str
     label: str
     editor: str
+    label_html: str | None = None
     default: Any = ""
     show_in_modes: tuple[str, ...] = ("simple", "advanced")
     options: tuple[Option, ...] = ()
@@ -104,6 +105,7 @@ def _parse_field(raw: dict[str, Any]) -> FieldSchema:
     return FieldSchema(
         key=str(raw["key"]),
         label=str(raw["label"]),
+        label_html=str(raw["label_html"]) if raw.get("label_html") is not None else None,
         editor=str(raw["editor"]),
         default=raw.get("default", ""),
         show_in_modes=tuple(raw.get("show_in_modes", ["simple", "advanced"])),

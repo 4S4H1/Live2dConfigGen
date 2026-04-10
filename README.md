@@ -53,3 +53,7 @@ python3 -m l2d_config_editor.main
 ```bash
 python3 -m unittest discover -s tests -v
 ```
+
+Windows note:
+Run `python -m l2d_config_editor.main` from the repository root.
+If your shell is already inside `l2d_config_editor/`, run `python main.py` instead.

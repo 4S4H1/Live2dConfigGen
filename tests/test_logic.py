@@ -2,11 +2,13 @@ import os
 import sys
 import tempfile
 import unittest
+import json
 from pathlib import Path
 
 if sys.platform != "win32":
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication
 
 from l2d_config_editor.controller import EditorController
@@ -25,6 +27,8 @@ from l2d_config_editor.logic import (
 )
 from l2d_config_editor.main_window import MainWindow
 from l2d_config_editor.models import ConnectionRecord
+from l2d_config_editor.schema import load_editor_schema
+from l2d_config_editor.widgets import NodeFormWidget
 
 
 class LogicTests(unittest.TestCase):
@@ -49,6 +53,7 @@ class LogicTests(unittest.TestCase):
     def test_default_document_contains_initial_and_gate(self) -> None:
         document = create_document(self.schema)
         self.assertEqual(1, len([node for node in document.nodes if node.type == "Initial"]))
+        self.assertEqual("simple", document.global_mode)
         self.assertFalse(document.state.is_meta_ready)
         self.assertIn("作者", document.state.meta_missing_fields)
 
@@ -152,21 +157,76 @@ class LogicTests(unittest.TestCase):
         self.assertEqual("mingji_2", rows[0].values["desc"])
         self.assertEqual(302291, rows[0].values["ship_skin_id"])
 
-    def test_search_hits_target_idle(self) -> None:
+    def test_search_uses_human_readable_action_fields(self) -> None:
         document = self.make_ready_document()
         node = create_node(self.schema, document, "TouchIdle")
         node.fields["target_idle"] = 13
+        apply_auto_rules(self.schema, document, node, source_mode="simple", changed_key="target_idle")
         document.nodes.append(node)
         hits = search_document(self.schema, document, "13")
-        self.assertTrue(any(hit.field_name == "target_idle" for hit in hits))
+        self.assertTrue(any(hit.field_name == "action_trigger_active" and hit.preview == "13" for hit in hits))
 
     def test_export_payload_contains_meta_and_nodes(self) -> None:
         document = self.make_ready_document()
         document.nodes.append(create_node(self.schema, document, "Comment"))
         payload = export_document_dict(self.schema, document)
+        self.assertEqual("simple", payload["global_mode"])
         self.assertIn("meta", payload)
         self.assertIn("nodes", payload)
         self.assertIn("canvas_view", payload)
+        self.assertNotIn("target_idle", payload["nodes"][0])
+
+    def test_document_mode_roundtrip(self) -> None:
+        document = self.make_ready_document()
+        document.global_mode = "advanced"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "mode.json"
+            save_document(self.schema, document, path)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            loaded = load_document(self.schema, path)
+        self.assertEqual("advanced", payload["global_mode"])
+        self.assertEqual("advanced", loaded.global_mode)
+
+    def test_old_document_without_global_mode_defaults_to_simple(self) -> None:
+        document = self.make_ready_document()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "legacy.json"
+            payload = export_document_dict(self.schema, document)
+            payload.pop("global_mode", None)
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            loaded = load_document(self.schema, path)
+        self.assertEqual("simple", loaded.global_mode)
+
+    def test_controller_translates_display_action_fields_to_raw(self) -> None:
+        controller = EditorController()
+        initial = next(node for node in controller.document.nodes if node.type == "Initial")
+        controller.update_field(initial.uuid, "author", "asahi", "simple")
+        controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+        controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+        node_uuid = controller.create_node("TouchIdle", (100, 100))
+        self.assertIsNotNone(node_uuid)
+        node = controller.get_node(node_uuid)
+        controller.update_field(node.uuid, "action_trigger", "touch_idle7", "simple")
+        controller.update_field(node.uuid, "action_trigger_active", 7, "simple")
+        node = controller.get_node(node.uuid)
+        self.assertEqual("{type = 2 ,action = 'touch_idle7'}", node.fields["action_trigger"])
+        self.assertIn("idle = 7", node.fields["action_trigger_active"])
+        self.assertEqual("Paramtouch_idle7", node.fields["parameter"])
+
+    def test_schema_supports_label_html(self) -> None:
+        schema_payload = json.loads(Path("l2d_config_editor/editor_schema.json").read_text(encoding="utf-8"))
+        schema_payload["nodes"]["Initial"]["fields"][0]["label_html"] = "<b><font color='#ffcc66'>备注</font></b>"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            schema_path = Path(temp_dir) / "schema.json"
+            schema_path.write_text(json.dumps(schema_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            schema = load_editor_schema(schema_path)
+        document = create_document(schema)
+        initial = next(node for node in document.nodes if node.type == "Initial")
+        form = NodeFormWidget(schema, inline=False)
+        form.set_node(initial, "simple")
+        label = form._form.itemAt(0, form._form.ItemRole.LabelRole).widget()
+        self.assertEqual(Qt.TextFormat.RichText, label.textFormat())
+        self.assertEqual("<b><font color='#ffcc66'>备注</font></b>", label.text())
 
 
 class ControllerAndGuiSmokeTests(unittest.TestCase):
@@ -197,6 +257,79 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             saved = window.controller.save_document(str(path))
             self.assertEqual(str(path), saved)
             self.assertTrue(path.exists())
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual("advanced", payload["global_mode"])
+        window.close()
+
+    def test_node_form_reuses_editors_for_same_node_updates(self) -> None:
+        schema = get_default_schema()
+        document = create_document(schema)
+        initial = next(node for node in document.nodes if node.type == "Initial")
+        form = NodeFormWidget(schema, inline=True)
+        form.set_node(initial, "simple")
+
+        original_tips = form._bindings["tips"].widget
+        original_author = form._bindings["author"].widget
+
+        initial.fields["tips"] = "updated"
+        initial.fields["author"] = "tester"
+        form.set_node(initial, "simple")
+
+        self.assertIs(original_tips, form._bindings["tips"].widget)
+        self.assertIs(original_author, form._bindings["author"].widget)
+
+    def test_node_frame_encloses_inline_form_content(self) -> None:
+        window = MainWindow("/Users/asahi/Live2dConfigGen")
+        window.controller.set_global_mode("simple")
+        initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+        window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+        window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+        window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+        created = window.controller.create_node("TouchIdle", (200, 120))
+        item = window.canvas.node_items[created]
+
+        item.form.ensurePolished()
+        item.form.layout().activate()
+        item.form.adjustSize()
+        self.app.processEvents()
+
+        required_height = item.proxy.pos().y() + item.form.height() + item._margin
+        self.assertGreaterEqual(item.boundingRect().height(), required_height)
+        window.close()
+
+    def test_inline_combo_selection_updates_without_breaking_form(self) -> None:
+        window = MainWindow("/Users/asahi/Live2dConfigGen")
+        window.controller.set_global_mode("simple")
+        initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+        window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+        window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+        window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+        created = window.controller.create_node("TouchIdle", (200, 120))
+        item = window.canvas.node_items[created]
+        combo = item.form._bindings["control_type"].widget
+
+        self.assertEqual(combo.sizePolicy().horizontalPolicy(), combo.sizePolicy().Policy.Expanding)
+        combo.setCurrentIndex(1)
+        combo.activated.emit(1)
+        self.app.processEvents()
+
+        self.assertEqual("drag", item.node.fields["control_type"])
+        self.assertIn("drag_ui_direction", item.form._bindings)
+        window.close()
+
+    def test_touchdrag_hides_legacy_target_idle_field(self) -> None:
+        window = MainWindow("/Users/asahi/Live2dConfigGen")
+        window.controller.set_global_mode("simple")
+        initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+        window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+        window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+        window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+        created = window.controller.create_node("TouchDrag", (200, 120))
+        item = window.canvas.node_items[created]
+
+        self.assertNotIn("target_idle", item.form._bindings)
+        self.assertIn("action_trigger", item.form._bindings)
+        self.assertIn("action_trigger_active", item.form._bindings)
         window.close()
 
 

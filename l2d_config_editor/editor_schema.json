@@ -39,7 +39,7 @@
     ]
   },
   "templates": {
-    "animated_action": "{type = 2 ,action = 'touch_idle{target_idle}'}",
+    "animated_action": "{type = 2 ,action = '{action_name}'}",
     "animated_active": "{enable = {},ignore = {{{ignore_values}}},idle = {target_idle}}",
     "hard_cut_action": "{type = 2 ,action = 'idle',target = 1}",
     "hard_cut_active": "{enable = {},ignore = {{{ignore_values}}},idle = {target_idle},idle_focus = 1}"
@@ -206,7 +206,8 @@
             { "label": "硬切", "value": "hard" }
           ]
         },
-        { "key": "target_idle", "label": "目标idle", "editor": "int", "default": 1, "show_in_modes": ["simple"] },
+        { "key": "action_trigger", "label": "播放的动画", "editor": "text", "default": "", "show_in_modes": ["simple", "advanced"] },
+        { "key": "action_trigger_active", "label": "目标idle", "editor": "int", "default": 1, "show_in_modes": ["simple", "advanced"] },
         { "key": "id", "label": "ID", "editor": "int", "default": 0, "show_in_modes": ["advanced"], "read_only": true },
         {
           "key": "mode",
@@ -249,8 +250,6 @@
         { "key": "gyro_y", "label": "陀螺仪Y轴", "editor": "int", "default": 0, "show_in_modes": ["advanced"] },
         { "key": "gyro_z", "label": "陀螺仪Z轴", "editor": "int", "default": 0, "show_in_modes": ["advanced"] },
         { "key": "limit_time", "label": "触发间隔", "editor": "int", "default": 1, "show_in_modes": ["advanced"] },
-        { "key": "action_trigger", "label": "动作触发器", "editor": "text", "default": "", "show_in_modes": ["advanced"] },
-        { "key": "action_trigger_active", "label": "激活后操作", "editor": "text", "default": "", "show_in_modes": ["advanced"] },
         { "key": "shop_action", "label": "商店动作", "editor": "bool", "default": 0, "show_in_modes": ["advanced"] }
       ]
     },
@@ -312,10 +311,9 @@
             { "label": "数值变化", "value": "value" }
           ]
         },
-        { "key": "target_idle", "label": "目标idle", "editor": "int", "default": 1, "show_in_modes": ["simple"] },
         {
           "key": "action_trigger",
-          "label": "动作触发器",
+          "label": "播放的动画",
           "editor": "text",
           "default": "",
           "show_in_modes": ["simple", "advanced"],
@@ -323,9 +321,9 @@
         },
         {
           "key": "action_trigger_active",
-          "label": "激活后操作",
-          "editor": "text",
-          "default": "",
+          "label": "目标idle",
+          "editor": "int",
+          "default": 1,
           "show_in_modes": ["simple", "advanced"],
           "visibility": { "field": "result_type", "equals": "action" }
         },

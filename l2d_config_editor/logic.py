@@ -23,6 +23,9 @@ from .models import (
 from .schema import EditorSchema, FieldSchema, NodeSchema, load_editor_schema
 
 RANGE_PATTERN = re.compile(r"^\{\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\}$")
+ACTION_NAME_PATTERN = re.compile(r"action\s*=\s*'([^']*)'")
+TARGET_IDLE_PATTERN = re.compile(r"idle\s*=\s*(-?\d+)")
+HIDDEN_NODE_FIELDS = {"target_idle"}
 
 
 @lru_cache(maxsize=2)
@@ -64,6 +67,38 @@ def normalize_parts_data(value: str) -> list[float] | None:
     return result
 
 
+def _coerce_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _action_name_from_raw(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    match = ACTION_NAME_PATTERN.search(text)
+    return match.group(1) if match else text
+
+
+def _target_idle_from_raw(value: Any) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    match = TARGET_IDLE_PATTERN.search(text)
+    if not match:
+        return None
+    return _coerce_int(match.group(1), 0)
+
+
+def normalized_target_idle(node: NodeRecord) -> int:
+    raw_target_idle = _target_idle_from_raw(node.fields.get("action_trigger_active"))
+    if raw_target_idle is not None:
+        return raw_target_idle
+    return _coerce_int(node.fields.get("target_idle"), 0)
+
+
 def _format_ignore_values(values: tuple[str, ...]) -> str:
     return ",".join(f"'{value}'" for value in values)
 
@@ -92,11 +127,13 @@ def _expected_parameter(node_schema: NodeSchema, target_idle: int) -> str:
     return template.format(target_idle=target_idle, sequence=target_idle)
 
 
-def _animated_action(schema: EditorSchema, node_schema: NodeSchema, target_idle: int) -> tuple[str, str]:
-    action_name = _sequence_action_name(node_schema, target_idle)
+def _animated_action(
+    schema: EditorSchema, node_schema: NodeSchema, target_idle: int, action_name: str | None = None
+) -> tuple[str, str]:
+    resolved_action_name = action_name if action_name is not None else _sequence_action_name(node_schema, target_idle)
     action = (
         schema.animated_action_template.replace("{target_idle}", str(target_idle))
-        .replace("{action_name}", action_name)
+        .replace("{action_name}", resolved_action_name)
     )
     active = (
         schema.animated_active_template.replace("{target_idle}", str(target_idle))
@@ -114,8 +151,33 @@ def _hard_cut_action(schema: EditorSchema, target_idle: int) -> tuple[str, str]:
     return action, active
 
 
+def display_value_for_field(schema: EditorSchema, node: NodeRecord, key: str, raw_value: Any | None = None) -> Any:
+    del schema
+    value = node.fields.get(key) if raw_value is None else raw_value
+    if key == "action_trigger":
+        return _action_name_from_raw(value)
+    if key == "action_trigger_active":
+        return normalized_target_idle(node)
+    return value
+
+
+def normalize_field_input(schema: EditorSchema, node: NodeRecord, key: str, display_value: Any) -> Any:
+    if key == "action_trigger":
+        target_idle = normalized_target_idle(node)
+        action_name = str(display_value or "").strip()
+        if node.type == "TouchIdle" and node.fields.get("transition_type") == "hard":
+            return _hard_cut_action(schema, target_idle)[0]
+        return _animated_action(schema, _node_schema(schema, node.type), target_idle, action_name=action_name)[0]
+    if key == "action_trigger_active":
+        target_idle = _coerce_int(display_value, 0)
+        if node.type == "TouchIdle" and node.fields.get("transition_type") == "hard":
+            return _hard_cut_action(schema, target_idle)[1]
+        return _animated_action(schema, _node_schema(schema, node.type), target_idle)[1]
+    return display_value
+
+
 def _infer_expected_actions(schema: EditorSchema, node: NodeRecord) -> tuple[str, str]:
-    target_idle = int(node.fields.get("target_idle") or 0)
+    target_idle = _coerce_int(node.fields.get("target_idle"), normalized_target_idle(node))
     node_schema = _node_schema(schema, node.type)
     if node.type == "TouchIdle" and node.fields.get("transition_type") == "hard":
         return _hard_cut_action(schema, target_idle)
@@ -126,17 +188,22 @@ def infer_manual_fields(schema: EditorSchema, node: NodeRecord) -> None:
     if node.type not in function_node_types(schema):
         return
     node_schema = _node_schema(schema, node.type)
-    target_idle = int(node.fields.get("target_idle") or 0)
+    target_idle = normalized_target_idle(node)
+    node.fields["target_idle"] = target_idle
     expected_parameter = _expected_parameter(node_schema, target_idle)
     if str(node.fields.get("parameter", "")) != expected_parameter:
         node.manual_fields.add("parameter")
+    else:
+        node.manual_fields.discard("parameter")
     if node.type == "TouchDrag" and node.fields.get("result_type") == "value":
+        node.manual_fields.discard("action_trigger")
         return
     expected_action, expected_active = _infer_expected_actions(schema, node)
     if str(node.fields.get("action_trigger", "")) != expected_action:
         node.manual_fields.add("action_trigger")
-    if str(node.fields.get("action_trigger_active", "")) != expected_active:
-        node.manual_fields.add("action_trigger_active")
+    else:
+        node.manual_fields.discard("action_trigger")
+    node.fields["action_trigger_active"] = expected_active
 
 
 def apply_sequence_defaults(schema: EditorSchema, node: NodeRecord) -> None:
@@ -144,14 +211,14 @@ def apply_sequence_defaults(schema: EditorSchema, node: NodeRecord) -> None:
         return
     node_schema = _node_schema(schema, node.type)
     sequence = node.sequence_no or 1
-    target_idle = sequence if node_schema.auto_rules.use_sequence_for_target_idle else int(node.fields.get("target_idle") or sequence)
+    target_idle = sequence if node_schema.auto_rules.use_sequence_for_target_idle else _coerce_int(node.fields.get("target_idle"), sequence)
     node.fields["draw_able_name"] = node_schema.auto_rules.draw_template.format(sequence=sequence, target_idle=target_idle)
     node.fields["target_idle"] = target_idle
     node.fields["parameter"] = _expected_parameter(node_schema, target_idle)
     action, active = _infer_expected_actions(schema, node)
     node.fields["action_trigger"] = action
     node.fields["action_trigger_active"] = active
-    node.manual_fields.difference_update({"parameter", "action_trigger", "action_trigger_active"})
+    node.manual_fields.difference_update({"parameter", "action_trigger"})
 
 
 def _update_drag_offsets(node: NodeRecord, changed_key: str | None, source_mode: str) -> None:
@@ -198,13 +265,14 @@ def apply_auto_rules(
     del document
     if node.type == "Initial":
         return
-    if changed_key == "target_idle" and source_mode == "simple":
-        node.manual_fields.difference_update({"parameter", "action_trigger", "action_trigger_active"})
+    if changed_key in {"target_idle", "action_trigger_active"} and source_mode == "simple":
+        node.manual_fields.discard("parameter")
     _update_drag_offsets(node, changed_key, source_mode)
     _update_range_abs(node)
     if node.type not in function_node_types(schema):
         return
-    target_idle = int(node.fields.get("target_idle") or 0)
+    target_idle = _coerce_int(node.fields.get("target_idle"), normalized_target_idle(node))
+    node.fields["target_idle"] = target_idle
     node_schema = _node_schema(schema, node.type)
     if force_generated or "parameter" not in node.manual_fields:
         node.fields["parameter"] = _expected_parameter(node_schema, target_idle)
@@ -212,12 +280,13 @@ def apply_auto_rules(
         if force_generated or source_mode == "simple":
             node.fields["action_trigger"] = ""
             node.fields["action_trigger_active"] = ""
+        node.fields["target_idle"] = 0
+        node.manual_fields.discard("action_trigger")
         return
     expected_action, expected_active = _infer_expected_actions(schema, node)
     if force_generated or "action_trigger" not in node.manual_fields:
         node.fields["action_trigger"] = expected_action
-    if force_generated or "action_trigger_active" not in node.manual_fields:
-        node.fields["action_trigger_active"] = expected_active
+    node.fields["action_trigger_active"] = expected_active
 
 
 def create_node(
@@ -298,7 +367,7 @@ def recompute_document_state(schema: EditorSchema, document: DocumentModel) -> N
 
 def create_document(schema: EditorSchema | None = None) -> DocumentModel:
     active_schema = schema or get_default_schema()
-    document = DocumentModel()
+    document = DocumentModel(global_mode="simple")
     document.nodes.append(create_node(active_schema, document, "Initial", (72.0, 72.0)))
     sync_meta_from_initial(document)
     reassign_function_ids(active_schema, document)
@@ -329,6 +398,10 @@ def node_title(schema: EditorSchema, node: NodeRecord) -> str:
     return f"{definition.title}: {draw_name}"
 
 
+def _export_node_fields(node: NodeRecord) -> dict[str, Any]:
+    return {key: value for key, value in node.fields.items() if key not in HIDDEN_NODE_FIELDS}
+
+
 def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[str, Any]:
     sync_meta_from_initial(document)
     reassign_function_ids(schema, document)
@@ -341,9 +414,10 @@ def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[
         }
         if node.ui_size:
             payload["ui_size"] = node.ui_size
-        payload.update(node.fields)
+        payload.update(_export_node_fields(node))
         serialized_nodes.append(payload)
     return {
+        "global_mode": document.global_mode,
         "meta": asdict(document.meta),
         "nodes": serialized_nodes,
         "connections": [asdict(connection) for connection in document.connections],
@@ -360,6 +434,7 @@ def save_document(schema: EditorSchema, document: DocumentModel, path: str | Pat
 def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     document = DocumentModel(
+        global_mode=str(payload.get("global_mode", "simple")),
         meta=MetaRecord(**payload.get("meta", {})),
         connections=[ConnectionRecord(**item) for item in payload.get("connections", [])],
         canvas_view=CanvasViewState(**payload.get("canvas_view", {})),
@@ -369,6 +444,10 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
     for raw in payload.get("nodes", []):
         fields = {key: value for key, value in raw.items() if key not in {"uuid", "type", "ui_position", "ui_size", "mode_variant"}}
         node_type = raw["type"]
+        if "target_idle" not in fields:
+            raw_target_idle = _target_idle_from_raw(fields.get("action_trigger_active"))
+            if raw_target_idle is not None:
+                fields["target_idle"] = raw_target_idle
         sequence_map[node_type] = sequence_map.get(node_type, 0) + 1
         node = NodeRecord(
             uuid=raw.get("uuid") or new_uuid(),
@@ -490,6 +569,12 @@ def validate_document(schema: EditorSchema, document: DocumentModel) -> list[Val
     return issues
 
 
+def _field_label(schema: EditorSchema, node: NodeRecord, key: str) -> str:
+    definition = schema.nodes[node.type]
+    field = next((item for item in definition.fields if item.key == key), None)
+    return field.label if field else key
+
+
 def search_document(schema: EditorSchema, document: DocumentModel, text: str) -> list[SearchHit]:
     needle = text.strip().lower()
     if not needle:
@@ -497,15 +582,22 @@ def search_document(schema: EditorSchema, document: DocumentModel, text: str) ->
     hits: list[SearchHit] = []
     for node in document.nodes:
         for key, value in node.fields.items():
-            haystack = str(value)
-            if needle in haystack.lower():
-                hits.append(
-                    SearchHit(
-                        node_uuid=node.uuid,
-                        node_type=node.type,
-                        title=node_title(schema, node),
-                        field_name=key,
-                        preview=haystack[:120],
-                    )
+            if key in HIDDEN_NODE_FIELDS:
+                continue
+            display_value = display_value_for_field(schema, node, key, value)
+            haystacks = [str(display_value)]
+            if key in {"action_trigger", "action_trigger_active"}:
+                haystacks.append(str(value))
+            if not any(needle in haystack.lower() for haystack in haystacks):
+                continue
+            hits.append(
+                SearchHit(
+                    node_uuid=node.uuid,
+                    node_type=node.type,
+                    title=node_title(schema, node),
+                    field_name=key,
+                    field_label=_field_label(schema, node, key),
+                    preview=str(display_value)[:120],
                 )
+            )
     return hits

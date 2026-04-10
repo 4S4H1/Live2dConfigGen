@@ -72,6 +72,7 @@ class DocumentModel:
     connections: list[ConnectionRecord] = field(default_factory=list)
     canvas_view: CanvasViewState = field(default_factory=CanvasViewState)
     state: DocumentState = field(default_factory=DocumentState)
+    global_mode: str = "simple"
     path: str | None = None
 
 
@@ -96,4 +97,5 @@ class SearchHit:
     node_type: str
     title: str
     field_name: str
+    field_label: str
     preview: str

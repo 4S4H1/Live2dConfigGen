@@ -21,6 +21,7 @@ from .logic import (
     load_document,
     new_uuid,
     node_title,
+    normalize_field_input,
     reassign_function_ids,
     save_document,
     search_document,
@@ -66,6 +67,7 @@ class EditorController(QObject):
         if mode == self.preferences.global_mode:
             return
         self.preferences.global_mode = mode
+        self.document.global_mode = mode
         self.globalModeChanged.emit(mode)
         for node in self.document.nodes:
             self.nodeUpdated.emit(node.uuid)
@@ -73,7 +75,9 @@ class EditorController(QObject):
     def new_document(self) -> None:
         self.undo_stack.clear()
         self.document = create_document(self.schema)
+        self.preferences.global_mode = self.document.global_mode
         self.selected_node_uuid = None
+        self.globalModeChanged.emit(self.preferences.global_mode)
         self.documentLoaded.emit()
         self.pathChanged.emit(None)
         self.refresh_derived()
@@ -81,7 +85,9 @@ class EditorController(QObject):
     def open_document(self, path: str | Path) -> None:
         self.undo_stack.clear()
         self.document = load_document(self.schema, path)
+        self.preferences.global_mode = self.document.global_mode
         self.selected_node_uuid = None
+        self.globalModeChanged.emit(self.preferences.global_mode)
         self.documentLoaded.emit()
         self.pathChanged.emit(str(path))
         self.refresh_derived()
@@ -90,6 +96,7 @@ class EditorController(QObject):
         target = path or self.document.path
         if not target:
             return None
+        self.document.global_mode = self.preferences.global_mode
         save_document(self.schema, self.document, target)
         self.pathChanged.emit(str(target))
         self.refresh_derived()
@@ -159,10 +166,13 @@ class EditorController(QObject):
         node = self.get_node(node_uuid)
         if not node:
             return
+        normalized_value = normalize_field_input(self.schema, node, key, value)
         old = node.fields.get(key)
-        if old == value:
+        if old == normalized_value:
             return
-        self.undo_stack.push(UpdateFieldCommand(self, node_uuid, key, old, value, source_mode or self.preferences.global_mode))
+        self.undo_stack.push(
+            UpdateFieldCommand(self, node_uuid, key, old, normalized_value, source_mode or self.preferences.global_mode)
+        )
 
     def move_node(self, node_uuid: str, old_pos: tuple[float, float], new_pos: tuple[float, float]) -> None:
         if old_pos == new_pos:
@@ -271,7 +281,7 @@ class EditorController(QObject):
         }
         if node.ui_size:
             payload["ui_size"] = dict(node.ui_size)
-        payload.update(node.fields)
+        payload.update({key: value for key, value in node.fields.items() if key != "target_idle"})
         return payload
 
     def _insert_nodes(self, nodes: list[NodeRecord], connections: list[ConnectionRecord]) -> None:
@@ -307,8 +317,11 @@ class EditorController(QObject):
         if not node:
             return
         node.fields[key] = value
-        if source_mode == "advanced" and key in {"parameter", "action_trigger", "action_trigger_active"}:
-            node.manual_fields.difference_update({"parameter", "action_trigger", "action_trigger_active"})
+        if key == "action_trigger_active":
+            infer_manual_fields(self.schema, node)
+        elif key == "action_trigger":
+            infer_manual_fields(self.schema, node)
+        elif source_mode == "advanced" and key == "parameter":
             infer_manual_fields(self.schema, node)
         apply_auto_rules(self.schema, self.document, node, source_mode=source_mode, changed_key=key)
         reassign_function_ids(self.schema, self.document)

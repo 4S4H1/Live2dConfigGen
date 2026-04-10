@@ -1,49 +1,123 @@
 {
+  "global_mode": "simple",
   "meta": {
     "version": "2099-09-09",
-    "author": "",
-    "ship_skin_id": 0,
-    "memo": "",
+    "author": "111",
+    "ship_skin_id": 1110,
+    "memo": "1111",
     "default_state": "idle0",
-    "react_condition": 0,
-    "tips": "",
-    "CharName": ""
+    "react_condition": 110,
+    "tips": "111",
+    "CharName": "111"
   },
   "nodes": [
     {
       "uuid": "8bc41f78fe51441881515a5ba8117c2d",
       "type": "Initial",
-      "mode_variant": "simple",
       "ui_position": {
         "x": 121.0,
         "y": 47.0
       },
-      "tips": "",
+      "tips": "111",
       "version": "2099-09-09",
       "defaultState": "idle0",
-      "CharName": "",
-      "memo": "",
-      "ship_skin_id": 0,
-      "react_condition": 0,
-      "author": ""
+      "CharName": "111",
+      "memo": "1111",
+      "ship_skin_id": 1110,
+      "react_condition": 110,
+      "author": "111"
     },
     {
       "uuid": "aed1ef4c99c3426c97a97ae03feff990",
       "type": "TouchIdle",
-      "mode_variant": "advanced",
       "ui_position": {
-        "x": 448.0,
-        "y": 51.0
+        "x": 588.0,
+        "y": 50.0
       },
       "tips": "",
       "draw_able_name": "",
       "parameter": "Paramtouch_idle1",
       "range": "{0,1}",
+      "control_type": "drag",
+      "drag_ui_direction": "down",
+      "transition_type": "animated",
+      "id": 111001,
+      "mode": 1,
+      "start_value": 0,
+      "parts_data": "",
+      "ignore_react": 1,
+      "ignore_action": 1,
+      "range_abs": 1,
+      "drag_direct": 1,
+      "react_pos_x": null,
+      "react_pos_y": null,
+      "offset_x": 0,
+      "offset_y": -100,
+      "smooth": 100,
+      "revert_smooth": 100,
+      "revert": -1,
+      "gyro": 0,
+      "gyro_x": 0,
+      "gyro_y": 0,
+      "gyro_z": 0,
+      "limit_time": 1,
+      "action_trigger": "{type = 2 ,action = 'touch_idle1'}",
+      "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 1}",
+      "shop_action": 0
+    },
+    {
+      "uuid": "a45304d3f110441e8c92b1218b1225e4",
+      "type": "TouchIdle",
+      "ui_position": {
+        "x": 1090.0,
+        "y": 81.0
+      },
+      "tips": "",
+      "draw_able_name": "TouchIdle2",
+      "parameter": "Paramtouch_idle0",
+      "range": "{0,1}",
+      "control_type": "drag",
+      "drag_ui_direction": "",
+      "transition_type": "animated",
+      "id": 111002,
+      "mode": 1,
+      "start_value": 0,
+      "parts_data": "",
+      "ignore_react": 1,
+      "ignore_action": 1,
+      "range_abs": 1,
+      "drag_direct": 1,
+      "react_pos_x": null,
+      "react_pos_y": null,
+      "offset_x": 0,
+      "offset_y": 0,
+      "smooth": 100,
+      "revert_smooth": 100,
+      "revert": -1,
+      "gyro": 0,
+      "gyro_x": 0,
+      "gyro_y": 0,
+      "gyro_z": 0,
+      "limit_time": 1,
+      "action_trigger": "{type = 2 ,action = 'touch_idle0'}",
+      "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 0}",
+      "shop_action": 0
+    },
+    {
+      "uuid": "1eee3b7f056b448886ba4e7877e9bf54",
+      "type": "TouchIdle",
+      "ui_position": {
+        "x": 906.0,
+        "y": 519.0
+      },
+      "tips": "",
+      "draw_able_name": "TouchIdle3",
+      "parameter": "Paramtouch_idle3",
+      "range": "{0,1}",
       "control_type": "click",
       "drag_ui_direction": "",
       "transition_type": "animated",
-      "target_idle": 1,
-      "id": 1,
+      "id": 111003,
       "mode": 1,
       "start_value": 0,
       "parts_data": "",
@@ -63,8 +137,62 @@
       "gyro_y": 0,
       "gyro_z": 0,
       "limit_time": 1,
-      "action_trigger": "{type = 2 ,action = 'touch_idle1'}",
-      "action_trigger_active": "{enable = {},ignore = {'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'},idle = 1}",
+      "action_trigger": "{type = 2 ,action = 'touch_idle3'}",
+      "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 3}",
+      "shop_action": 0
+    },
+    {
+      "uuid": "b1178c1b62b54aa3a4bb830bf58933fd",
+      "type": "Comment",
+      "ui_position": {
+        "x": 33.86631272199952,
+        "y": -360.74913827699993
+      },
+      "ui_size": {
+        "width": 550.2138999999999,
+        "height": 315.0
+      },
+      "content": "阿斯蒂芬",
+      "drag_direct": 0
+    },
+    {
+      "uuid": "96b3d2d9c4e140ae82139b54629fd316",
+      "type": "TouchDrag",
+      "ui_position": {
+        "x": 1047.653840889446,
+        "y": -335.433028004077
+      },
+      "tips": "",
+      "draw_able_name": "TouchDrag1",
+      "parameter": "Touch_drag0",
+      "range": "{0,1}",
+      "control_type": "click",
+      "drag_ui_direction": "",
+      "result_type": "value",
+      "action_trigger": "",
+      "action_trigger_active": "",
+      "target_value": 1.0,
+      "revert_enabled": 1,
+      "parts_data": "",
+      "id": 111004,
+      "mode": 1,
+      "start_value": 0,
+      "ignore_react": 1,
+      "ignore_action": 1,
+      "range_abs": 1,
+      "drag_direct": 0,
+      "react_pos_x": null,
+      "react_pos_y": null,
+      "offset_x": 0,
+      "offset_y": 0,
+      "smooth": 100,
+      "revert_smooth": 100,
+      "revert": -1,
+      "gyro": 0,
+      "gyro_x": 0,
+      "gyro_y": 0,
+      "gyro_z": 0,
+      "limit_time": 1,
       "shop_action": 0
     }
   ],
@@ -72,11 +200,15 @@
     {
       "from_uuid": "8bc41f78fe51441881515a5ba8117c2d",
       "to_uuid": "aed1ef4c99c3426c97a97ae03feff990"
+    },
+    {
+      "from_uuid": "aed1ef4c99c3426c97a97ae03feff990",
+      "to_uuid": "a45304d3f110441e8c92b1218b1225e4"
     }
   ],
   "canvas_view": {
-    "scale": 1.0,
-    "offset_x": 483.0,
-    "offset_y": 166.0
+    "scale": 1.0000000000000009,
+    "offset_x": 1109.0,
+    "offset_y": -45.0
   }
 }

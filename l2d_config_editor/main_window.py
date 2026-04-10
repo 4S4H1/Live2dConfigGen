@@ -276,8 +276,8 @@ class MainWindow(QMainWindow):
         mode_menu.addAction(self.advanced_mode_action)
 
     def _apply_saved_preferences(self) -> None:
-        mode = self.settings.value("ui/global_mode", "simple")
-        self.controller.set_global_mode(str(mode))
+        self.simple_mode_action.setChecked(self.controller.preferences.global_mode == "simple")
+        self.advanced_mode_action.setChecked(self.controller.preferences.global_mode == "advanced")
 
     def _refresh_file_list(self) -> None:
         current = Path(self.controller.document.path).name if self.controller.document.path else None
@@ -428,7 +428,7 @@ class MainWindow(QMainWindow):
             self.search_results.hide()
             return
         for hit in self.controller.search(text):
-            item = QListWidgetItem(f"{hit.title} | {hit.field_name}: {hit.preview}")
+            item = QListWidgetItem(f"{hit.title} | {hit.field_label}: {hit.preview}")
             item.setData(Qt.ItemDataRole.UserRole, hit.node_uuid)
             self.search_results.addItem(item)
         self.search_results.setVisible(self.search_results.count() > 0)

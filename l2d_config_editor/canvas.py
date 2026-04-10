@@ -90,6 +90,7 @@ class NodeItem(QGraphicsObject):
         self._search_highlight = False
         self._margin = 14
         self._header_height = 34
+        self._content_top_gap = 14
         self._pin_radius = 6
         self._resizing = False
         self._resize_start = QPointF()
@@ -143,21 +144,21 @@ class NodeItem(QGraphicsObject):
         content_width = base_width
         if definition.resizable and node.ui_size:
             content_width = max(content_width, int(node.ui_size.get("width", content_width)) - self._margin * 2)
-        self.proxy.widget().setFixedWidth(content_width)
-        self.proxy.widget().adjustSize()
-        self.proxy.widget().updateGeometry()
-        content_width = max(base_width, self.proxy.widget().sizeHint().width())
-        self.proxy.widget().setFixedWidth(content_width)
-        self.proxy.widget().adjustSize()
-        content_height = self.proxy.widget().sizeHint().height()
         width = content_width + self._margin * 2
-        height = content_height + self._margin * 2 + self._header_height
         if definition.resizable and node.ui_size:
             width = max(width, float(node.ui_size.get("width", width)))
+        final_content_width = int(width - self._margin * 2)
+        self.form.setFixedWidth(final_content_width)
+        self.form.ensurePolished()
+        content_height = self.form.content_height_hint()
+        self.form.setFixedHeight(content_height)
+        self.form.updateGeometry()
+        height = content_height + self._margin * 2 + self._header_height + self._content_top_gap
+        if definition.resizable and node.ui_size:
             height = max(height, float(node.ui_size.get("height", height)))
         self._rect = QRectF(0.0, 0.0, width, max(120.0, height))
-        self.proxy.setPos(self._margin, self._header_height)
-        self.proxy.widget().setFixedWidth(int(self._rect.width() - self._margin * 2))
+        self.proxy.setPos(self._margin, self._header_height + self._content_top_gap)
+        self.proxy.resize(final_content_width, content_height)
         if definition.resizable:
             node.ui_size = {"width": self._rect.width(), "height": self._rect.height()}
         self.update()
@@ -191,6 +192,20 @@ class NodeItem(QGraphicsObject):
         painter.setBrush(header_color)
         painter.drawRoundedRect(QRectF(0, 0, self._rect.width(), self._header_height + 10), 12, 12)
         painter.fillRect(QRectF(0, self._header_height, self._rect.width(), 14), header_color)
+        content_rect = QRectF(
+            self.proxy.pos().x() - 2,
+            self.proxy.pos().y() - 2,
+            self.proxy.size().width() + 4,
+            self.proxy.size().height() + 4,
+        )
+        if content_rect.width() > 0 and content_rect.height() > 0:
+            panel_fill = QColor("#111827")
+            panel_fill.setAlpha(72)
+            panel_border = QColor("#dbe7ff")
+            panel_border.setAlpha(26)
+            painter.setBrush(panel_fill)
+            painter.setPen(QPen(panel_border, 1.0))
+            painter.drawRoundedRect(content_rect, 12, 12)
         painter.setPen(QColor("#e8eef8"))
         painter.setFont(self.form.font())
         painter.drawText(QRectF(14, 8, self._rect.width() - 80, 18), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.schema.nodes[self.node.type].title)
