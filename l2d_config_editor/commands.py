@@ -38,34 +38,20 @@ class RemoveNodesCommand(QUndoCommand):
 
 
 class UpdateFieldCommand(QUndoCommand):
-    def __init__(self, controller, node_uuid, key, old_value, new_value) -> None:
+    def __init__(self, controller, node_uuid, key, old_value, new_value, source_mode) -> None:
         super().__init__("修改字段")
         self.controller = controller
         self.node_uuid = node_uuid
         self.key = key
         self.old_value = old_value
         self.new_value = new_value
+        self.source_mode = source_mode
 
     def redo(self) -> None:
-        self.controller._set_field(self.node_uuid, self.key, self.new_value)
+        self.controller._set_field(self.node_uuid, self.key, self.new_value, self.source_mode)
 
     def undo(self) -> None:
-        self.controller._set_field(self.node_uuid, self.key, self.old_value)
-
-
-class SetModeCommand(QUndoCommand):
-    def __init__(self, controller, node_uuid, old_mode, new_mode) -> None:
-        super().__init__("切换编辑模式")
-        self.controller = controller
-        self.node_uuid = node_uuid
-        self.old_mode = old_mode
-        self.new_mode = new_mode
-
-    def redo(self) -> None:
-        self.controller._set_mode(self.node_uuid, self.new_mode)
-
-    def undo(self) -> None:
-        self.controller._set_mode(self.node_uuid, self.old_mode)
+        self.controller._set_field(self.node_uuid, self.key, self.old_value, self.source_mode)
 
 
 class MoveNodeCommand(QUndoCommand):

@@ -6,27 +6,26 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from PyQt6.QtCore import QDate, Qt, pyqtSignal
-from PyQt6.QtGui import QFocusEvent, QFont
+from PyQt6.QtGui import QFocusEvent, QFont, QRegularExpressionValidator
+from PyQt6.QtCore import QRegularExpression
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDateEdit,
-    QDoubleSpinBox,
     QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPlainTextEdit,
-    QPushButton,
     QSizePolicy,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
-from .constants import FUNCTION_NODE_TYPES
-from .definitions import FieldDefinition, NODE_DEFINITIONS
+from .schema import EditorSchema, FieldSchema, field_visible
 
 
 class CommitLineEdit(QLineEdit):
@@ -40,6 +39,32 @@ class CommitLineEdit(QLineEdit):
         self.committed.emit(self.text())
 
 
+class NumericLineEdit(CommitLineEdit):
+    def __init__(self, mode: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.mode = mode
+        pattern = r"-?\d*" if mode == "int" else r"-?\d*(?:\.\d{0,3})?"
+        self.setValidator(QRegularExpressionValidator(QRegularExpression(pattern), self))
+        self.setAlignment(Qt.AlignmentFlag.AlignRight)
+
+    def _emit_commit(self) -> None:
+        text = self.text().strip()
+        if self.mode == "nullable_int":
+            if not text:
+                self.committed.emit(None)
+                return
+            try:
+                self.committed.emit(int(text))
+                return
+            except ValueError:
+                self.committed.emit(None)
+                return
+        if self.mode == "int":
+            self.committed.emit(int(text or "0"))
+            return
+        self.committed.emit(float(text or "0"))
+
+
 class CommitPlainTextEdit(QPlainTextEdit):
     committed = pyqtSignal(object)
 
@@ -51,183 +76,185 @@ class CommitPlainTextEdit(QPlainTextEdit):
 @dataclass
 class EditorBinding:
     widget: QWidget
-    getter: Callable[[], Any]
     setter: Callable[[Any], None]
+
+
+class ValidationSummaryWidget(QFrame):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("validationSummary")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(6)
+        self.title = QLabel("冲突与警告")
+        self.title.setObjectName("validationSummaryTitle")
+        self.list_widget = QListWidget()
+        self.list_widget.setAlternatingRowColors(True)
+        self.empty = QLabel("当前节点没有警告")
+        self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.title)
+        layout.addWidget(self.empty)
+        layout.addWidget(self.list_widget)
+        self.list_widget.hide()
+
+    def set_issues(self, issues) -> None:
+        self.list_widget.clear()
+        if not issues:
+            self.empty.show()
+            self.list_widget.hide()
+            return
+        self.empty.hide()
+        self.list_widget.show()
+        for issue in issues:
+            text = issue.message
+            if issue.related_titles:
+                text = f"{text} | 相关节点: {', '.join(issue.related_titles)}"
+            item = QListWidgetItem(text)
+            self.list_widget.addItem(item)
 
 
 class NodeFormWidget(QFrame):
     fieldCommitted = pyqtSignal(str, object)
-    modeRequested = pyqtSignal(str)
 
-    def __init__(self, inline: bool = False, parent: QWidget | None = None) -> None:
+    def __init__(self, schema: EditorSchema, inline: bool = False, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.schema = schema
         self.inline = inline
         self.node = None
+        self.global_mode = "simple"
         self._bindings: dict[str, EditorBinding] = {}
         self._title = QLabel("未选择节点")
         self._title.setWordWrap(True)
-        title_font = QFont()
-        title_font.setPointSize(10 if inline else 11)
+        title_font = QFont("Segoe UI", 10 if inline else 11)
         title_font.setBold(True)
         self._title.setFont(title_font)
-        self._mode_button = QPushButton("高级模式")
-        self._mode_button.setCheckable(True)
-        self._mode_button.clicked.connect(self._toggle_mode)
-        self._mode_button.setVisible(False)
-        header = QHBoxLayout()
+        self._subtitle = QLabel("")
+        self._subtitle.setWordWrap(True)
+        header = QVBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
-        header.addWidget(self._title, 1)
-        header.addWidget(self._mode_button, 0)
+        header.setSpacing(2)
+        header.addWidget(self._title)
+        header.addWidget(self._subtitle)
         self._form = QFormLayout()
         self._form.setContentsMargins(0, 0, 0, 0)
         self._form.setSpacing(6 if inline else 8)
+        self._form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
         layout.addLayout(header)
         layout.addLayout(self._form)
         self.setFrameShape(QFrame.Shape.NoFrame)
         if inline:
-            self.setMinimumWidth(240)
+            self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
-    def set_node(self, node) -> None:
+    def set_node(self, node, global_mode: str) -> None:
         self.node = node
+        self.global_mode = global_mode
         self._rebuild()
 
-    def _toggle_mode(self) -> None:
+    def refresh(self, global_mode: str | None = None) -> None:
+        if global_mode:
+            self.global_mode = global_mode
         if not self.node:
             return
-        target_mode = "advanced" if self._mode_button.isChecked() else "simple"
-        self.modeRequested.emit(target_mode)
+        definition = self.schema.nodes[self.node.type]
+        visible_keys = [field.key for field in definition.fields if field_visible(field, self.node.fields, self.global_mode)]
+        if set(visible_keys) != set(self._bindings.keys()):
+            self._rebuild()
+            return
+        self._sync_header()
+        for key, binding in self._bindings.items():
+            binding.setter(self.node.fields.get(key))
 
     def _clear_form(self) -> None:
         while self._form.rowCount():
             self._form.removeRow(0)
         self._bindings.clear()
 
+    def _sync_header(self) -> None:
+        if not self.node:
+            self._title.setText("未选择节点")
+            self._subtitle.setText("")
+            return
+        definition = self.schema.nodes[self.node.type]
+        self._title.setText(definition.title)
+        if self.node.type in ("TouchIdle", "TouchDrag"):
+            self._subtitle.setText(
+                f"ID {self.node.fields.get('id', '-')} | {self.node.fields.get('draw_able_name', '')}"
+            )
+        else:
+            self._subtitle.setText("")
+
     def _rebuild(self) -> None:
         self._clear_form()
         if not self.node:
-            self._title.setText("未选择节点")
-            self._mode_button.setVisible(False)
+            self._sync_header()
             return
-        definition = NODE_DEFINITIONS[self.node.type]
-        title = definition.title
-        if self.node.type in FUNCTION_NODE_TYPES:
-            title = f"{title} #{self.node.fields.get('id', '-')}"
-        self._title.setText(title)
-        self._mode_button.setVisible(self.node.type in FUNCTION_NODE_TYPES)
-        if self.node.type in FUNCTION_NODE_TYPES:
-            self._mode_button.blockSignals(True)
-            self._mode_button.setChecked(self.node.mode_variant == "advanced")
-            self._mode_button.setText("高级模式" if self.node.mode_variant == "advanced" else "简易模式")
-            self._mode_button.blockSignals(False)
+        definition = self.schema.nodes[self.node.type]
+        self._sync_header()
         for field in definition.fields:
-            if self.node.mode_variant not in field.modes:
+            if not field_visible(field, self.node.fields, self.global_mode):
                 continue
-            if field.visible_if and not field.visible_if(self.node.fields, self.node.mode_variant):
-                continue
-            widget, getter, setter = self._build_editor(field)
+            widget, setter = self._build_editor(field)
             label = QLabel(field.label)
             label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
             self._form.addRow(label, widget)
-            self._bindings[field.key] = EditorBinding(widget=widget, getter=getter, setter=setter)
+            self._bindings[field.key] = EditorBinding(widget=widget, setter=setter)
             setter(self.node.fields.get(field.key, field.default))
+        self.adjustSize()
 
-    def refresh(self) -> None:
-        if not self.node:
-            return
-        definition = NODE_DEFINITIONS[self.node.type]
-        visible_keys = []
-        for field in definition.fields:
-            if self.node.mode_variant not in field.modes:
-                continue
-            if field.visible_if and not field.visible_if(self.node.fields, self.node.mode_variant):
-                continue
-            visible_keys.append(field.key)
-        if set(visible_keys) != set(self._bindings.keys()):
-            self._rebuild()
-            return
-        self._title.setText(
-            f"{definition.title} #{self.node.fields.get('id', '-')}" if self.node.type in FUNCTION_NODE_TYPES else definition.title
-        )
-        if self.node.type in FUNCTION_NODE_TYPES:
-            self._mode_button.blockSignals(True)
-            self._mode_button.setChecked(self.node.mode_variant == "advanced")
-            self._mode_button.setText("高级模式" if self.node.mode_variant == "advanced" else "简易模式")
-            self._mode_button.blockSignals(False)
-        for key, binding in self._bindings.items():
-            binding.setter(self.node.fields.get(key))
-
-    def _build_editor(self, field: FieldDefinition) -> tuple[QWidget, Callable[[], Any], Callable[[Any], None]]:
+    def _build_editor(self, field: FieldSchema) -> tuple[QWidget, Callable[[Any], None]]:
         if field.editor == "text":
             if field.multiline:
                 widget = CommitPlainTextEdit()
-                widget.setMinimumHeight(84 if not self.inline else 72)
+                widget.setMinimumHeight(92 if not self.inline else 72)
                 widget.committed.connect(lambda value, key=field.key: self.fieldCommitted.emit(key, value))
-                return (
-                    widget,
-                    widget.toPlainText,
-                    lambda value, target=widget: self._set_plain_text(target, "" if value is None else str(value)),
-                )
+                if field.read_only:
+                    widget.setReadOnly(True)
+                return widget, lambda value, target=widget: self._set_plain_text(target, "" if value is None else str(value))
             widget = CommitLineEdit()
             widget.setPlaceholderText(field.placeholder)
             widget.committed.connect(lambda value, key=field.key: self.fieldCommitted.emit(key, value))
-            return widget, widget.text, lambda value, target=widget: self._set_line_text(target, "" if value is None else str(value))
-        if field.editor == "readonly":
-            widget = QPlainTextEdit()
-            widget.setReadOnly(True)
-            widget.setMinimumHeight(60)
-            return (
-                widget,
-                widget.toPlainText,
-                lambda value, target=widget: self._set_plain_text(target, "" if value is None else str(value)),
-            )
+            widget.setReadOnly(field.read_only)
+            return widget, lambda value, target=widget: self._set_line_text(target, "" if value is None else str(value))
+
+        if field.editor in {"int", "float", "nullable_int"}:
+            widget = NumericLineEdit(field.editor)
+            widget.setPlaceholderText(field.placeholder)
+            widget.setReadOnly(field.read_only)
+            widget.committed.connect(lambda value, key=field.key: self.fieldCommitted.emit(key, value))
+            return widget, lambda value, target=widget: self._set_line_text(target, "" if value is None else str(value))
+
         if field.editor == "date":
             widget = QDateEdit()
             widget.setCalendarPopup(True)
             widget.setDisplayFormat("yyyy-MM-dd")
-            widget.dateChanged.connect(lambda _, key=field.key, target=widget: self.fieldCommitted.emit(key, target.date().toString("yyyy-MM-dd")))
-            return (
-                widget,
-                lambda target=widget: target.date().toString("yyyy-MM-dd"),
-                lambda value, target=widget: self._set_date(target, value),
+            widget.dateChanged.connect(
+                lambda _, key=field.key, target=widget: self.fieldCommitted.emit(key, target.date().toString("yyyy-MM-dd"))
             )
-        if field.editor == "int":
-            widget = QSpinBox()
-            widget.setRange(-999999999, 999999999)
-            widget.valueChanged.connect(lambda value, key=field.key: self.fieldCommitted.emit(key, int(value)))
-            return widget, widget.value, lambda value, target=widget: self._set_spin_value(target, 0 if value in (None, "") else int(value))
-        if field.editor == "nullable_int":
-            widget = CommitLineEdit()
-            widget.setPlaceholderText("留空")
-            widget.committed.connect(lambda value, key=field.key: self.fieldCommitted.emit(key, self._parse_nullable_int(value)))
-            return widget, widget.text, lambda value, target=widget: self._set_line_text(target, "" if value is None else str(value))
-        if field.editor == "float":
-            widget = QDoubleSpinBox()
-            widget.setRange(-999999999.0, 999999999.0)
-            widget.setDecimals(3)
-            widget.valueChanged.connect(lambda value, key=field.key: self.fieldCommitted.emit(key, float(value)))
-            return (
-                widget,
-                widget.value,
-                lambda value, target=widget: self._set_double_value(target, 0.0 if value in (None, "") else float(value)),
-            )
+            return widget, lambda value, target=widget: self._set_date(target, value)
+
         if field.editor == "bool":
             widget = QCheckBox()
             widget.stateChanged.connect(lambda state, key=field.key: self.fieldCommitted.emit(key, 1 if state else 0))
-            return widget, widget.isChecked, lambda value, target=widget: self._set_checked(target, bool(int(value or 0)))
+            return widget, lambda value, target=widget: self._set_checked(target, bool(int(value or 0)))
+
         if field.editor == "combo":
             widget = QComboBox()
             for option in field.options:
                 widget.addItem(option.label, option.value)
-            widget.currentIndexChanged.connect(lambda _, key=field.key, target=widget: self.fieldCommitted.emit(key, target.currentData()))
-            return widget, widget.currentData, lambda value, target=widget: self._set_combo_value(target, value)
+            widget.currentIndexChanged.connect(
+                lambda _, key=field.key, target=widget: self.fieldCommitted.emit(key, target.currentData())
+            )
+            return widget, lambda value, target=widget: self._set_combo_value(target, value)
+
         if field.editor == "range":
             widget = CommitLineEdit()
-            widget.setPlaceholderText("{0,1}")
+            widget.setPlaceholderText(field.placeholder or "{0,1}")
             widget.committed.connect(lambda value, key=field.key: self.fieldCommitted.emit(key, value))
-            return widget, widget.text, lambda value, target=widget: self._set_line_text(target, "" if value is None else str(value))
+            return widget, lambda value, target=widget: self._set_line_text(target, "" if value is None else str(value))
+
         raise ValueError(f"Unsupported editor type: {field.editor}")
 
     @staticmethod
@@ -241,18 +268,6 @@ class NodeFormWidget(QFrame):
         blocked = widget.blockSignals(True)
         if widget.toPlainText() != value:
             widget.setPlainText(value)
-        widget.blockSignals(blocked)
-
-    @staticmethod
-    def _set_spin_value(widget: QSpinBox, value: int) -> None:
-        blocked = widget.blockSignals(True)
-        widget.setValue(value)
-        widget.blockSignals(blocked)
-
-    @staticmethod
-    def _set_double_value(widget: QDoubleSpinBox, value: float) -> None:
-        blocked = widget.blockSignals(True)
-        widget.setValue(value)
         widget.blockSignals(blocked)
 
     @staticmethod
@@ -277,13 +292,3 @@ class NodeFormWidget(QFrame):
             if date.isValid():
                 widget.setDate(date)
         widget.blockSignals(blocked)
-
-    @staticmethod
-    def _parse_nullable_int(value: Any) -> int | None:
-        text = str(value).strip()
-        if not text:
-            return None
-        try:
-            return int(text)
-        except ValueError:
-            return None

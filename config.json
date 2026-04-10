@@ -1,0 +1,82 @@
+{
+  "meta": {
+    "version": "2099-09-09",
+    "author": "",
+    "ship_skin_id": 0,
+    "memo": "",
+    "default_state": "idle0",
+    "react_condition": 0,
+    "tips": "",
+    "CharName": ""
+  },
+  "nodes": [
+    {
+      "uuid": "8bc41f78fe51441881515a5ba8117c2d",
+      "type": "Initial",
+      "mode_variant": "simple",
+      "ui_position": {
+        "x": 121.0,
+        "y": 47.0
+      },
+      "tips": "",
+      "version": "2099-09-09",
+      "defaultState": "idle0",
+      "CharName": "",
+      "memo": "",
+      "ship_skin_id": 0,
+      "react_condition": 0,
+      "author": ""
+    },
+    {
+      "uuid": "aed1ef4c99c3426c97a97ae03feff990",
+      "type": "TouchIdle",
+      "mode_variant": "advanced",
+      "ui_position": {
+        "x": 448.0,
+        "y": 51.0
+      },
+      "tips": "",
+      "draw_able_name": "",
+      "parameter": "Paramtouch_idle1",
+      "range": "{0,1}",
+      "control_type": "click",
+      "drag_ui_direction": "",
+      "transition_type": "animated",
+      "target_idle": 1,
+      "id": 1,
+      "mode": 1,
+      "start_value": 0,
+      "parts_data": "",
+      "ignore_react": 1,
+      "ignore_action": 1,
+      "range_abs": 1,
+      "drag_direct": 0,
+      "react_pos_x": null,
+      "react_pos_y": null,
+      "offset_x": 0,
+      "offset_y": 0,
+      "smooth": 100,
+      "revert_smooth": 100,
+      "revert": -1,
+      "gyro": 0,
+      "gyro_x": 0,
+      "gyro_y": 0,
+      "gyro_z": 0,
+      "limit_time": 1,
+      "action_trigger": "{type = 2 ,action = 'touch_idle1'}",
+      "action_trigger_active": "{enable = {},ignore = {'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'},idle = 1}",
+      "shop_action": 0
+    }
+  ],
+  "connections": [
+    {
+      "from_uuid": "8bc41f78fe51441881515a5ba8117c2d",
+      "to_uuid": "aed1ef4c99c3426c97a97ae03feff990"
+    }
+  ],
+  "canvas_view": {
+    "scale": 1.0,
+    "offset_x": 483.0,
+    "offset_y": 166.0
+  }
+}

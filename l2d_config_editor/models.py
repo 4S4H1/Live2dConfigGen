@@ -32,13 +32,26 @@ class ConnectionRecord:
 
 
 @dataclass
+class EditorPreferences:
+    global_mode: str = "simple"
+    schema_path: str | None = None
+
+
+@dataclass
+class DocumentState:
+    is_meta_ready: bool = False
+    meta_missing_fields: list[str] = field(default_factory=list)
+
+
+@dataclass
 class NodeRecord:
     uuid: str
     type: str
     fields: dict[str, Any] = field(default_factory=dict)
     ui_position: dict[str, float] = field(default_factory=lambda: {"x": 0.0, "y": 0.0})
     ui_size: dict[str, float] | None = None
-    mode_variant: str = "simple"
+    sequence_no: int | None = None
+    manual_fields: set[str] = field(default_factory=set)
 
     def clone(self) -> "NodeRecord":
         return NodeRecord(
@@ -47,7 +60,8 @@ class NodeRecord:
             fields=dict(self.fields),
             ui_position=dict(self.ui_position),
             ui_size=dict(self.ui_size) if self.ui_size else None,
-            mode_variant=self.mode_variant,
+            sequence_no=self.sequence_no,
+            manual_fields=set(self.manual_fields),
         )
 
 
@@ -57,6 +71,7 @@ class DocumentModel:
     nodes: list[NodeRecord] = field(default_factory=list)
     connections: list[ConnectionRecord] = field(default_factory=list)
     canvas_view: CanvasViewState = field(default_factory=CanvasViewState)
+    state: DocumentState = field(default_factory=DocumentState)
     path: str | None = None
 
 
@@ -65,6 +80,9 @@ class ValidationIssue:
     node_uuid: str
     message: str
     severity: str = "warning"
+    field_keys: list[str] = field(default_factory=list)
+    related_node_uuids: list[str] = field(default_factory=list)
+    related_titles: list[str] = field(default_factory=list)
 
 
 @dataclass

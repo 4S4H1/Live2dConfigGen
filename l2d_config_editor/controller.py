@@ -9,31 +9,26 @@ from typing import Any
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtGui import QUndoStack
 
-from .commands import (
-    AddConnectionCommand,
-    AddNodesCommand,
-    MoveNodeCommand,
-    RemoveConnectionCommand,
-    RemoveNodesCommand,
-    SetModeCommand,
-    UpdateFieldCommand,
-)
+from .commands import AddConnectionCommand, AddNodesCommand, MoveNodeCommand, RemoveConnectionCommand, RemoveNodesCommand, UpdateFieldCommand
 from .constants import CLIPBOARD_MIME
 from .logic import (
     apply_auto_rules,
     create_document,
+    create_node,
     export_document_dict,
+    function_node_types,
+    infer_manual_fields,
     load_document,
     new_uuid,
     node_title,
     reassign_function_ids,
     save_document,
     search_document,
-    sync_meta_from_initial,
     validate_document,
     document_to_csv_rows,
 )
-from .models import ConnectionRecord, DocumentModel, NodeRecord
+from .models import ConnectionRecord, DocumentModel, EditorPreferences, NodeRecord
+from .schema import EditorSchema, load_editor_schema
 
 
 class EditorController(QObject):
@@ -47,17 +42,37 @@ class EditorController(QObject):
     selectionChanged = pyqtSignal(object)
     pathChanged = pyqtSignal(object)
     statusMessage = pyqtSignal(str)
+    documentStateChanged = pyqtSignal(object)
+    globalModeChanged = pyqtSignal(str)
+    schemaChanged = pyqtSignal()
 
-    def __init__(self, parent: QObject | None = None) -> None:
+    def __init__(self, parent: QObject | None = None, schema_path: str | None = None) -> None:
         super().__init__(parent)
         self.undo_stack = QUndoStack(self)
-        self.document = create_document()
+        self.preferences = EditorPreferences(global_mode="simple", schema_path=schema_path)
+        self.schema = load_editor_schema(schema_path)
+        self.document = create_document(self.schema)
         self.selected_node_uuid: str | None = None
         self.refresh_derived()
 
+    def reload_schema(self, schema_path: str | None = None) -> None:
+        path = schema_path or self.preferences.schema_path
+        self.schema = load_editor_schema(path)
+        self.preferences.schema_path = str(path) if path else None
+        self.refresh_derived()
+        self.schemaChanged.emit()
+
+    def set_global_mode(self, mode: str) -> None:
+        if mode == self.preferences.global_mode:
+            return
+        self.preferences.global_mode = mode
+        self.globalModeChanged.emit(mode)
+        for node in self.document.nodes:
+            self.nodeUpdated.emit(node.uuid)
+
     def new_document(self) -> None:
         self.undo_stack.clear()
-        self.document = create_document()
+        self.document = create_document(self.schema)
         self.selected_node_uuid = None
         self.documentLoaded.emit()
         self.pathChanged.emit(None)
@@ -65,7 +80,7 @@ class EditorController(QObject):
 
     def open_document(self, path: str | Path) -> None:
         self.undo_stack.clear()
-        self.document = load_document(path)
+        self.document = load_document(self.schema, path)
         self.selected_node_uuid = None
         self.documentLoaded.emit()
         self.pathChanged.emit(str(path))
@@ -75,18 +90,18 @@ class EditorController(QObject):
         target = path or self.document.path
         if not target:
             return None
-        save_document(self.document, target)
+        save_document(self.schema, self.document, target)
         self.pathChanged.emit(str(target))
         self.refresh_derived()
         return str(target)
 
     def refresh_derived(self) -> None:
-        sync_meta_from_initial(self.document)
-        reassign_function_ids(self.document)
+        reassign_function_ids(self.schema, self.document)
         for node in self.document.nodes:
             self.nodeUpdated.emit(node.uuid)
-        self.validationChanged.emit(validate_document(self.document))
-        self.csvPreviewChanged.emit(document_to_csv_rows(self.document))
+        self.validationChanged.emit(validate_document(self.schema, self.document))
+        self.csvPreviewChanged.emit(document_to_csv_rows(self.schema, self.document))
+        self.documentStateChanged.emit(self.document.state)
 
     def get_node(self, node_uuid: str) -> NodeRecord | None:
         return next((node for node in self.document.nodes if node.uuid == node_uuid), None)
@@ -99,13 +114,38 @@ class EditorController(QObject):
         node = self.get_node(node_uuid)
         if not node:
             return False
-        return node.type != "Initial"
+        return self.schema.nodes[node.type].copyable
 
-    def add_node(self, node: NodeRecord) -> None:
+    def can_create_graph_content(self) -> tuple[bool, str]:
+        if self.document.state.is_meta_ready:
+            return True, ""
+        missing = " / ".join(self.document.state.meta_missing_fields)
+        return False, f"请先在 Initial 节点完成以下字段：{missing}"
+
+    def create_node(self, node_type: str, position: tuple[float, float], base_node: NodeRecord | None = None) -> str | None:
+        if node_type != "Initial":
+            allowed, reason = self.can_create_graph_content()
+            if not allowed:
+                self.statusMessage.emit(reason)
+                return None
+        node = create_node(self.schema, self.document, node_type, position, base_node=base_node)
         self.undo_stack.push(AddNodesCommand(self, [node], []))
+        self.set_selected_node(node.uuid)
+        return node.uuid
+
+    def create_node_with_connection(self, from_uuid: str, node_type: str, position: tuple[float, float]) -> str | None:
+        allowed, reason = self.can_create_graph_content()
+        if not allowed:
+            self.statusMessage.emit(reason)
+            return None
+        node = create_node(self.schema, self.document, node_type, position)
+        connection = ConnectionRecord(from_uuid=from_uuid, to_uuid=node.uuid)
+        self.undo_stack.push(AddNodesCommand(self, [node], [connection]))
+        self.set_selected_node(node.uuid)
+        return node.uuid
 
     def remove_nodes(self, node_uuids: list[str]) -> None:
-        nodes = [node for node in self.document.nodes if node.uuid in node_uuids and node.type != "Initial"]
+        nodes = [node for node in self.document.nodes if node.uuid in node_uuids and self.schema.nodes[node.type].copyable]
         if not nodes:
             return
         connections = [
@@ -115,20 +155,14 @@ class EditorController(QObject):
         ]
         self.undo_stack.push(RemoveNodesCommand(self, nodes, connections))
 
-    def update_field(self, node_uuid: str, key: str, value: Any) -> None:
+    def update_field(self, node_uuid: str, key: str, value: Any, source_mode: str | None = None) -> None:
         node = self.get_node(node_uuid)
         if not node:
             return
         old = node.fields.get(key)
         if old == value:
             return
-        self.undo_stack.push(UpdateFieldCommand(self, node_uuid, key, old, value))
-
-    def set_mode(self, node_uuid: str, mode: str) -> None:
-        node = self.get_node(node_uuid)
-        if not node or node.mode_variant == mode:
-            return
-        self.undo_stack.push(SetModeCommand(self, node_uuid, node.mode_variant, mode))
+        self.undo_stack.push(UpdateFieldCommand(self, node_uuid, key, old, value, source_mode or self.preferences.global_mode))
 
     def move_node(self, node_uuid: str, old_pos: tuple[float, float], new_pos: tuple[float, float]) -> None:
         if old_pos == new_pos:
@@ -136,12 +170,13 @@ class EditorController(QObject):
         self.undo_stack.push(MoveNodeCommand(self, node_uuid, old_pos, new_pos))
 
     def add_connection(self, from_uuid: str, to_uuid: str) -> None:
+        allowed, reason = self.can_create_graph_content()
+        if not allowed:
+            self.statusMessage.emit(reason)
+            return
         if from_uuid == to_uuid:
             return
-        if any(
-            connection.from_uuid == from_uuid and connection.to_uuid == to_uuid
-            for connection in self.document.connections
-        ):
+        if any(connection.from_uuid == from_uuid and connection.to_uuid == to_uuid for connection in self.document.connections):
             return
         self.undo_stack.push(AddConnectionCommand(self, ConnectionRecord(from_uuid=from_uuid, to_uuid=to_uuid)))
 
@@ -157,15 +192,15 @@ class EditorController(QObject):
         if target:
             self.undo_stack.push(RemoveConnectionCommand(self, target))
 
-    def remove_selected_connections(self, pairs: list[tuple[str, str]]) -> None:
-        for from_uuid, to_uuid in pairs:
-            self.remove_connection(from_uuid, to_uuid)
-
     def search(self, text: str):
-        return search_document(self.document, text)
+        return search_document(self.schema, self.document, text)
 
     def serialize_selection(self, node_uuids: list[str]) -> bytes | None:
-        selected_nodes = [node.clone() for node in self.document.nodes if node.uuid in node_uuids and node.type != "Initial"]
+        selected_nodes = [
+            node.clone()
+            for node in self.document.nodes
+            if node.uuid in node_uuids and self.schema.nodes[node.type].copyable
+        ]
         if not selected_nodes:
             return None
         selected_set = {node.uuid for node in selected_nodes}
@@ -190,18 +225,24 @@ class EditorController(QObject):
         min_y = min((item.get("y", 0.0) for item in source_positions), default=0.0)
         for index, item in enumerate(raw.get("nodes", [])):
             old_uuid = item["uuid"]
-            new_node = NodeRecord(
+            template = NodeRecord(
                 uuid=new_uuid(),
                 type=item["type"],
-                fields={key: value for key, value in item.items() if key not in {"uuid", "type", "mode_variant", "ui_position", "ui_size"}},
-                ui_position={
-                    "x": base_position[0] + (item.get("ui_position", {}).get("x", 0.0) - min_x) + index * 24,
-                    "y": base_position[1] + (item.get("ui_position", {}).get("y", 0.0) - min_y) + index * 24,
-                },
+                fields={key: value for key, value in item.items() if key not in {"uuid", "type", "ui_position", "ui_size"}},
+                ui_position={"x": 0.0, "y": 0.0},
                 ui_size=item.get("ui_size"),
-                mode_variant=item.get("mode_variant", "simple"),
             )
-            apply_auto_rules(new_node)
+            infer_manual_fields(self.schema, template)
+            new_node = create_node(
+                self.schema,
+                self.document,
+                template.type,
+                (
+                    base_position[0] + (item.get("ui_position", {}).get("x", 0.0) - min_x) + index * 28,
+                    base_position[1] + (item.get("ui_position", {}).get("y", 0.0) - min_y) + index * 28,
+                ),
+                base_node=template,
+            )
             nodes.append(new_node)
             uuid_map[old_uuid] = new_node.uuid
         connections = [
@@ -220,13 +261,12 @@ class EditorController(QObject):
         return [node.uuid for node in nodes]
 
     def export_current_document(self) -> dict[str, Any]:
-        return export_document_dict(self.document)
+        return export_document_dict(self.schema, self.document)
 
     def _serialize_node(self, node: NodeRecord) -> dict[str, Any]:
         payload = {
             "uuid": node.uuid,
             "type": node.type,
-            "mode_variant": node.mode_variant,
             "ui_position": dict(node.ui_position),
         }
         if node.ui_size:
@@ -238,12 +278,9 @@ class EditorController(QObject):
         for node in nodes:
             self.document.nodes.append(node)
         for connection in connections:
-            if not any(
-                current.from_uuid == connection.from_uuid and current.to_uuid == connection.to_uuid
-                for current in self.document.connections
-            ):
+            if not any(current.from_uuid == connection.from_uuid and current.to_uuid == connection.to_uuid for current in self.document.connections):
                 self.document.connections.append(connection)
-        reassign_function_ids(self.document)
+        reassign_function_ids(self.schema, self.document)
         for node in nodes:
             self.nodeAdded.emit(node.uuid)
         if connections:
@@ -259,30 +296,22 @@ class EditorController(QObject):
         ]
         if self.selected_node_uuid in node_uuids:
             self.set_selected_node(None)
-        reassign_function_ids(self.document)
+        reassign_function_ids(self.schema, self.document)
         for node_uuid in node_uuids:
             self.nodeRemoved.emit(node_uuid)
         self.connectionsChanged.emit()
         self.refresh_derived()
 
-    def _set_field(self, node_uuid: str, key: str, value: Any) -> None:
+    def _set_field(self, node_uuid: str, key: str, value: Any, source_mode: str) -> None:
         node = self.get_node(node_uuid)
         if not node:
             return
         node.fields[key] = value
-        if node.type == "Initial":
-            sync_meta_from_initial(self.document)
-        apply_auto_rules(node)
-        reassign_function_ids(self.document)
-        self.nodeUpdated.emit(node_uuid)
-        self.refresh_derived()
-
-    def _set_mode(self, node_uuid: str, mode: str) -> None:
-        node = self.get_node(node_uuid)
-        if not node:
-            return
-        node.mode_variant = mode
-        apply_auto_rules(node)
+        if source_mode == "advanced" and key in {"parameter", "action_trigger", "action_trigger_active"}:
+            node.manual_fields.difference_update({"parameter", "action_trigger", "action_trigger_active"})
+            infer_manual_fields(self.schema, node)
+        apply_auto_rules(self.schema, self.document, node, source_mode=source_mode, changed_key=key)
+        reassign_function_ids(self.schema, self.document)
         self.nodeUpdated.emit(node_uuid)
         self.refresh_derived()
 
@@ -312,7 +341,7 @@ class EditorController(QObject):
 
     def node_summary(self, node_uuid: str) -> str:
         node = self.get_node(node_uuid)
-        return node_title(node) if node else ""
+        return node_title(self.schema, node) if node else ""
 
     @staticmethod
     def clipboard_mime() -> str:
