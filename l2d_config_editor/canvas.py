@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict, deque
 from typing import Any
 
-from PyQt6.QtCore import QPointF, QRectF, Qt, QLineF, QTimer, pyqtSignal
+from PyQt6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QLineF, QTimer, QVariantAnimation, pyqtSignal
 from PyQt6.QtGui import QColor, QContextMenuEvent, QFont, QFontMetrics, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (
     QGraphicsItem,
@@ -33,7 +34,7 @@ class GridScene(QGraphicsScene):
         self.bottom_right_hint = "按住中键平移 / 滚轮缩放 / Delete 删除"
 
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
-        painter.fillRect(rect, QColor("#222c3b"))
+        painter.fillRect(rect, QColor("#171c24"))
         left = int(rect.left()) - (int(rect.left()) % self.minor_grid)
         top = int(rect.top()) - (int(rect.top()) % self.minor_grid)
 
@@ -50,9 +51,9 @@ class GridScene(QGraphicsScene):
             target.append(QLineF(rect.left(), y, rect.right(), y))
             y += self.minor_grid
 
-        painter.setPen(QPen(QColor("#314056"), 1))
+        painter.setPen(QPen(QColor("#252d3a"), 1))
         painter.drawLines(minor_lines)
-        painter.setPen(QPen(QColor("#425572"), 1))
+        painter.setPen(QPen(QColor("#303a48"), 1))
         painter.drawLines(major_lines)
 
     def drawForeground(self, painter: QPainter, rect: QRectF) -> None:
@@ -115,6 +116,12 @@ class NodeItem(QGraphicsObject):
         self.inline_width = inline_width
         self._warnings: list[str] = []
         self._search_highlight = False
+        self._attention_strength = 0.0
+        self._attention_animation = QVariantAnimation(self)
+        self._attention_animation.setStartValue(0.0)
+        self._attention_animation.setEasingCurve(QEasingCurve.Type.Linear)
+        self._attention_animation.valueChanged.connect(self._advance_attention_flash)
+        self._attention_animation.finished.connect(self._clear_attention_flash)
         self._margin = 14
         self._base_header_height = 34.0
         self._base_content_top_gap = 14.0
@@ -221,6 +228,41 @@ class NodeItem(QGraphicsObject):
         self._search_highlight = enabled
         self.update()
 
+    def start_attention_flash(self, pulses: int = 2) -> None:
+        pulse_count = max(1, pulses)
+        if pulse_count <= 0:
+            return
+        self._attention_animation.stop()
+        self._attention_animation.setDuration(280 * pulse_count)
+        self._attention_animation.setEndValue(float(pulse_count))
+        self._attention_animation.start()
+
+    def _advance_attention_flash(self, value: Any) -> None:
+        phase = float(value)
+        self._attention_strength = max(0.0, math.sin(math.pi * phase)) ** 2
+        self.update()
+
+    def _clear_attention_flash(self) -> None:
+        self._attention_strength = 0.0
+        self.update()
+
+    def _comment_colors(self) -> tuple[QColor, QColor, QColor]:
+        body_color = QColor(str(self.node.fields.get("note_box_color") or "#76808d"))
+        if not body_color.isValid():
+            body_color = QColor("#76808d")
+        try:
+            alpha_percent = max(0, min(100, int(self.node.fields.get("note_box_alpha", 62))))
+        except (TypeError, ValueError):
+            alpha_percent = 62
+        header_color = QColor(body_color)
+        border_color = QColor(body_color)
+        body_color.setAlphaF(alpha_percent / 100.0)
+        header_color = header_color.lighter(118)
+        header_color.setAlphaF(min(1.0, (alpha_percent + 12) / 100.0))
+        border_color = border_color.lighter(130)
+        border_color.setAlpha(230)
+        return body_color, header_color, border_color
+
     def paint(self, painter: QPainter, option, widget=None) -> None:
         del option, widget
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -229,9 +271,7 @@ class NodeItem(QGraphicsObject):
         header_color = QColor(definition.header_color)
         accent = QColor(definition.accent_color)
         if self.node.type == "Comment":
-            body_color = QColor(198, 215, 238, 95)
-            header_color = QColor(210, 226, 246, 128)
-            accent = QColor(129, 164, 204, 220)
+            body_color, header_color, accent = self._comment_colors()
         border = QColor("#50627f")
         if self._warnings:
             border = QColor("#d95c5c")
@@ -239,7 +279,8 @@ class NodeItem(QGraphicsObject):
             border = QColor("#f2b84a")
         elif self.isSelected():
             border = accent
-        painter.setPen(QPen(border, 2.0))
+        border_width = 6.0 if self._warnings else 2.0
+        painter.setPen(QPen(border, border_width))
         painter.setBrush(body_color)
         painter.drawRoundedRect(self._rect, 12, 12)
         painter.setBrush(header_color)
@@ -259,8 +300,17 @@ class NodeItem(QGraphicsObject):
             painter.setBrush(panel_fill)
             painter.setPen(QPen(panel_border, 1.0))
             painter.drawRoundedRect(content_rect, 12, 12)
-        base_title = self.schema.nodes[self.node.type].title
-        painter.setPen(QColor("#f6d365" if self.node.fields.get("tips") else "#e8eef8"))
+        title_color = QColor("#ff7d7d") if self._warnings else QColor("#f6d365" if self.node.fields.get("tips") else "#e8eef8")
+        if self.node.type == "Comment":
+            title_color = QColor(str(self.node.fields.get("note_text_color") or "#fff5d6"))
+            if not title_color.isValid():
+                title_color = QColor("#fff5d6")
+            try:
+                text_alpha = max(0, min(100, int(self.node.fields.get("note_text_alpha", 100))))
+            except (TypeError, ValueError):
+                text_alpha = 100
+            title_color.setAlphaF(text_alpha / 100.0)
+        painter.setPen(title_color)
         title_font = self._title_font()
         painter.setFont(title_font)
         painter.drawText(
@@ -268,6 +318,11 @@ class NodeItem(QGraphicsObject):
             int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap),
             self._full_title_text(),
         )
+        if self._attention_strength > 0.001:
+            flash_fill = QColor(255, 255, 255, int(118 * self._attention_strength))
+            painter.setBrush(flash_fill)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(self._rect, 12, 12)
         painter.setBrush(accent)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(self.input_pin_rect())
@@ -408,6 +463,18 @@ class NodeCanvasView(QGraphicsView):
         self.scene_ref.addItem(self._temp_path)
         self._panning = False
         self._pan_start = QPointF()
+        self._focus_start_center = QPointF()
+        self._focus_end_center = QPointF()
+        self._focus_start_scale = 1.0
+        self._focus_end_scale = 1.0
+        self._focus_target_uuid: str | None = None
+        self._focus_emphasize = False
+        self._focus_animation = QVariantAnimation(self)
+        self._focus_animation.setStartValue(0.0)
+        self._focus_animation.setEndValue(1.0)
+        self._focus_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self._focus_animation.valueChanged.connect(self._advance_focus_animation)
+        self._focus_animation.finished.connect(self._finish_focus_animation)
         self.scene_ref.selectionChanged.connect(self._on_scene_selection_changed)
         controller.documentLoaded.connect(self.rebuild_scene)
         controller.nodeAdded.connect(self._add_or_update_node_item)
@@ -448,13 +515,31 @@ class NodeCanvasView(QGraphicsView):
         item = self.node_items.get(node_uuid)
         if item:
             self.centerOn(item)
+            self._store_canvas_view()
 
-    def flash_node(self, node_uuid: str) -> None:
+    def flash_node(self, node_uuid: str, *, emphasize: bool = False) -> None:
         item = self.node_items.get(node_uuid)
         if not item:
             return
         item.set_search_highlight(True)
+        if emphasize:
+            item.start_attention_flash(pulses=2)
         QTimer.singleShot(1500, lambda target=item: target.set_search_highlight(False))
+
+    def focus_on_node(self, node_uuid: str, *, target_scale: float | None = None, emphasize: bool = False) -> None:
+        item = self.node_items.get(node_uuid)
+        if not item:
+            return
+        self._focus_animation.stop()
+        current_scale = max(0.001, float(self.transform().m11()))
+        self._focus_start_scale = current_scale
+        self._focus_end_scale = max(current_scale, float(target_scale)) if target_scale is not None else current_scale
+        self._focus_start_center = self.mapToScene(self.viewport().rect().center())
+        self._focus_end_center = item.mapToScene(item.boundingRect().center())
+        self._focus_target_uuid = node_uuid
+        self._focus_emphasize = emphasize
+        self._focus_animation.setDuration(420 if emphasize else 320)
+        self._focus_animation.start()
 
     def paste_position(self) -> tuple[float, float]:
         point = self.mapToScene(self.viewport().rect().center())
@@ -562,7 +647,7 @@ class NodeCanvasView(QGraphicsView):
             return
         allowed, reason = self.controller.can_create_graph_content()
         if not allowed:
-            self.controller.statusMessage.emit(reason)
+            self.controller._emit_meta_blocked(reason)
             return
         menu = QMenu(self)
         actions = {}
@@ -671,6 +756,29 @@ class NodeCanvasView(QGraphicsView):
         self.controller.document.canvas_view.offset_x = center.x()
         self.controller.document.canvas_view.offset_y = center.y()
 
+    def _apply_view_state(self, scale: float, center: QPointF) -> None:
+        clamped_scale = max(0.03, min(8.0, float(scale)))
+        self.resetTransform()
+        if clamped_scale != 1.0:
+            self.scale(clamped_scale, clamped_scale)
+        self._refresh_scale_sensitive_nodes()
+        self.centerOn(center)
+
+    def _advance_focus_animation(self, value: Any) -> None:
+        progress = float(value)
+        center = QPointF(
+            self._focus_start_center.x() + (self._focus_end_center.x() - self._focus_start_center.x()) * progress,
+            self._focus_start_center.y() + (self._focus_end_center.y() - self._focus_start_center.y()) * progress,
+        )
+        scale = self._focus_start_scale + (self._focus_end_scale - self._focus_start_scale) * progress
+        self._apply_view_state(scale, center)
+
+    def _finish_focus_animation(self) -> None:
+        self._apply_view_state(self._focus_end_scale, self._focus_end_center)
+        self._store_canvas_view()
+        if self._focus_target_uuid:
+            self.flash_node(self._focus_target_uuid, emphasize=self._focus_emphasize)
+
     def _node_item_at_view_point(self, point) -> NodeItem | None:
         for item in self.items(point.toPoint() if hasattr(point, "toPoint") else point):
             current = item
@@ -683,7 +791,7 @@ class NodeCanvasView(QGraphicsView):
     def _start_connection(self, node_item: NodeItem) -> None:
         allowed, reason = self.controller.can_create_graph_content()
         if not allowed:
-            self.controller.statusMessage.emit(reason)
+            self.controller._emit_meta_blocked(reason)
             return
         self._connecting_from = node_item.node.uuid
         self._connecting_moved = False
@@ -714,7 +822,7 @@ class NodeCanvasView(QGraphicsView):
             return
         allowed, reason = self.controller.can_create_graph_content()
         if not allowed:
-            self.controller.statusMessage.emit(reason)
+            self.controller._emit_meta_blocked(reason)
             return
         menu = QMenu(self)
         actions = {}

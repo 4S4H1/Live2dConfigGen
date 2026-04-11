@@ -6,12 +6,15 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from PyQt6.QtCore import QDate, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QFocusEvent, QFont, QRegularExpressionValidator
+from PyQt6.QtGui import QColor, QFocusEvent, QFont, QKeyEvent, QKeySequence, QRegularExpressionValidator
 from PyQt6.QtCore import QRegularExpression
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QColorDialog,
     QDateEdit,
+    QDialog,
+    QDialogButtonBox,
     QFormLayout,
     QFrame,
     QHBoxLayout,
@@ -20,7 +23,9 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPlainTextEdit,
+    QPushButton,
     QSizePolicy,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -74,6 +79,17 @@ class CommitPlainTextEdit(QPlainTextEdit):
         self.committed.emit(self.toPlainText())
 
 
+class CopyFriendlyPlainTextEdit(QPlainTextEdit):
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.matches(QKeySequence.StandardKey.Copy):
+            if not self.textCursor().hasSelection():
+                self.selectAll()
+            self.copy()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class CommitComboBox(QComboBox):
     committed = pyqtSignal(object)
 
@@ -89,25 +105,185 @@ class CommitComboBox(QComboBox):
         self.committed.emit(self.currentData())
 
 
+class ColorFieldWidget(QWidget):
+    committed = pyqtSignal(object)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self.edit = CommitLineEdit()
+        self.edit.committed.connect(self._emit_text)
+        self.button = QPushButton("选择")
+        self.button.setObjectName("colorPickButton")
+        self.button.clicked.connect(self._pick_color)
+        layout.addWidget(self.edit, 1)
+        layout.addWidget(self.button, 0)
+
+    def set_placeholder_text(self, text: str) -> None:
+        self.edit.setPlaceholderText(text)
+
+    def set_read_only(self, read_only: bool) -> None:
+        self.edit.setReadOnly(read_only)
+        self.button.setEnabled(not read_only)
+
+    def _emit_text(self, value: str) -> None:
+        self.committed.emit(value.strip())
+
+    def _pick_color(self) -> None:
+        current = QColor(self.edit.text().strip() or "#ffffff")
+        color = QColorDialog.getColor(current, self, "选择颜色")
+        if not color.isValid():
+            return
+        self.edit.setText(color.name())
+        self.committed.emit(color.name())
+
+
+class ColorChoiceButton(QPushButton):
+    colorChanged = pyqtSignal(str)
+
+    def __init__(self, title: str, parent: QWidget | None = None) -> None:
+        super().__init__(title, parent)
+        self._color = QColor("#ffffff")
+        self.clicked.connect(self._pick_color)
+        self._sync_style()
+
+    def color_name(self) -> str:
+        return self._color.name()
+
+    def set_color(self, value: str) -> None:
+        color = QColor(str(value or "").strip())
+        if not color.isValid():
+            return
+        self._color = color
+        self._sync_style()
+
+    def _pick_color(self) -> None:
+        dialog = QColorDialog(self._color, self)
+        dialog.setOption(QColorDialog.ColorDialogOption.ShowAlphaChannel, False)
+        dialog.setOption(QColorDialog.ColorDialogOption.DontUseNativeDialog, True)
+        dialog.setWindowTitle("选择颜色")
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        color = dialog.currentColor()
+        if not color.isValid():
+            return
+        self._color = color
+        self._sync_style()
+        self.colorChanged.emit(self._color.name())
+
+    def _sync_style(self) -> None:
+        fg = "#10151f" if self._color.lightness() > 130 else "#f3f6fb"
+        self.setText(self._color.name())
+        self.setStyleSheet(
+            f"QPushButton {{ background-color: {self._color.name()}; color: {fg}; font-weight: 700; }}"
+        )
+
+
+class CommentAppearanceDialog(QDialog):
+    def __init__(self, values: dict[str, Any], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("备注外观")
+        self.resize(420, 250)
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self.box_color_button = ColorChoiceButton("选择框体颜色", self)
+        self.box_color_button.set_color(str(values.get("note_box_color") or "#76808d"))
+        form.addRow("框体颜色", self.box_color_button)
+
+        self.box_alpha_spin = QSpinBox(self)
+        self.box_alpha_spin.setRange(0, 100)
+        self.box_alpha_spin.setSuffix("%")
+        self.box_alpha_spin.setValue(int(values.get("note_box_alpha", 62) or 62))
+        form.addRow("框体透明度", self.box_alpha_spin)
+
+        self.text_color_button = ColorChoiceButton("选择字体颜色", self)
+        self.text_color_button.set_color(str(values.get("note_text_color") or "#f3f5f8"))
+        form.addRow("字体颜色", self.text_color_button)
+
+        self.text_alpha_spin = QSpinBox(self)
+        self.text_alpha_spin.setRange(0, 100)
+        self.text_alpha_spin.setSuffix("%")
+        self.text_alpha_spin.setValue(int(values.get("note_text_alpha", 96) or 96))
+        form.addRow("字体透明度", self.text_alpha_spin)
+
+        self.font_size_spin = QSpinBox(self)
+        self.font_size_spin.setRange(11, 28)
+        self.font_size_spin.setValue(int(values.get("note_font_size", 15) or 15))
+        form.addRow("字体大小", self.font_size_spin)
+
+        layout.addLayout(form)
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def values(self) -> dict[str, Any]:
+        return {
+            "note_box_color": self.box_color_button.color_name(),
+            "note_box_alpha": int(self.box_alpha_spin.value()),
+            "note_text_color": self.text_color_button.color_name(),
+            "note_text_alpha": int(self.text_alpha_spin.value()),
+            "note_font_size": int(self.font_size_spin.value()),
+        }
+
+
 @dataclass
 class EditorBinding:
     widget: QWidget
     setter: Callable[[Any], None]
 
 
+class ValidationIssueItem(QWidget):
+    jumpRequested = pyqtSignal(str)
+
+    def __init__(self, issue, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.issue = issue
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(8)
+        self.text_box = CopyFriendlyPlainTextEdit()
+        self.text_box.setReadOnly(True)
+        self.text_box.setPlainText(text)
+        self.text_box.setMaximumBlockCount(0)
+        self.text_box.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self.text_box.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.text_box.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.text_box.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.text_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.jump_button = QPushButton("<跳转>")
+        target_uuid = issue.related_node_uuids[0] if issue.related_node_uuids else issue.node_uuid
+        self.jump_button.setEnabled(bool(target_uuid))
+        self.jump_button.clicked.connect(lambda: target_uuid and self.jumpRequested.emit(target_uuid))
+        layout.addWidget(self.text_box, 1)
+        layout.addWidget(self.jump_button, 0, Qt.AlignmentFlag.AlignTop)
+        self._refresh_height()
+
+    def _refresh_height(self, available_width: int | None = None) -> None:
+        if available_width is not None:
+            self.text_box.setFixedWidth(max(180, available_width))
+        document_height = self.text_box.document().size().height()
+        self.text_box.setFixedHeight(max(52, min(148, int(document_height + 12))))
+
+
 class ValidationSummaryWidget(QFrame):
+    jumpRequested = pyqtSignal(str)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("validationSummary")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(6)
-        self.title = QLabel("冲突与警告")
+        self.title = QLabel("\u51b2\u7a81\u4e0e\u8b66\u544a")
         self.title.setObjectName("validationSummaryTitle")
         self.list_widget = QListWidget()
         self.list_widget.setAlternatingRowColors(True)
         self.list_widget.setSpacing(6)
-        self.empty = QLabel("当前节点没有警告")
+        self.empty = QLabel("\u5f53\u524d\u8282\u70b9\u6ca1\u6709\u8b66\u544a")
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.title)
         layout.addWidget(self.empty)
@@ -125,14 +301,12 @@ class ValidationSummaryWidget(QFrame):
         for issue in issues:
             text = issue.message
             if issue.related_titles:
-                text = f"{text} | 相关节点: {', '.join(issue.related_titles)}"
+                text = f"{text}\n\u76f8\u5173\u8282\u70b9: {', '.join(issue.related_titles)}"
             item = QListWidgetItem()
-            label = QLabel(text)
-            label.setWordWrap(True)
-            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            label.setMargin(4)
+            widget = ValidationIssueItem(issue, text)
+            widget.jumpRequested.connect(self.jumpRequested.emit)
             self.list_widget.addItem(item)
-            self.list_widget.setItemWidget(item, label)
+            self.list_widget.setItemWidget(item, widget)
         self._refresh_item_sizes()
 
     def resizeEvent(self, event) -> None:
@@ -143,15 +317,22 @@ class ValidationSummaryWidget(QFrame):
         available_width = max(120, self.list_widget.viewport().width() - 18)
         for index in range(self.list_widget.count()):
             item = self.list_widget.item(index)
-            label = self.list_widget.itemWidget(item)
-            if not isinstance(label, QLabel):
+            widget = self.list_widget.itemWidget(item)
+            if not isinstance(widget, ValidationIssueItem):
                 continue
-            label.setFixedWidth(available_width)
-            item.setSizeHint(label.sizeHint())
+            widget._refresh_height(available_width - widget.jump_button.sizeHint().width() - 18)
+            item.setSizeHint(widget.sizeHint())
 
 
 class NodeFormWidget(QFrame):
     fieldCommitted = pyqtSignal(str, object)
+    COMMENT_APPEARANCE_KEYS = {
+        "note_box_color",
+        "note_box_alpha",
+        "note_text_color",
+        "note_text_alpha",
+        "note_font_size",
+    }
 
     def __init__(self, schema: EditorSchema, inline: bool = False, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -193,6 +374,7 @@ class NodeFormWidget(QFrame):
         self.node = node
         self.global_mode = global_mode
         self.show_json_field_names = show_json_field_names
+        self._apply_dynamic_style()
         if same_node and self._bindings:
             self.refresh()
             return
@@ -206,12 +388,11 @@ class NodeFormWidget(QFrame):
         if not self.node:
             return
         definition = self.schema.nodes[self.node.type]
-        visible_keys = tuple(
-            field.key for field in definition.fields if field_visible(field, self.node.fields, self.global_mode)
-        )
+        visible_keys = tuple(field.key for field in self._visible_fields(definition.fields))
         if visible_keys != tuple(self._bindings.keys()):
             self._rebuild()
             return
+        self._apply_dynamic_style()
         self._sync_header()
         for key, binding in self._bindings.items():
             binding.setter(self.node.fields.get(key))
@@ -242,9 +423,7 @@ class NodeFormWidget(QFrame):
             return
         definition = self.schema.nodes[self.node.type]
         self._sync_header()
-        for field in definition.fields:
-            if not field_visible(field, self.node.fields, self.global_mode):
-                continue
+        for field in self._visible_fields(definition.fields):
             widget, setter = self._build_editor(field)
             label = QLabel()
             highlighted_keys = {"draw_able_name", "parameter", "action_trigger", "action_trigger_active"}
@@ -263,7 +442,35 @@ class NodeFormWidget(QFrame):
             self._form.addRow(label, widget)
             self._bindings[field.key] = EditorBinding(widget=widget, setter=setter)
             setter(self.node.fields.get(field.key, field.default))
+        if self.node.type == "Comment":
+            self._add_comment_appearance_row()
         self.adjustSize()
+
+    def _visible_fields(self, fields: tuple[FieldSchema, ...]) -> list[FieldSchema]:
+        if not self.node:
+            return []
+        result: list[FieldSchema] = []
+        for field in fields:
+            if self.node.type == "Comment" and field.key in self.COMMENT_APPEARANCE_KEYS:
+                continue
+            if field_visible(field, self.node.fields, self.global_mode):
+                result.append(field)
+        return result
+
+    def _add_comment_appearance_row(self) -> None:
+        button = QPushButton("外观设置")
+        button.clicked.connect(self._show_comment_appearance_dialog)
+        self._form.addRow(QLabel("外观"), button)
+
+    def _show_comment_appearance_dialog(self) -> None:
+        if not self.node or self.node.type != "Comment":
+            return
+        dialog = CommentAppearanceDialog(self.node.fields, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        for key, value in dialog.values().items():
+            if self.node.fields.get(key) != value:
+                self.fieldCommitted.emit(key, value)
 
     def content_height_hint(self) -> int:
         layout = self.layout()
@@ -348,6 +555,13 @@ class NodeFormWidget(QFrame):
             widget.committed.connect(lambda value, key=field.key: self.fieldCommitted.emit(key, value))
             return widget, lambda value, target=widget: self._set_line_text(target, "" if value is None else str(value))
 
+        if field.editor == "color":
+            widget = ColorFieldWidget()
+            widget.set_placeholder_text(field.placeholder or "#ffffff")
+            widget.set_read_only(field.read_only)
+            widget.committed.connect(lambda value, key=field.key: self.fieldCommitted.emit(key, value))
+            return widget, lambda value, target=widget: self._set_line_text(target.edit, "" if value is None else str(value))
+
         raise ValueError(f"Unsupported editor type: {field.editor}")
 
     @staticmethod
@@ -390,3 +604,26 @@ class NodeFormWidget(QFrame):
         if not self.node:
             return value
         return display_value_for_field(self.schema, self.node, key, value)
+
+    def _apply_dynamic_style(self) -> None:
+        if not self.node or self.node.type != "Comment":
+            self.setStyleSheet("")
+            return
+        text_color = QColor(str(self.node.fields.get("note_text_color") or "#f3f5f8"))
+        if not text_color.isValid():
+            text_color = QColor("#f3f5f8")
+        try:
+            alpha = max(0, min(100, int(self.node.fields.get("note_text_alpha", 100))))
+        except (TypeError, ValueError):
+            alpha = 100
+        text_color.setAlphaF(alpha / 100.0)
+        try:
+            font_size = max(11, min(28, int(self.node.fields.get("note_font_size", 15))))
+        except (TypeError, ValueError):
+            font_size = 15
+        rgba = f"rgba({text_color.red()}, {text_color.green()}, {text_color.blue()}, {text_color.alpha()})"
+        self.setStyleSheet(
+            f"QLabel {{ color: {rgba}; }}"
+            f" QPlainTextEdit {{ color: {rgba}; font-size: {font_size}px; }}"
+            f" QLineEdit {{ color: {rgba}; }}"
+        )

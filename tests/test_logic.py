@@ -44,6 +44,7 @@ class LogicTests(unittest.TestCase):
         initial.fields["author"] = "asahi"
         initial.fields["ship_skin_id"] = 302291
         initial.fields["memo"] = "mingji_2"
+        initial.fields["CharName"] = "??"
         reassign_function_ids(self.schema, document)
         return document
 
@@ -113,9 +114,21 @@ class LogicTests(unittest.TestCase):
         second.manual_fields.add("parameter")
         document.nodes.append(second)
         issues = validate_document(self.schema, document)
-        duplicate_issues = [issue for issue in issues if issue.message == "parameter 重复"]
+        duplicate_issues = [issue for issue in issues if issue.field_keys == ["parameter"] and "重复" in issue.message]
         self.assertTrue(duplicate_issues)
         self.assertTrue(any(issue.related_titles for issue in duplicate_issues))
+
+    def test_validation_messages_no_longer_contain_question_marks(self) -> None:
+        document = self.make_ready_document()
+        first = create_node(self.schema, document, "TouchIdle")
+        second = create_node(self.schema, document, "TouchIdle")
+        second.fields["draw_able_name"] = first.fields["draw_able_name"]
+        second.fields["action_trigger"] = "{type = 2 ,action = 'touch_idle99'}"
+        second.fields["action_trigger_active"] = "{enable = {},ignore = {'main_1'},idle = 99}"
+        document.nodes.extend([first, second])
+        issues = validate_document(self.schema, document)
+        self.assertTrue(issues)
+        self.assertTrue(all("?" not in issue.message for issue in issues))
 
     def test_validation_catches_invalid_parts_data(self) -> None:
         document = self.make_ready_document()
@@ -123,7 +136,7 @@ class LogicTests(unittest.TestCase):
         node.fields["parts_data"] = "1,hello"
         document.nodes.append(node)
         issues = validate_document(self.schema, document)
-        self.assertTrue(any(issue.message == "parts_data 不是合法的 {parts={...}} 数字列表" for issue in issues))
+        self.assertTrue(any(issue.field_keys == ["parts_data"] for issue in issues))
 
     def test_validation_catches_parts_out_of_range(self) -> None:
         document = self.make_ready_document()
@@ -132,7 +145,7 @@ class LogicTests(unittest.TestCase):
         node.fields["range"] = "{0,1}"
         document.nodes.append(node)
         issues = validate_document(self.schema, document)
-        self.assertTrue(any(issue.message == "parts_data 超出了 range 定义范围" for issue in issues))
+        self.assertTrue(any(issue.field_keys == ["parts_data", "range"] for issue in issues))
 
     def test_export_roundtrip_preserves_connections(self) -> None:
         document = self.make_ready_document()
@@ -245,6 +258,7 @@ class LogicTests(unittest.TestCase):
         controller.update_field(initial.uuid, "author", "asahi", "simple")
         controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
         controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+        controller.update_field(initial.uuid, "CharName", "??", "simple")
         node_uuid = controller.create_node("TouchIdle", (100, 100))
         self.assertIsNotNone(node_uuid)
         node = controller.get_node(node_uuid)
@@ -298,6 +312,7 @@ class LogicTests(unittest.TestCase):
         controller.update_field(initial.uuid, "author", "asahi", "simple")
         controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
         controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+        controller.update_field(initial.uuid, "CharName", "??", "simple")
         node_uuid = controller.create_node("TouchIdle", (100, 100))
         node = controller.get_node(node_uuid)
         controller.update_field(node.uuid, "tips", "不要复制", "simple")
@@ -311,6 +326,7 @@ class LogicTests(unittest.TestCase):
         controller.update_field(initial.uuid, "author", "asahi", "simple")
         controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
         controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+        controller.update_field(initial.uuid, "CharName", "??", "simple")
         node_uuid = controller.create_node("TouchIdle", (100, 100))
         controller.remove_nodes([node_uuid])
         self.assertEqual(1, len(controller.document.trash_bin))
@@ -322,6 +338,26 @@ class LogicTests(unittest.TestCase):
             loaded = load_document(controller.schema, path)
         self.assertEqual(1, len(loaded.trash_bin))
         self.assertEqual("TouchIdle", loaded.trash_bin[0].node_type)
+
+    def test_manual_mode_paste_preserves_explicit_sequence_values(self) -> None:
+        controller = EditorController()
+        initial = next(node for node in controller.document.nodes if node.type == "Initial")
+        controller.update_field(initial.uuid, "author", "asahi", "simple")
+        controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+        controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+        controller.update_field(initial.uuid, "CharName", "测试", "simple")
+        controller.set_interaction_creation_mode("manual")
+        node_uuid = controller.create_node("TouchIdle", (100, 100))
+        source_node = controller.get_node(node_uuid)
+        payload = controller.serialize_selection([node_uuid])
+        pasted = controller.paste_payload(payload, (260, 160))
+        self.assertEqual(1, len(pasted))
+        new_node = controller.get_node(pasted[0])
+        self.assertEqual("0", source_node.fields["draw_able_name"])
+        self.assertEqual("0", new_node.fields["draw_able_name"])
+        self.assertEqual("0", new_node.fields["parameter"])
+        self.assertIn("action = '0'", new_node.fields["action_trigger"])
+        self.assertIn("idle = 0", new_node.fields["action_trigger_active"])
 
     def test_file_list_recurses_nested_directories(self) -> None:
         controller = EditorController()
@@ -380,6 +416,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         window.controller.update_field(initial.uuid, "author", "asahi", "simple")
         window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
         window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+        window.controller.update_field(initial.uuid, "CharName", "??", "simple")
         created = window.controller.create_node("TouchIdle", (200, 120))
         self.assertIsNotNone(created)
         window.controller.set_global_mode("advanced")
@@ -393,6 +430,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertTrue(path.exists())
             payload = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual("advanced", payload["global_mode"])
+        window._mark_saved_checkpoint(saved=True)
         window.close()
 
     def test_node_form_reuses_editors_for_same_node_updates(self) -> None:
@@ -419,6 +457,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         window.controller.update_field(initial.uuid, "author", "asahi", "simple")
         window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
         window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+        window.controller.update_field(initial.uuid, "CharName", "??", "simple")
         created = window.controller.create_node("TouchIdle", (200, 120))
         item = window.canvas.node_items[created]
 
@@ -429,6 +468,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
 
         required_height = item.proxy.pos().y() + item.form.height() + item._margin
         self.assertGreaterEqual(item.boundingRect().height(), required_height)
+        window._mark_saved_checkpoint(saved=True)
         window.close()
 
     def test_inline_combo_selection_updates_without_breaking_form(self) -> None:
@@ -438,6 +478,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         window.controller.update_field(initial.uuid, "author", "asahi", "simple")
         window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
         window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+        window.controller.update_field(initial.uuid, "CharName", "??", "simple")
         created = window.controller.create_node("TouchIdle", (200, 120))
         item = window.canvas.node_items[created]
         combo = item.form._bindings["control_type"].widget
@@ -449,6 +490,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
 
         self.assertEqual("drag", item.node.fields["control_type"])
         self.assertIn("drag_ui_direction", item.form._bindings)
+        window._mark_saved_checkpoint(saved=True)
         window.close()
 
     def test_touchdrag_hides_legacy_target_idle_field(self) -> None:
@@ -458,12 +500,14 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         window.controller.update_field(initial.uuid, "author", "asahi", "simple")
         window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
         window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+        window.controller.update_field(initial.uuid, "CharName", "??", "simple")
         created = window.controller.create_node("TouchDrag", (200, 120))
         item = window.canvas.node_items[created]
 
         self.assertNotIn("target_idle", item.form._bindings)
         self.assertIn("action_trigger", item.form._bindings)
         self.assertIn("action_trigger_active", item.form._bindings)
+        window._mark_saved_checkpoint(saved=True)
         window.close()
 
     def test_touchdrag_value_mode_shows_revert_fields_in_advanced(self) -> None:
@@ -473,6 +517,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         window.controller.update_field(initial.uuid, "author", "asahi", "simple")
         window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
         window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+        window.controller.update_field(initial.uuid, "CharName", "??", "simple")
         created = window.controller.create_node("TouchDrag", (200, 120))
         window.controller.update_field(created, "result_type", "value", "simple")
         item = window.canvas.node_items[created]
@@ -480,6 +525,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         self.assertIn("revert_action_index", item.form._bindings)
         self.assertIn("revert_idle_index", item.form._bindings)
         self.assertIn("action_trigger_kind_ui", item.form._bindings)
+        window._mark_saved_checkpoint(saved=True)
         window.close()
 
     def test_touchdrag_value_result_keeps_action_fields_empty(self) -> None:
@@ -489,6 +535,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         initial.fields["author"] = "asahi"
         initial.fields["ship_skin_id"] = 302291
         initial.fields["memo"] = "mingji_2"
+        initial.fields["CharName"] = "??"
         node = create_node(schema, document, "TouchDrag")
         node.fields["result_type"] = "value"
         node.fields["target_value"] = 3.5
@@ -503,6 +550,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window.controller.update_field(initial.uuid, "author", "asahi", "simple")
             window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
             window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
             created = window.controller.create_node("TouchIdle", (200, 120))
             self.assertIsNotNone(created)
             window.controller.document.path = str(Path(temp_dir) / "undo_after_save.json")
@@ -511,7 +559,8 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertTrue(window.controller.undo_stack.canUndo())
             window.controller.undo_stack.undo()
             self.assertIsNone(window.controller.get_node(created))
-            window.close()
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
 
     def test_switching_file_auto_saves_incomplete_draft_without_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -539,7 +588,8 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             saved_payload = json.loads(draft_path.read_text(encoding="utf-8"))
             self.assertEqual("l2d_config_editor/v1", saved_payload["editor_signature"])
             self.assertEqual(str(root / "target.json"), window.controller.document.path)
-            window.close()
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
 
     def test_group_header_click_toggles_collapsed_children(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -552,7 +602,8 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._handle_file_list_item_clicked(header)
             collapsed_count = window.file_list.count()
             self.assertLess(collapsed_count, initial_count)
-            window.close()
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
 
     def test_zooming_out_expands_node_header_height(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -561,6 +612,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window.controller.update_field(initial.uuid, "author", "asahi", "simple")
             window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
             window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
             created = window.controller.create_node("TouchIdle", (200, 120))
             item = window.canvas.node_items[created]
             window.controller.update_field(created, "tips", "这是一个很长很长的标题备注用于测试缩小画布时的头部高度自适应", "simple")
@@ -569,7 +621,8 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window.canvas._refresh_scale_sensitive_nodes()
             self.app.processEvents()
             self.assertGreater(item._header_height, original_header_height)
-            window.close()
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
 
     def test_new_file_starts_as_unsaved_draft_without_filename_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -577,7 +630,8 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._create_new_file()
             self.assertIsNone(window.controller.document.path)
             self.assertFalse(window.save_action.isEnabled())
-            window.close()
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
 
     def test_switching_file_preserves_undo_history_after_auto_save(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -587,6 +641,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             initial_a.fields["author"] = "asahi"
             initial_a.fields["ship_skin_id"] = 302291
             initial_a.fields["memo"] = "file_a"
+            initial_a.fields["CharName"] = "??A"
             reassign_function_ids(get_default_schema(), doc_a)
             save_document(get_default_schema(), doc_a, root / "a.json")
 
@@ -595,6 +650,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             initial_b.fields["author"] = "asahi"
             initial_b.fields["ship_skin_id"] = 302292
             initial_b.fields["memo"] = "file_b"
+            initial_b.fields["CharName"] = "??B"
             reassign_function_ids(get_default_schema(), doc_b)
             save_document(get_default_schema(), doc_b, root / "b.json")
 
@@ -609,7 +665,8 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertTrue(window.controller.undo_stack.canUndo())
             window.controller.undo_stack.undo()
             self.assertIsNone(window.controller.get_node(created))
-            window.close()
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
 
     def test_optimize_layout_keeps_unconnected_nodes_fixed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -618,6 +675,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window.controller.update_field(initial.uuid, "author", "asahi", "simple")
             window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
             window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
 
             first = window.controller.create_node("TouchIdle", (420, 280))
             second = window.controller.create_node("TouchDrag", (80, 120))
@@ -630,7 +688,8 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertTrue(changed)
             self.assertEqual(isolated_before, window.controller.get_node(isolated).ui_position)
             self.assertEqual(1, len(window.controller.document.connections))
-            window.close()
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
 
 
 if __name__ == "__main__":

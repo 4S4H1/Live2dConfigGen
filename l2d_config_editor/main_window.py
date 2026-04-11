@@ -6,15 +6,15 @@ import json
 import re
 from pathlib import Path
 
-from PyQt6.QtCore import QSettings, Qt, QTimer
-from PyQt6.QtGui import QAction, QActionGroup, QCloseEvent, QGuiApplication, QKeySequence, QUndoStack
+from PyQt6.QtCore import QSettings, Qt, QTimer, QUrl
+from PyQt6.QtGui import QAction, QActionGroup, QCloseEvent, QDesktopServices, QGuiApplication, QKeySequence, QUndoStack
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -31,12 +31,13 @@ from PyQt6.QtWidgets import (
     QWidget,
     QLineEdit,
     QButtonGroup,
+    QPlainTextEdit,
 )
 
 from .canvas import NodeCanvasView
 from .constants import CLIPBOARD_MIME
 from .controller import EditorController
-from .logic import create_document, load_document
+from .logic import build_csv_export_filename, create_document, export_documents_to_csv, load_document
 from .widgets import NodeFormWidget, ValidationSummaryWidget
 
 
@@ -116,6 +117,76 @@ class TrashDialog(QDialog):
         return result
 
 
+class ExportCsvDialog(QDialog):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("\u5bfc\u51fa\u5230 CSV")
+        self.resize(760, 620)
+        layout = QVBoxLayout(self)
+        description = QLabel("\u9009\u62e9\u672c\u6b21\u8981\u5bfc\u51fa\u7684 JSON \u914d\u7f6e\u3002\u5bfc\u51fa\u6587\u4ef6\u4f1a\u81ea\u52a8\u5e26\u65f6\u95f4\u6233\uff0c\u907f\u514d\u8986\u76d6\u65e7 CSV\u3002")
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("\u641c\u7d22\u914d\u7f6e\u6587\u4ef6")
+        self.search_edit.textChanged.connect(self._filter_items)
+        layout.addWidget(self.search_edit)
+
+        self.list_widget = QListWidget()
+        self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        layout.addWidget(self.list_widget, 1)
+
+        quick_row = QHBoxLayout()
+        self.select_all_button = QPushButton("\u5168\u9009")
+        self.clear_button = QPushButton("\u6e05\u7a7a")
+        self.select_all_button.clicked.connect(lambda: self._set_all_checked(True))
+        self.clear_button.clicked.connect(lambda: self._set_all_checked(False))
+        quick_row.addWidget(self.select_all_button)
+        quick_row.addWidget(self.clear_button)
+        quick_row.addStretch(1)
+        layout.addLayout(quick_row)
+
+        self.button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+        layout.addWidget(self.button_box)
+
+    def set_files(self, files: list[tuple[str, str]]) -> None:
+        self.list_widget.clear()
+        for relative_path, display_name in files:
+            item = QListWidgetItem(display_name)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            item.setData(Qt.ItemDataRole.UserRole, relative_path)
+            item.setToolTip(relative_path)
+            self.list_widget.addItem(item)
+        self._filter_items()
+
+    def selected_files(self) -> list[str]:
+        selected: list[str] = []
+        for index in range(self.list_widget.count()):
+            item = self.list_widget.item(index)
+            if item.checkState() == Qt.CheckState.Checked:
+                relative_path = item.data(Qt.ItemDataRole.UserRole)
+                if isinstance(relative_path, str) and relative_path:
+                    selected.append(relative_path)
+        return selected
+
+    def _set_all_checked(self, checked: bool) -> None:
+        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        for index in range(self.list_widget.count()):
+            item = self.list_widget.item(index)
+            if not item.isHidden():
+                item.setCheckState(state)
+
+    def _filter_items(self) -> None:
+        needle = self.search_edit.text().strip().lower()
+        for index in range(self.list_widget.count()):
+            item = self.list_widget.item(index)
+            haystack = f"{item.text()} {item.toolTip()}".lower()
+            item.setHidden(bool(needle) and needle not in haystack)
+
+
 class MainWindow(QMainWindow):
     AUTOSAVE_DELAY_MS = 1800
     PASTE_GAP = 96.0
@@ -133,6 +204,7 @@ class MainWindow(QMainWindow):
         self.controller.set_workspace_root(self.workdir)
         self.validation_cache: dict[str, list] = {}
         self.csv_dialog = CsvPreviewDialog(self.controller.schema, self)
+        self.export_csv_dialog = ExportCsvDialog(self)
         self.trash_dialog: TrashDialog | None = None
         self._auto_save_timer = QTimer(self)
         self._auto_save_timer.setSingleShot(True)
@@ -151,13 +223,16 @@ class MainWindow(QMainWindow):
         self.controller.selectionChanged.connect(self._update_inspector)
         self.controller.csvPreviewChanged.connect(self._update_csv_preview)
         self.controller.statusMessage.connect(self._show_status)
+        self.controller.documentSaved.connect(self._handle_document_saved)
         self.controller.nodeUpdated.connect(self._handle_node_updated)
         self.controller.documentLoaded.connect(self._refresh_search_results)
         self.controller.validationChanged.connect(self._store_validation)
         self.controller.documentStateChanged.connect(self._update_document_state)
         self.controller.globalModeChanged.connect(self._handle_global_mode_changed)
+        self.controller.interactionCreationModeChanged.connect(self._handle_interaction_creation_mode_changed)
         self.controller.schemaChanged.connect(self._handle_schema_changed)
         self.controller.trashBinChanged.connect(self._refresh_trash_dialog)
+        self.controller.metaActionBlocked.connect(self._focus_initial_node_guidance)
         self._set_active_undo_stack(self.controller.undo_stack)
 
         self.setWindowTitle("L2D Config Editor")
@@ -171,6 +246,7 @@ class MainWindow(QMainWindow):
         self._update_window_title(self.controller.document.path)
         self._update_inspector(None)
         self._sync_undo_actions()
+        self.validation_summary.jumpRequested.connect(self._jump_to_validation_node)
 
     def _resolved_workspace_path(self, default: str | Path) -> Path:
         default_path = Path(default).resolve()
@@ -203,6 +279,13 @@ class MainWindow(QMainWindow):
         self.settings.sync()
         self._update_workspace_path_display()
         self._refresh_file_list()
+
+    def _open_workspace_directory(self) -> None:
+        if not self.workdir.exists():
+            QMessageBox.warning(self, "无法打开", "当前工作目录不存在。")
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.workdir))):
+            QMessageBox.warning(self, "无法打开", str(self.workdir))
 
     def _ensure_safe_before_workspace_change(self) -> bool:
         self._auto_save_timer.stop()
@@ -246,7 +329,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
-        title = QLabel("配置文件")
+        title = QLabel("\u914d\u7f6e\u6587\u4ef6")
         title.setObjectName("sectionTitle")
         layout.addWidget(title)
 
@@ -254,29 +337,34 @@ class MainWindow(QMainWindow):
         self.workspace_path_edit = QLineEdit()
         self.workspace_path_edit.setObjectName("workspacePathField")
         self.workspace_path_edit.setReadOnly(True)
-        self.workspace_path_edit.setPlaceholderText("未选择工程目录")
-        self.workspace_path_edit.setToolTip("当前列出 JSON 配置的根目录（可全选复制路径）")
-        self.choose_workspace_button = QPushButton("选择目录…")
-        self.choose_workspace_button.setToolTip(
-            "选择存放 JSON 配置文件的文件夹；路径保存在本机（Windows：注册表 HKCU\\Software\\OpenAI\\L2DConfigEditor，不是仓库里的 config.json）"
-        )
+        self.workspace_path_edit.setPlaceholderText("\u672a\u9009\u62e9\u5de5\u7a0b\u76ee\u5f55")
+        self.workspace_path_edit.setToolTip("\u5f53\u524d\u5217\u51fa JSON \u914d\u7f6e\u7684\u6839\u76ee\u5f55\uff0c\u53ef\u76f4\u63a5\u590d\u5236\u8def\u5f84")
+        self.choose_workspace_button = QPushButton("\u9009\u62e9\u76ee\u5f55")
+        self.choose_workspace_button.setToolTip("\u9009\u62e9\u5b58\u653e JSON \u914d\u7f6e\u6587\u4ef6\u7684\u76ee\u5f55")
         self.choose_workspace_button.clicked.connect(self._choose_workspace_directory)
+        self.open_workspace_button = QPushButton("\u6253\u5f00\u6240\u9009\u76ee\u5f55")
+        self.open_workspace_button.setToolTip("\u7528\u8d44\u6e90\u7ba1\u7406\u5668\u6253\u5f00\u5f53\u524d\u5de5\u4f5c\u76ee\u5f55")
+        self.open_workspace_button.clicked.connect(self._open_workspace_directory)
         workspace_row.addWidget(self.workspace_path_edit, 1)
         workspace_row.addWidget(self.choose_workspace_button, 0)
+        workspace_row.addWidget(self.open_workspace_button, 0)
         layout.addLayout(workspace_row)
 
         button_row = QHBoxLayout()
-        self.refresh_button = QPushButton("刷新")
-        self.new_button = QPushButton("新建")
-        self.rename_button = QPushButton("重命名")
-        self.delete_button = QPushButton("删除")
+        self.refresh_button = QPushButton("\u5237\u65b0")
+        self.new_button = QPushButton("\u65b0\u5efa")
+        self.delete_button = QPushButton("\u5220\u9664")
         self.refresh_button.clicked.connect(self._refresh_file_list)
         self.new_button.clicked.connect(self._create_new_file)
-        self.rename_button.clicked.connect(self._rename_selected_file)
         self.delete_button.clicked.connect(self._delete_selected_file)
-        for button in (self.refresh_button, self.new_button, self.rename_button, self.delete_button):
+        for button in (self.refresh_button, self.new_button, self.delete_button):
             button_row.addWidget(button)
         layout.addLayout(button_row)
+
+        self.file_search_edit = QLineEdit()
+        self.file_search_edit.setPlaceholderText("\u641c\u7d22\u5f53\u524d\u8def\u5f84\u4e0b\u7684 JSON \u914d\u7f6e")
+        self.file_search_edit.textChanged.connect(self._refresh_file_list)
+        layout.addWidget(self.file_search_edit)
 
         self.file_list = QListWidget()
         self.file_list.setObjectName("configFileList")
@@ -292,30 +380,34 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
+        canvas_top_row = QHBoxLayout()
+        canvas_top_row.setContentsMargins(0, 0, 0, 0)
+        canvas_top_row.setSpacing(8)
+        canvas_top_row.addStretch(1)
+
         self.search_panel = QFrame()
         self.search_panel.setObjectName("searchPanel")
-        self.search_panel.setMaximumWidth(460)
+        self.search_panel.setMaximumWidth(720)
         search_layout = QVBoxLayout(self.search_panel)
         search_layout.setContentsMargins(10, 10, 10, 10)
         search_layout.setSpacing(6)
         search_row = QHBoxLayout()
-        search_title = QLabel("搜索")
+        search_title = QLabel("\u641c\u7d22")
         search_title.setObjectName("searchTitle")
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("输入字段值，例如 idle=13")
+        self.search_edit.setMinimumWidth(360)
+        self.search_edit.setPlaceholderText("\u8f93\u5165\u5b57\u6bb5\u503c\uff0c\u4f8b\u5982 idle=13")
         self.search_edit.textChanged.connect(self._refresh_search_results)
-        self.restore_layout_button = QPushButton("还原布局")
-        self.restore_layout_button.clicked.connect(self._restore_canvas_layout)
         search_row.addWidget(search_title)
         search_row.addWidget(self.search_edit, 1)
-        search_row.addWidget(self.restore_layout_button, 0)
         self.search_results = QListWidget()
         self.search_results.setMaximumHeight(180)
         self.search_results.itemClicked.connect(self._jump_to_search_result)
         self.search_results.hide()
         search_layout.addLayout(search_row)
         search_layout.addWidget(self.search_results)
-        layout.addWidget(self.search_panel, 0, Qt.AlignmentFlag.AlignLeft)
+        canvas_top_row.addWidget(self.search_panel, 0, Qt.AlignmentFlag.AlignRight)
+        layout.addLayout(canvas_top_row)
 
         self.canvas = NodeCanvasView(self.controller.schema, self.controller)
         self.canvas.selectionSummaryChanged.connect(self._handle_selection_summary)
@@ -337,15 +429,15 @@ class MainWindow(QMainWindow):
         mode_block = QVBoxLayout()
         mode_block.setContentsMargins(0, 0, 0, 0)
         mode_block.setSpacing(6)
-        mode_label = QLabel("编辑模式")
+        mode_label = QLabel("\u7f16\u8f91\u6a21\u5f0f")
         mode_label.setObjectName("searchTitle")
         mode_block.addWidget(mode_label)
 
         mode_row = QHBoxLayout()
         mode_row.setContentsMargins(0, 0, 0, 0)
         mode_row.setSpacing(8)
-        self.simple_mode_radio = QRadioButton("简易")
-        self.advanced_mode_radio = QRadioButton("高级")
+        self.simple_mode_radio = QRadioButton("\u7b80\u6613")
+        self.advanced_mode_radio = QRadioButton("\u9ad8\u7ea7")
         self.mode_button_group = QButtonGroup(self)
         self.mode_button_group.setExclusive(True)
         self.mode_button_group.addButton(self.simple_mode_radio)
@@ -356,27 +448,49 @@ class MainWindow(QMainWindow):
         mode_row.addWidget(self.advanced_mode_radio)
         mode_row.addStretch(1)
         mode_block.addLayout(mode_row)
+
+        sequence_rule_label = QLabel("\u4e92\u52a8\u5e8f\u53f7\u521b\u5efa\u89c4\u5219")
+        sequence_rule_label.setObjectName("searchTitle")
+        mode_block.addWidget(sequence_rule_label)
+        sequence_rule_row = QHBoxLayout()
+        sequence_rule_row.setContentsMargins(0, 0, 0, 0)
+        sequence_rule_row.setSpacing(8)
+        self.auto_create_rule_radio = QRadioButton("\u81ea\u52a8")
+        self.manual_create_rule_radio = QRadioButton("\u624b\u52a8")
+        self.create_rule_button_group = QButtonGroup(self)
+        self.create_rule_button_group.setExclusive(True)
+        self.create_rule_button_group.addButton(self.auto_create_rule_radio)
+        self.create_rule_button_group.addButton(self.manual_create_rule_radio)
+        self.auto_create_rule_radio.toggled.connect(lambda checked: checked and self.controller.set_interaction_creation_mode("auto"))
+        self.manual_create_rule_radio.toggled.connect(lambda checked: checked and self.controller.set_interaction_creation_mode("manual"))
+        sequence_rule_row.addWidget(self.auto_create_rule_radio)
+        sequence_rule_row.addWidget(self.manual_create_rule_radio)
+        sequence_rule_row.addStretch(1)
+        mode_block.addLayout(sequence_rule_row)
         control_layout.addLayout(mode_block)
 
         actions_block = QVBoxLayout()
         actions_block.setContentsMargins(0, 0, 0, 0)
         actions_block.setSpacing(6)
-        actions_label = QLabel("工具")
+        actions_label = QLabel("\u5de5\u5177")
         actions_label.setObjectName("searchTitle")
         actions_block.addWidget(actions_label)
 
         action_row = QHBoxLayout()
         action_row.setContentsMargins(0, 0, 0, 0)
         action_row.setSpacing(8)
-        self.optimize_layout_button = QPushButton("优化布局")
+        self.restore_layout_button = QPushButton("\u8fd8\u539f\u89c6\u89d2")
+        self.restore_layout_button.clicked.connect(self._restore_canvas_layout)
+        self.optimize_layout_button = QPushButton("\u4f18\u5316\u8fde\u7ebf")
         self.optimize_layout_button.clicked.connect(self._optimize_connection_layout)
-        self.trash_button = QPushButton("节点垃圾箱")
+        self.trash_button = QPushButton("\u5df2\u5220\u9664\u8282\u70b9")
         self.trash_button.clicked.connect(self._show_trash_dialog)
+        action_row.addWidget(self.restore_layout_button)
         action_row.addWidget(self.optimize_layout_button)
         action_row.addWidget(self.trash_button)
         actions_block.addLayout(action_row)
 
-        action_hint = QLabel("优化布局只会整理已连线节点的位置，不会改动节点字段和连线关系。")
+        action_hint = QLabel("\u4f18\u5316\u8fde\u7ebf\u53ea\u4f1a\u6574\u7406\u5df2\u8fde\u7ebf\u8282\u70b9\u7684\u4f4d\u7f6e\uff0c\u4e0d\u4f1a\u6539\u52a8\u8282\u70b9\u5b57\u6bb5\u548c\u8fde\u7ebf\u5173\u7cfb\u3002")
         action_hint.setObjectName("sidebarHint")
         action_hint.setWordWrap(True)
         actions_block.addWidget(action_hint)
@@ -396,7 +510,7 @@ class MainWindow(QMainWindow):
         self.inspector_meta = QLabel("")
         self.inspector_meta.setWordWrap(True)
         inspector_layout.addWidget(self.inspector_meta)
-        self.inspector_placeholder = QLabel("请选择一个节点")
+        self.inspector_placeholder = QLabel("\u8bf7\u9009\u62e9\u4e00\u4e2a\u8282\u70b9")
         self.inspector_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.inspector_form = NodeFormWidget(self.controller.schema, inline=False)
         self.inspector_form.fieldCommitted.connect(self._commit_inspector_field)
@@ -422,85 +536,99 @@ class MainWindow(QMainWindow):
         edit_menu = self.menuBar().addMenu("Edit")
         view_menu = self.menuBar().addMenu("View")
 
-        open_action = QAction("打开", self)
+        open_action = QAction("\u6253\u5f00", self)
         open_action.setShortcut(QKeySequence.StandardKey.Open)
         open_action.triggered.connect(self._open_dialog)
         file_menu.addAction(open_action)
         self.addAction(open_action)
 
-        self.save_action = QAction("保存", self)
+        self.save_action = QAction("\u4fdd\u5b58", self)
         self.save_action.setShortcut(QKeySequence.StandardKey.Save)
         self.save_action.triggered.connect(self._save_current_file)
         file_menu.addAction(self.save_action)
         self.addAction(self.save_action)
 
-        reload_schema_action = QAction("重载字段配置", self)
+        self.export_csv_action = QAction("\u5bfc\u51fa\u5230 CSV", self)
+        self.export_csv_action.triggered.connect(self._show_export_csv_dialog)
+        self.menuBar().addAction(self.export_csv_action)
+
+        reload_schema_action = QAction("\u91cd\u8f7d\u5b57\u6bb5\u914d\u7f6e", self)
         reload_schema_action.triggered.connect(self._reload_schema)
         file_menu.addAction(reload_schema_action)
 
-        self.undo_action = QAction("撤销", self)
+        self.undo_action = QAction("\u64a4\u9500", self)
         self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
         self.undo_action.triggered.connect(self._trigger_undo)
         edit_menu.addAction(self.undo_action)
         self.addAction(self.undo_action)
 
-        self.redo_action = QAction("重做", self)
+        self.redo_action = QAction("\u91cd\u505a", self)
         self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
         self.redo_action.triggered.connect(self._trigger_redo)
         edit_menu.addAction(self.redo_action)
         self.addAction(self.redo_action)
 
-        copy_action = QAction("复制", self)
+        copy_action = QAction("\u590d\u5236", self)
         copy_action.setShortcut(QKeySequence.StandardKey.Copy)
         copy_action.triggered.connect(self._copy_selection)
         edit_menu.addAction(copy_action)
         self.addAction(copy_action)
 
-        paste_action = QAction("粘贴", self)
+        paste_action = QAction("\u7c98\u8d34", self)
         paste_action.setShortcut(QKeySequence.StandardKey.Paste)
         paste_action.triggered.connect(self._paste_selection)
         edit_menu.addAction(paste_action)
         self.addAction(paste_action)
 
-        duplicate_action = QAction("复制节点", self)
+        duplicate_action = QAction("\u590d\u5236\u8282\u70b9", self)
         duplicate_action.setShortcut(QKeySequence("Ctrl+D"))
         duplicate_action.triggered.connect(self._duplicate_selection)
         edit_menu.addAction(duplicate_action)
         self.addAction(duplicate_action)
 
-        delete_action = QAction("删除", self)
+        delete_action = QAction("\u5220\u9664", self)
         delete_action.setShortcut(QKeySequence.StandardKey.Delete)
         delete_action.triggered.connect(self._delete_selection)
         edit_menu.addAction(delete_action)
         self.addAction(delete_action)
 
-        search_action = QAction("搜索", self)
+        search_action = QAction("\u641c\u7d22\u8282\u70b9", self)
         search_action.setShortcut(QKeySequence.StandardKey.Find)
         search_action.triggered.connect(self._focus_search)
         view_menu.addAction(search_action)
         self.addAction(search_action)
 
-        layout_action = QAction("优化连线布局", self)
+        file_search_action = QAction("\u641c\u7d22\u914d\u7f6e\u6587\u4ef6", self)
+        file_search_action.setShortcut(QKeySequence("Ctrl+Shift+F"))
+        file_search_action.triggered.connect(self._focus_file_search)
+        view_menu.addAction(file_search_action)
+        self.addAction(file_search_action)
+
+        layout_action = QAction("\u4f18\u5316\u8fde\u7ebf", self)
         layout_action.triggered.connect(self._optimize_connection_layout)
         view_menu.addAction(layout_action)
 
-        trash_action = QAction("节点垃圾箱", self)
+        restore_action = QAction("\u8fd8\u539f\u89c6\u89d2", self)
+        restore_action.triggered.connect(self._restore_canvas_layout)
+        view_menu.addAction(restore_action)
+
+        trash_action = QAction("\u5df2\u5220\u9664\u8282\u70b9", self)
         trash_action.triggered.connect(self._show_trash_dialog)
         view_menu.addAction(trash_action)
 
-        csv_action = QAction("CSV 预览", self)
+        csv_action = QAction("CSV \u9884\u89c8", self)
         csv_action.triggered.connect(self._show_csv_preview)
         view_menu.addAction(csv_action)
 
-        self.debug_json_fields_action = QAction("调试模式：显示 JSON 字段名", self, checkable=True)
+        self.debug_json_fields_action = QAction("\u8c03\u8bd5\u6a21\u5f0f\uff1a\u663e\u793a JSON \u5b57\u6bb5\u540d", self, checkable=True)
         self.debug_json_fields_action.toggled.connect(self._set_debug_json_field_names)
         view_menu.addAction(self.debug_json_fields_action)
 
-        mode_menu = view_menu.addMenu("编辑模式")
+        mode_menu = view_menu.addMenu("\u7f16\u8f91\u6a21\u5f0f")
         mode_group = QActionGroup(self)
         mode_group.setExclusive(True)
-        self.simple_mode_action = QAction("简易模式", self, checkable=True)
-        self.advanced_mode_action = QAction("高级模式", self, checkable=True)
+        self.simple_mode_action = QAction("\u7b80\u6613\u6a21\u5f0f", self, checkable=True)
+        self.advanced_mode_action = QAction("\u9ad8\u7ea7\u6a21\u5f0f", self, checkable=True)
         self.simple_mode_action.triggered.connect(lambda: self.controller.set_global_mode("simple"))
         self.advanced_mode_action.triggered.connect(lambda: self.controller.set_global_mode("advanced"))
         mode_group.addAction(self.simple_mode_action)
@@ -576,6 +704,7 @@ class MainWindow(QMainWindow):
         self._set_active_undo_stack(undo_stack)
         self._mark_saved_checkpoint(saved=saved)
         self.controller.globalModeChanged.emit(self.controller.preferences.global_mode)
+        self.controller.interactionCreationModeChanged.emit(self.controller.document.interaction_creation_mode)
         self.controller.documentLoaded.emit()
         self.controller.pathChanged.emit(document.path)
         self.controller.refresh_derived()
@@ -631,7 +760,7 @@ class MainWindow(QMainWindow):
         group_dir = self._pending_group_dir.strip().replace("\\", "/")
         parent = self.workdir / group_dir if group_dir else self.workdir
         parent.mkdir(parents=True, exist_ok=True)
-        base_name = self._sanitize_filename_stem(self.controller.document.meta.memo or self.controller.document.meta.CharName or "config")
+        base_name = self._sanitize_filename_stem(self.controller.document.meta.CharName or "config")
         candidate = parent / f"{base_name}.json"
         if not candidate.exists():
             return candidate
@@ -660,6 +789,7 @@ class MainWindow(QMainWindow):
         self.advanced_mode_action.setChecked(self.controller.preferences.global_mode == "advanced")
         self.simple_mode_radio.setChecked(self.controller.preferences.global_mode == "simple")
         self.advanced_mode_radio.setChecked(self.controller.preferences.global_mode == "advanced")
+        self._handle_interaction_creation_mode_changed(self.controller.document.interaction_creation_mode)
         self._update_save_action_state()
 
     def _set_debug_json_field_names(self, enabled: bool) -> None:
@@ -680,9 +810,14 @@ class MainWindow(QMainWindow):
 
     def _refresh_file_list(self) -> None:
         current = self._relative_path_for_document(self.controller.document.path)
+        needle = self.file_search_edit.text().strip().lower() if hasattr(self, "file_search_edit") else ""
         self.file_list.clear()
         grouped: dict[str, list[str]] = {}
         for relative_path in self.controller.file_list():
+            _, display_name = self._read_file_display_meta(self.workdir / relative_path)
+            haystack = f"{relative_path} {display_name}".lower()
+            if needle and needle not in haystack:
+                continue
             group = str(Path(relative_path).parent).replace("\\", "/")
             if group == ".":
                 group = ""
@@ -706,7 +841,7 @@ class MainWindow(QMainWindow):
                 continue
             for relative_path in paths:
                 _, display_name = self._read_file_display_meta(self.workdir / relative_path)
-                item = QListWidgetItem(f"配置 · {display_name}")
+                item = QListWidgetItem(f"\u914d\u7f6e: {display_name}")
                 item.setData(Qt.ItemDataRole.UserRole, {"kind": "file", "path": relative_path})
                 item.setToolTip(relative_path)
                 self.file_list.addItem(item)
@@ -715,9 +850,9 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _group_header_text(group_name: str, count: int, collapsed: bool) -> str:
-        arrow = "▶" if collapsed else "▼"
-        label = group_name or "根目录"
-        return f"[目录] {arrow} {label} · {count} 个配置"
+        arrow = "\u25b6" if collapsed else "\u25bc"
+        label = group_name or "\u6839\u76ee\u5f55"
+        return f"[\u76ee\u5f55] {arrow} {label} · {count} \u4e2a\u914d\u7f6e"
 
     def _read_file_display_meta(self, path: Path) -> tuple[str, str]:
         fallback_name = path.name
@@ -849,14 +984,16 @@ class MainWindow(QMainWindow):
     def _save_current_file(self, silent: bool = False, *, allow_incomplete: bool = False) -> str | None:
         allowed, reason = self.controller.can_create_graph_content()
         if not allow_incomplete and not allowed:
-            QMessageBox.warning(self, "无法保存", f"{reason}\n首次保存前请先完成初始节点。")
+            self._focus_initial_node_guidance(reason)
+            QMessageBox.warning(self, "\u65e0\u6cd5\u4fdd\u5b58", f"{reason}\n\u9996\u6b21\u4fdd\u5b58\u524d\u8bf7\u5148\u5b8c\u6210\u521d\u59cb\u8282\u70b9\u3002")
             return None
         target = self.controller.document.path
         if not target:
             generated = self._generated_save_path()
             if not generated:
+                self._focus_initial_node_guidance(reason)
                 if not silent:
-                    QMessageBox.warning(self, "无法保存", "请先完成初始节点内容，再生成配置文件。")
+                    QMessageBox.warning(self, "\u65e0\u6cd5\u4fdd\u5b58", "\u8bf7\u5148\u5b8c\u6210\u521d\u59cb\u8282\u70b9\u5185\u5bb9\uff0c\u518d\u751f\u6210\u914d\u7f6e\u6587\u4ef6\u3002")
                 return None
             target = str(generated)
         saved = self.controller.save_document(target)
@@ -871,7 +1008,7 @@ class MainWindow(QMainWindow):
             self._current_session_key = self._session_key_for_path(saved)
             self._stash_current_document_session()
             if not silent:
-                self._show_status(f"已保存 {Path(saved).name}")
+                self._show_status(f"\u5df2\u4fdd\u5b58 {Path(saved).name}")
             self._refresh_file_list()
             relative_path = self._relative_path_for_document(saved)
             if relative_path:
@@ -892,6 +1029,10 @@ class MainWindow(QMainWindow):
         self._refresh_file_list()
 
     def _copy_selection(self) -> None:
+        focus_widget = self.focusWidget()
+        if isinstance(focus_widget, (QLineEdit, QPlainTextEdit)):
+            focus_widget.copy()
+            return
         node_uuids = self.canvas.selected_node_uuids()
         payload = self.controller.serialize_selection(node_uuids)
         if not payload:
@@ -906,6 +1047,13 @@ class MainWindow(QMainWindow):
         self._show_status("已复制节点")
 
     def _paste_selection(self) -> None:
+        focus_widget = self.focusWidget()
+        if isinstance(focus_widget, QLineEdit):
+            focus_widget.paste()
+            return
+        if isinstance(focus_widget, QPlainTextEdit) and not focus_widget.isReadOnly():
+            focus_widget.paste()
+            return
         mime = QGuiApplication.clipboard().mimeData()
         if not mime or not mime.hasFormat(CLIPBOARD_MIME):
             return
@@ -986,8 +1134,7 @@ class MainWindow(QMainWindow):
 
     def _jump_to_search_result(self, item: QListWidgetItem) -> None:
         node_uuid = item.data(Qt.ItemDataRole.UserRole)
-        self.canvas.center_on_node(node_uuid)
-        self.canvas.flash_node(node_uuid)
+        self.canvas.focus_on_node(node_uuid, target_scale=1.05, emphasize=False)
         if node_uuid in self.canvas.node_items:
             self.canvas.node_items[node_uuid].setSelected(True)
 
@@ -999,8 +1146,50 @@ class MainWindow(QMainWindow):
         self.csv_dialog.raise_()
         self.csv_dialog.activateWindow()
 
+    def _show_export_csv_dialog(self) -> None:
+        files = [(relative_path, self._read_file_display_meta(self.workdir / relative_path)[1]) for relative_path in self.controller.file_list()]
+        if not files:
+            QMessageBox.information(self, "\u65e0\u53ef\u5bfc\u51fa\u5185\u5bb9", "\u5f53\u524d\u5de5\u4f5c\u76ee\u5f55\u4e0b\u6ca1\u6709\u53ef\u5bfc\u51fa\u7684 JSON \u914d\u7f6e\u3002")
+            return
+        self.export_csv_dialog.set_files(files)
+        if self.export_csv_dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        selected = self.export_csv_dialog.selected_files()
+        if not selected:
+            QMessageBox.information(self, "\u672a\u9009\u62e9\u914d\u7f6e", "\u8bf7\u5148\u9009\u62e9\u8981\u5bfc\u51fa\u7684 JSON \u914d\u7f6e\u3002")
+            return
+        self._export_selected_configs_to_csv(selected)
+
+    def _export_selected_configs_to_csv(self, relative_paths: list[str]) -> None:
+        documents = []
+        current_relative = self._relative_path_for_document(self.controller.document.path)
+        for relative_path in relative_paths:
+            if current_relative and relative_path == current_relative:
+                documents.append(self.controller.document)
+                continue
+            try:
+                documents.append(load_document(self.controller.schema, self.workdir / relative_path))
+            except Exception as exc:
+                QMessageBox.warning(self, "\u5bfc\u51fa\u5931\u8d25", f"{relative_path}\n{exc}")
+                return
+        output_path = self.workdir / build_csv_export_filename()
+        export_documents_to_csv(
+            self.controller.schema,
+            documents,
+            output_path,
+            template_search_roots=(self.workdir, Path(__file__).resolve().parent.parent),
+        )
+        self._show_status(f"\u5df2\u5bfc\u51fa CSV: {output_path.name}")
+
     def _update_csv_preview(self, rows) -> None:
         self.csv_dialog.update_rows(rows)
+
+    def _handle_document_saved(self, saved_path: str) -> None:
+        self._mark_saved_checkpoint(saved=True)
+        relative_path = self._relative_path_for_document(saved_path)
+        self._refresh_file_list()
+        if relative_path:
+            self._select_file_in_list(relative_path)
 
     def _update_window_title(self, path: str | None) -> None:
         title = "L2D Config Editor"
@@ -1032,6 +1221,23 @@ class MainWindow(QMainWindow):
         self.search_edit.setFocus()
         self.search_edit.selectAll()
 
+    def _focus_file_search(self) -> None:
+        self.file_search_edit.setFocus()
+        self.file_search_edit.selectAll()
+
+    def _jump_to_validation_node(self, node_uuid: str) -> None:
+        self.canvas.focus_on_node(node_uuid, target_scale=1.25, emphasize=True)
+        if node_uuid in self.canvas.node_items:
+            self.canvas.node_items[node_uuid].setSelected(True)
+
+    def _focus_initial_node_guidance(self, _reason: str = "") -> None:
+        initial = next((node for node in self.controller.document.nodes if node.type == "Initial"), None)
+        if not initial:
+            return
+        self.canvas.focus_on_node(initial.uuid, target_scale=1.35, emphasize=True)
+        if initial.uuid in self.canvas.node_items:
+            self.canvas.node_items[initial.uuid].setSelected(True)
+
     def _store_validation(self, issues) -> None:
         validation_cache: dict[str, list] = {}
         for issue in issues:
@@ -1042,10 +1248,14 @@ class MainWindow(QMainWindow):
 
     def _update_document_state(self, state) -> None:
         if state.is_meta_ready:
-            self.inspector_meta.setText("初始节点已完成，允许创建节点与连线。")
+            self.inspector_meta.setText("\u521d\u59cb\u8282\u70b9\u5df2\u5b8c\u6210\uff0c\u5141\u8bb8\u521b\u5efa\u8282\u70b9\u4e0e\u8fde\u7ebf\u3002")
         else:
-            self.inspector_meta.setText(f"需先完成初始节点字段：{' / '.join(state.meta_missing_fields)}")
+            self.inspector_meta.setText(f"\u9700\u5148\u5b8c\u6210\u521d\u59cb\u8282\u70b9\u5b57\u6bb5: {' / '.join(state.meta_missing_fields)}")
         self._update_save_action_state()
+
+    def _handle_interaction_creation_mode_changed(self, mode: str) -> None:
+        self.auto_create_rule_radio.setChecked(mode == "auto")
+        self.manual_create_rule_radio.setChecked(mode == "manual")
 
     def _handle_global_mode_changed(self, mode: str) -> None:
         self.settings.setValue("ui/global_mode", mode)

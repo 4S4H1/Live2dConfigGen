@@ -1,15 +1,15 @@
 {
   "editor_signature": "l2d_config_editor/v1",
   "global_mode": "simple",
+  "interaction_creation_mode": "auto",
   "meta": {
     "version": "2099-09-09",
     "author": "阿斯蒂芬",
     "ship_skin_id": 11111,
-    "memo": "阿斯蒂芬",
-    "default_state": "idle0",
-    "react_condition": 111111,
+    "memo": "阿斯蒂芬22",
+    "react_condition": "111111",
     "tips": "",
-    "CharName": "阿斯蒂芬"
+    "CharName": "阿斯蒂芬11"
   },
   "nodes": [
     {
@@ -21,11 +21,10 @@
       },
       "tips": "",
       "version": "2099-09-09",
-      "defaultState": "idle0",
-      "CharName": "阿斯蒂芬",
-      "memo": "阿斯蒂芬",
+      "CharName": "阿斯蒂芬11",
+      "memo": "阿斯蒂芬22",
       "ship_skin_id": 11111,
-      "react_condition": 111111,
+      "react_condition": "111111",
       "author": "阿斯蒂芬"
     },
     {
@@ -40,7 +39,12 @@
         "height": 1277.1797792769976
       },
       "content": "",
-      "drag_direct": 0
+      "drag_direct": 0,
+      "note_box_color": "#76808d",
+      "note_box_alpha": 62,
+      "note_text_color": "#f3f5f8",
+      "note_text_alpha": 96,
+      "note_font_size": 15
     },
     {
       "uuid": "42baffa097024684a73cb550db64a5f2",
@@ -1096,8 +1100,8 @@
     }
   ],
   "canvas_view": {
-    "scale": 0.3504938994813938,
-    "offset_x": 4245.437658691664,
-    "offset_y": 1780.3448246126331
+    "scale": 0.7513148009015777,
+    "offset_x": 749.3530000000001,
+    "offset_y": 141.086
   }
 }

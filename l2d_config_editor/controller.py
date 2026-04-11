@@ -51,11 +51,14 @@ class EditorController(QObject):
     csvPreviewChanged = pyqtSignal(object)
     selectionChanged = pyqtSignal(object)
     pathChanged = pyqtSignal(object)
+    documentSaved = pyqtSignal(str)
     statusMessage = pyqtSignal(str)
     documentStateChanged = pyqtSignal(object)
     globalModeChanged = pyqtSignal(str)
+    interactionCreationModeChanged = pyqtSignal(str)
     schemaChanged = pyqtSignal()
     trashBinChanged = pyqtSignal(object)
+    metaActionBlocked = pyqtSignal(str)
 
     def __init__(self, parent: QObject | None = None, schema_path: str | None = None) -> None:
         super().__init__(parent)
@@ -87,6 +90,13 @@ class EditorController(QObject):
         for node in self.document.nodes:
             self.nodeUpdated.emit(node.uuid)
 
+    def set_interaction_creation_mode(self, mode: str) -> None:
+        normalized = "manual" if mode == "manual" else "auto"
+        if self.document.interaction_creation_mode == normalized:
+            return
+        self.document.interaction_creation_mode = normalized
+        self.interactionCreationModeChanged.emit(normalized)
+
     def new_document(self) -> None:
         self.undo_stack.clear()
         self.document = create_document(self.schema)
@@ -114,6 +124,7 @@ class EditorController(QObject):
         self.document.global_mode = self.preferences.global_mode
         save_document(self.schema, self.document, target)
         self.pathChanged.emit(str(target))
+        self.documentSaved.emit(str(target))
         self.refresh_derived()
         return str(target)
 
@@ -145,11 +156,15 @@ class EditorController(QObject):
         missing = " / ".join(self.document.state.meta_missing_fields)
         return False, f"请先在初始节点完成以下字段：{missing}"
 
+    def _emit_meta_blocked(self, reason: str) -> None:
+        self.statusMessage.emit(reason)
+        self.metaActionBlocked.emit(reason)
+
     def create_node(self, node_type: str, position: tuple[float, float], base_node: NodeRecord | None = None) -> str | None:
         if node_type != "Initial":
             allowed, reason = self.can_create_graph_content()
             if not allowed:
-                self.statusMessage.emit(reason)
+                self._emit_meta_blocked(reason)
                 return None
         node = create_node(self.schema, self.document, node_type, position, base_node=base_node)
         self.undo_stack.push(AddNodesCommand(self, [node], []))
@@ -159,7 +174,7 @@ class EditorController(QObject):
     def create_node_with_connection(self, from_uuid: str, node_type: str, position: tuple[float, float]) -> str | None:
         allowed, reason = self.can_create_graph_content()
         if not allowed:
-            self.statusMessage.emit(reason)
+            self._emit_meta_blocked(reason)
             return None
         node = create_node(self.schema, self.document, node_type, position)
         connection = ConnectionRecord(from_uuid=from_uuid, to_uuid=node.uuid)
@@ -217,7 +232,7 @@ class EditorController(QObject):
     def add_connection(self, from_uuid: str, to_uuid: str) -> None:
         allowed, reason = self.can_create_graph_content()
         if not allowed:
-            self.statusMessage.emit(reason)
+            self._emit_meta_blocked(reason)
             return
         if from_uuid == to_uuid:
             return
@@ -296,8 +311,10 @@ class EditorController(QObject):
                 fields={key: value for key, value in item.items() if key not in {"uuid", "type", "ui_position", "ui_size"}},
                 ui_position={"x": 0.0, "y": 0.0},
                 ui_size=item.get("ui_size"),
+                manual_fields=set(item.get("manual_fields", [])),
             )
-            infer_manual_fields(self.schema, template)
+            if not template.manual_fields:
+                infer_manual_fields(self.schema, template)
             new_node = create_node(
                 self.schema,
                 self.document,
@@ -363,6 +380,8 @@ class EditorController(QObject):
         }
         if node.ui_size:
             payload["ui_size"] = dict(node.ui_size)
+        if node.manual_fields:
+            payload["manual_fields"] = sorted(node.manual_fields)
         for key, value in node.fields.items():
             if key == "target_idle":
                 continue

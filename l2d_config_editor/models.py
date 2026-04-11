@@ -12,7 +12,6 @@ class MetaRecord:
     author: str = ""
     ship_skin_id: int = 0
     memo: str = ""
-    default_state: str = "idle0"
     react_condition: str = ""
     tips: str = ""
     CharName: str = ""
@@ -90,6 +89,7 @@ class DocumentModel:
     canvas_view: CanvasViewState = field(default_factory=CanvasViewState)
     state: DocumentState = field(default_factory=DocumentState)
     global_mode: str = "simple"
+    interaction_creation_mode: str = "auto"
     path: str | None = None
 
 

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import re
 import uuid
 from dataclasses import asdict
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -44,6 +46,7 @@ RESERVED_FIELD_KEYS = (
     "target_idle",
     "id",
 )
+CSV_TEMPLATE_FILES = ("(full)ship_l2d.csv", "ship_l2d.csv")
 
 
 @lru_cache(maxsize=2)
@@ -326,6 +329,10 @@ def _hard_cut_action(schema: EditorSchema, target_idle: int) -> tuple[str, str]:
     return action, active
 
 
+def build_csv_export_filename(prefix: str = "ship_l2d_export") -> str:
+    return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+
+
 def display_value_for_field(schema: EditorSchema, node: NodeRecord, key: str, raw_value: Any | None = None) -> Any:
     del schema
     value = node.fields.get(key) if raw_value is None else raw_value
@@ -357,6 +364,19 @@ def normalize_field_input(schema: EditorSchema, node: NodeRecord, key: str, disp
     if key == "react_condition":
         return normalize_react_condition_list(display_value)
     return display_value
+
+
+def _manual_sequence_defaults(schema: EditorSchema, node: NodeRecord) -> None:
+    if node.type not in function_node_types(schema):
+        return
+    target_idle = 0
+    node.fields["draw_able_name"] = "0"
+    node.fields["target_idle"] = target_idle
+    node.fields["parameter"] = "0"
+    node.fields["action_trigger"] = _animated_action(schema, _node_schema(schema, node.type), target_idle, action_name="0")[0]
+    node.fields["action_trigger_active"] = _animated_action(schema, _node_schema(schema, node.type), target_idle)[1]
+    node.manual_fields.update({"parameter", "action_trigger"})
+    _refresh_trigger_interface_fields(node)
 
 
 def _infer_expected_actions(schema: EditorSchema, node: NodeRecord) -> tuple[str, str]:
@@ -405,6 +425,12 @@ def apply_sequence_defaults(schema: EditorSchema, node: NodeRecord) -> None:
     node.fields["action_trigger_active"] = active
     node.manual_fields.difference_update({"parameter", "action_trigger"})
     _refresh_trigger_interface_fields(node)
+
+
+def _preserve_function_fields_from_base(schema: EditorSchema, document: DocumentModel, node: NodeRecord, base_node: NodeRecord) -> None:
+    node.manual_fields = set(base_node.manual_fields)
+    infer_manual_fields(schema, node)
+    apply_auto_rules(schema, document, node, source_mode="advanced", force_generated=False)
 
 
 def _update_drag_offsets(node: NodeRecord, changed_key: str | None, source_mode: str) -> None:
@@ -503,7 +529,12 @@ def create_node(
     if node.type in function_node_types(schema):
         node.type_slot = allocate_type_slot(document, node.type)
         node.export_slot = allocate_export_slot(document)
-        apply_sequence_defaults(schema, node)
+        if base_node is not None and base_node.manual_fields:
+            _preserve_function_fields_from_base(schema, document, node, base_node)
+        elif base_node is None and document.interaction_creation_mode == "manual":
+            _manual_sequence_defaults(schema, node)
+        else:
+            apply_sequence_defaults(schema, node)
     else:
         apply_auto_rules(schema, document, node, force_generated=False)
     return node
@@ -518,7 +549,6 @@ def sync_meta_from_initial(document: DocumentModel) -> None:
         author=str(initial.fields.get("author", "")),
         ship_skin_id=int(initial.fields.get("ship_skin_id") or 0),
         memo=str(initial.fields.get("memo", "")),
-        default_state=str(initial.fields.get("defaultState", "idle0")),
         react_condition=normalize_react_condition_list(initial.fields.get("react_condition", "")),
         tips=str(initial.fields.get("tips", "")),
         CharName=str(initial.fields.get("CharName", "")),
@@ -536,19 +566,19 @@ def sync_initial_from_meta(schema: EditorSchema, document: DocumentModel) -> Non
             "author": document.meta.author,
             "ship_skin_id": document.meta.ship_skin_id,
             "memo": document.meta.memo,
-            "defaultState": document.meta.default_state,
             "react_condition": document.meta.react_condition,
             "tips": document.meta.tips,
             "CharName": document.meta.CharName,
         }
     )
+    initial.fields.pop("defaultState", None)
 
 
 def recompute_document_state(schema: EditorSchema, document: DocumentModel) -> None:
     sync_meta_from_initial(document)
     missing: list[str] = []
     for field in schema.required_meta_fields:
-        value = getattr(document.meta, field if field != "defaultState" else "default_state", None)
+        value = getattr(document.meta, field, None)
         if field == "ship_skin_id":
             if not isinstance(value, int) or value <= 0:
                 missing.append(schema.required_meta_labels[field])
@@ -640,6 +670,7 @@ def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[
     return {
         "editor_signature": EDITOR_DOCUMENT_SIGNATURE,
         "global_mode": document.global_mode,
+        "interaction_creation_mode": document.interaction_creation_mode,
         "meta": asdict(document.meta),
         "nodes": serialized_nodes,
         "connections": [asdict(connection) for connection in document.connections],
@@ -658,9 +689,14 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if not is_editor_document_payload(payload):
         raise ValueError("不是 L2D Config Editor 配置文件")
+    meta_payload = payload.get("meta", {})
+    if not isinstance(meta_payload, dict):
+        meta_payload = {}
+    meta_keys = set(MetaRecord.__dataclass_fields__.keys())
     document = DocumentModel(
         global_mode=str(payload.get("global_mode", "simple")),
-        meta=MetaRecord(**payload.get("meta", {})),
+        interaction_creation_mode=str(payload.get("interaction_creation_mode", "auto") or "auto"),
+        meta=MetaRecord(**{key: value for key, value in meta_payload.items() if key in meta_keys}),
         connections=[ConnectionRecord(**item) for item in payload.get("connections", [])],
         trash_bin=[TrashEntry(**item) for item in payload.get("trash_bin", [])],
         canvas_view=CanvasViewState(**payload.get("canvas_view", {})),
@@ -670,6 +706,8 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
     for raw in payload.get("nodes", []):
         fields = {key: value for key, value in raw.items() if key not in {"uuid", "type", "ui_position", "ui_size", "mode_variant"}}
         node_type = raw["type"]
+        if node_type == "Initial":
+            fields.pop("defaultState", None)
         if "target_idle" not in fields:
             raw_target_idle = _target_idle_from_raw(fields.get("action_trigger_active"))
             if raw_target_idle is not None:
@@ -725,6 +763,41 @@ def document_to_csv_rows(schema: EditorSchema, document: DocumentModel) -> list[
     return rows
 
 
+def csv_template_header_rows(schema: EditorSchema, search_roots: list[str | Path] | tuple[str | Path, ...]) -> list[list[str]]:
+    for root in search_roots:
+        base_path = Path(root)
+        for filename in CSV_TEMPLATE_FILES:
+            template_path = base_path / filename
+            if not template_path.is_file():
+                continue
+            try:
+                with template_path.open("r", encoding="utf-8-sig", newline="") as handle:
+                    rows = list(csv.reader(handle))
+            except OSError:
+                continue
+            if rows and rows[0] == list(schema.csv_columns):
+                return rows[:4] if len(rows) >= 4 else rows[:1]
+    return [list(schema.csv_columns)]
+
+
+def export_documents_to_csv(
+    schema: EditorSchema,
+    documents: list[DocumentModel],
+    output_path: str | Path,
+    *,
+    template_search_roots: list[str | Path] | tuple[str | Path, ...] = (),
+) -> Path:
+    header_rows = csv_template_header_rows(schema, template_search_roots)
+    with Path(output_path).open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, delimiter=",", lineterminator="\n")
+        for row in header_rows:
+            writer.writerow(row)
+        for document in documents:
+            for preview_row in document_to_csv_rows(schema, document):
+                writer.writerow([preview_row.values.get(column, "") for column in schema.csv_columns])
+    return Path(output_path)
+
+
 def _issue_for_group(
     schema: EditorSchema,
     message: str,
@@ -739,6 +812,52 @@ def _issue_for_group(
                 node_uuid=node.uuid,
                 message=message,
                 field_keys=list(field_keys),
+                related_node_uuids=[item.uuid for item in related],
+                related_titles=[node_title(schema, item) for item in related],
+            )
+        )
+    return issues
+
+
+def _display_field_value(schema: EditorSchema, node: NodeRecord, key: str) -> str:
+    value = display_value_for_field(schema, node, key, node.fields.get(key))
+    return str(value).strip()
+
+
+def _duplicate_field_issues(schema: EditorSchema, group: list[NodeRecord], field_key: str) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    for node in group:
+        related = [other for other in group if other.uuid != node.uuid]
+        value = _display_field_value(schema, node, field_key)
+        label = _field_label(schema, node, field_key)
+        message = f"{label} 重复：{value}" if value else f"{label} 重复"
+        issues.append(
+            ValidationIssue(
+                node_uuid=node.uuid,
+                message=message,
+                field_keys=[field_key],
+                related_node_uuids=[item.uuid for item in related],
+                related_titles=[node_title(schema, item) for item in related],
+            )
+        )
+    return issues
+
+
+def _draw_conflict_issues(schema: EditorSchema, group: list[NodeRecord]) -> list[ValidationIssue]:
+    issues: list[ValidationIssue] = []
+    for node in group:
+        related = [other for other in group if other.uuid != node.uuid]
+        message = (
+            "同名框体的触发配置不一致："
+            f"框={_display_field_value(schema, node, 'draw_able_name') or '空'}，"
+            f"播放动画={_display_field_value(schema, node, 'action_trigger') or '空'}，"
+            f"目标idle={_display_field_value(schema, node, 'action_trigger_active') or '空'}"
+        )
+        issues.append(
+            ValidationIssue(
+                node_uuid=node.uuid,
+                message=message,
+                field_keys=["draw_able_name", "action_trigger", "action_trigger_active"],
                 related_node_uuids=[item.uuid for item in related],
                 related_titles=[node_title(schema, item) for item in related],
             )
@@ -764,7 +883,7 @@ def validate_document(schema: EditorSchema, document: DocumentModel) -> list[Val
                 issues.append(
                     ValidationIssue(
                         node_uuid=node.uuid,
-                        message="parts_data 不是合法的 {parts={...}} 数字列表",
+                        message=f"{_field_label(schema, node, 'parts_data')} 格式无效，应为逗号分隔的数字列表",
                         field_keys=["parts_data"],
                     )
                 )
@@ -773,7 +892,7 @@ def validate_document(schema: EditorSchema, document: DocumentModel) -> list[Val
                 issues.append(
                     ValidationIssue(
                         node_uuid=node.uuid,
-                        message="parts_data 超出了 range 定义范围",
+                        message=f"{_field_label(schema, node, 'parts_data')} 超出 {_field_label(schema, node, 'range')} 范围",
                         field_keys=["parts_data", "range"],
                     )
                 )
@@ -784,21 +903,14 @@ def validate_document(schema: EditorSchema, document: DocumentModel) -> list[Val
 
     for group in parameter_map.values():
         if len(group) > 1:
-            issues.extend(_issue_for_group(schema, "parameter 重复", ["parameter"], group))
+            issues.extend(_duplicate_field_issues(schema, group, "parameter"))
 
     for group in draw_map.values():
         if len(group) <= 1:
             continue
         baseline = (group[0].fields.get("action_trigger", ""), group[0].fields.get("action_trigger_active", ""))
         if any((node.fields.get("action_trigger", ""), node.fields.get("action_trigger_active", "")) != baseline for node in group[1:]):
-            issues.extend(
-                _issue_for_group(
-                    schema,
-                    "相同 draw_able_name 的 TouchIdle 节点动作内容不一致",
-                    ["draw_able_name", "action_trigger", "action_trigger_active"],
-                    group,
-                )
-            )
+            issues.extend(_draw_conflict_issues(schema, group))
     return issues
 
 

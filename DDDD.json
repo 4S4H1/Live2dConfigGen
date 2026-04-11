@@ -1,13 +1,13 @@
 {
   "editor_signature": "l2d_config_editor/v1",
   "global_mode": "simple",
+  "interaction_creation_mode": "auto",
   "meta": {
     "version": "2099-09-09",
     "author": "123123",
     "ship_skin_id": 1230,
     "memo": "AAAA",
-    "default_state": "idle0",
-    "react_condition": 0,
+    "react_condition": "",
     "tips": "AAAAAAAAAAAAAAAAAA",
     "CharName": "SSSSS"
   },
@@ -21,11 +21,10 @@
       },
       "tips": "AAAAAAAAAAAAAAAAAA",
       "version": "2099-09-09",
-      "defaultState": "idle0",
       "CharName": "SSSSS",
       "memo": "AAAA",
       "ship_skin_id": 1230,
-      "react_condition": 0,
+      "react_condition": "",
       "author": "123123"
     },
     {
@@ -72,12 +71,12 @@
       "uuid": "b1ce14160e4545c4a5fd8bc306c31e32",
       "type": "Comment",
       "ui_position": {
-        "x": 547.2796590810998,
-        "y": -267.1554733902999
+        "x": 103.47709691110003,
+        "y": -480.02682153029974
       },
       "ui_size": {
-        "width": 757.0613690149997,
-        "height": 416.56221348379995
+        "width": 830.8713690149998,
+        "height": 499.578
       },
       "content": "",
       "drag_direct": 0
@@ -86,8 +85,8 @@
       "uuid": "3e02002e3e9841328df5f37e9deea32d",
       "type": "TouchDrag",
       "ui_position": {
-        "x": 1115.6200000000001,
-        "y": 257.73
+        "x": 1204.9301,
+        "y": 83.50209999999996
       },
       "type_slot": 1,
       "export_slot": 2,
@@ -129,12 +128,16 @@
     {
       "from_uuid": "615c8e637d3146d6b5e8df850bd68b8a",
       "to_uuid": "61b5f7f5258e4372b9588914f826b0a7"
+    },
+    {
+      "from_uuid": "61b5f7f5258e4372b9588914f826b0a7",
+      "to_uuid": "3e02002e3e9841328df5f37e9deea32d"
     }
   ],
   "trash_bin": [],
   "canvas_view": {
-    "scale": 1.1,
-    "offset_x": 1179.090909090909,
-    "offset_y": 438.1818181818182
+    "scale": 0.7513148009015782,
+    "offset_x": 507.1109999999997,
+    "offset_y": -5.323999999999997
   }
 }

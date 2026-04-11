@@ -2,12 +2,14 @@
   "required_meta_fields": [
     "author",
     "ship_skin_id",
-    "memo"
+    "memo",
+    "CharName"
   ],
   "required_meta_labels": {
     "author": "作者",
     "ship_skin_id": "角色ID",
-    "memo": "角色资源名"
+    "memo": "角色资源名",
+    "CharName": "角色名"
   },
   "ignore_lists": {
     "default": [
@@ -83,49 +85,255 @@
     "relation_parameter"
   ],
   "csv_mapping": [
-    { "column": "id", "kind": "node", "field": "id", "default": "" },
-    { "column": "desc", "kind": "node", "field": "desc", "default": "" },
-    { "column": "memo", "kind": "meta", "field": "memo", "default": "" },
-    { "column": "ship_skin_id", "kind": "meta", "field": "ship_skin_id", "default": 0 },
-    { "column": "draw_able_name", "kind": "node", "field": "draw_able_name", "default": "" },
-    { "column": "parameter", "kind": "node", "field": "parameter", "default": "" },
-    { "column": "mode", "kind": "node", "field": "mode", "default": 1 },
-    { "column": "start_value", "kind": "node", "field": "start_value", "default": 0 },
-    { "column": "range", "kind": "node", "field": "range", "default": "" },
-    { "column": "parts_data", "kind": "node", "field": "parts_data", "default": "" },
-    { "column": "ignore_react", "kind": "node", "field": "ignore_react", "default": 1 },
-    { "column": "react_condition", "kind": "meta", "field": "react_condition", "default": "" },
-    { "column": "ignore_action", "kind": "node", "field": "ignore_action", "default": 1 },
-    { "column": "range_abs", "kind": "node", "field": "range_abs", "default": 1 },
-    { "column": "drag_direct", "kind": "node", "field": "drag_direct", "default": 0 },
-    { "column": "react_pos_x", "kind": "node", "field": "react_pos_x", "default": "" },
-    { "column": "react_pos_y", "kind": "node", "field": "react_pos_y", "default": "" },
-    { "column": "offset_circle", "kind": "node", "field": "offset_circle", "default": "" },
-    { "column": "offset_x", "kind": "node", "field": "offset_x", "default": 0 },
-    { "column": "offset_y", "kind": "node", "field": "offset_y", "default": 0 },
-    { "column": "smooth", "kind": "node", "field": "smooth", "default": 100 },
-    { "column": "revert_smooth", "kind": "node", "field": "revert_smooth", "default": 100 },
-    { "column": "revert", "kind": "node", "field": "revert", "default": -1 },
-    { "column": "save_parameter", "kind": "node", "field": "save_parameter", "default": "" },
-    { "column": "revert_action_index", "kind": "node", "field": "revert_action_index", "default": "" },
-    { "column": "revert_idle_index", "kind": "node", "field": "revert_idle_index", "default": "" },
-    { "column": "gyro", "kind": "node", "field": "gyro", "default": 0 },
-    { "column": "gyro_x", "kind": "node", "field": "gyro_x", "default": 0 },
-    { "column": "gyro_y", "kind": "node", "field": "gyro_y", "default": 0 },
-    { "column": "gyro_z", "kind": "node", "field": "gyro_z", "default": 0 },
-    { "column": "limit_time", "kind": "node", "field": "limit_time", "default": 1.0 },
-    { "column": "listener_data", "kind": "node", "field": "listener_data", "default": "" },
-    { "column": "action_trigger", "kind": "node", "field": "action_trigger", "default": "" },
-    { "column": "action_trigger_active", "kind": "node", "field": "action_trigger_active", "default": "" },
-    { "column": "shop_action", "kind": "node", "field": "shop_action", "default": 0 },
-    { "column": "relation_parameter", "kind": "node", "field": "relation_parameter", "default": "" }
+    {
+      "column": "id",
+      "kind": "node",
+      "field": "id",
+      "default": ""
+    },
+    {
+      "column": "desc",
+      "kind": "node",
+      "field": "desc",
+      "default": ""
+    },
+    {
+      "column": "memo",
+      "kind": "meta",
+      "field": "memo",
+      "default": ""
+    },
+    {
+      "column": "ship_skin_id",
+      "kind": "meta",
+      "field": "ship_skin_id",
+      "default": 0
+    },
+    {
+      "column": "draw_able_name",
+      "kind": "node",
+      "field": "draw_able_name",
+      "default": ""
+    },
+    {
+      "column": "parameter",
+      "kind": "node",
+      "field": "parameter",
+      "default": ""
+    },
+    {
+      "column": "mode",
+      "kind": "node",
+      "field": "mode",
+      "default": 1
+    },
+    {
+      "column": "start_value",
+      "kind": "node",
+      "field": "start_value",
+      "default": 0
+    },
+    {
+      "column": "range",
+      "kind": "node",
+      "field": "range",
+      "default": ""
+    },
+    {
+      "column": "parts_data",
+      "kind": "node",
+      "field": "parts_data",
+      "default": ""
+    },
+    {
+      "column": "ignore_react",
+      "kind": "node",
+      "field": "ignore_react",
+      "default": 1
+    },
+    {
+      "column": "react_condition",
+      "kind": "meta",
+      "field": "react_condition",
+      "default": ""
+    },
+    {
+      "column": "ignore_action",
+      "kind": "node",
+      "field": "ignore_action",
+      "default": 1
+    },
+    {
+      "column": "range_abs",
+      "kind": "node",
+      "field": "range_abs",
+      "default": 1
+    },
+    {
+      "column": "drag_direct",
+      "kind": "node",
+      "field": "drag_direct",
+      "default": 0
+    },
+    {
+      "column": "react_pos_x",
+      "kind": "node",
+      "field": "react_pos_x",
+      "default": ""
+    },
+    {
+      "column": "react_pos_y",
+      "kind": "node",
+      "field": "react_pos_y",
+      "default": ""
+    },
+    {
+      "column": "offset_circle",
+      "kind": "node",
+      "field": "offset_circle",
+      "default": ""
+    },
+    {
+      "column": "offset_x",
+      "kind": "node",
+      "field": "offset_x",
+      "default": 0
+    },
+    {
+      "column": "offset_y",
+      "kind": "node",
+      "field": "offset_y",
+      "default": 0
+    },
+    {
+      "column": "smooth",
+      "kind": "node",
+      "field": "smooth",
+      "default": 100
+    },
+    {
+      "column": "revert_smooth",
+      "kind": "node",
+      "field": "revert_smooth",
+      "default": 100
+    },
+    {
+      "column": "revert",
+      "kind": "node",
+      "field": "revert",
+      "default": -1
+    },
+    {
+      "column": "save_parameter",
+      "kind": "node",
+      "field": "save_parameter",
+      "default": ""
+    },
+    {
+      "column": "revert_action_index",
+      "kind": "node",
+      "field": "revert_action_index",
+      "default": ""
+    },
+    {
+      "column": "revert_idle_index",
+      "kind": "node",
+      "field": "revert_idle_index",
+      "default": ""
+    },
+    {
+      "column": "gyro",
+      "kind": "node",
+      "field": "gyro",
+      "default": 0
+    },
+    {
+      "column": "gyro_x",
+      "kind": "node",
+      "field": "gyro_x",
+      "default": 0
+    },
+    {
+      "column": "gyro_y",
+      "kind": "node",
+      "field": "gyro_y",
+      "default": 0
+    },
+    {
+      "column": "gyro_z",
+      "kind": "node",
+      "field": "gyro_z",
+      "default": 0
+    },
+    {
+      "column": "limit_time",
+      "kind": "node",
+      "field": "limit_time",
+      "default": 1.0
+    },
+    {
+      "column": "listener_data",
+      "kind": "node",
+      "field": "listener_data",
+      "default": ""
+    },
+    {
+      "column": "action_trigger",
+      "kind": "node",
+      "field": "action_trigger",
+      "default": ""
+    },
+    {
+      "column": "action_trigger_active",
+      "kind": "node",
+      "field": "action_trigger_active",
+      "default": ""
+    },
+    {
+      "column": "shop_action",
+      "kind": "node",
+      "field": "shop_action",
+      "default": 0
+    },
+    {
+      "column": "relation_parameter",
+      "kind": "node",
+      "field": "relation_parameter",
+      "default": ""
+    }
   ],
   "validation_rules": [
-    { "name": "duplicate_parameter", "fields": ["parameter"] },
-    { "name": "touchidle_draw_conflict", "fields": ["draw_able_name", "action_trigger", "action_trigger_active"] },
-    { "name": "parts_data_format", "fields": ["parts_data"] },
-    { "name": "parts_data_range", "fields": ["parts_data", "range"] },
-    { "name": "duplicate_initial", "fields": [] }
+    {
+      "name": "duplicate_parameter",
+      "fields": [
+        "parameter"
+      ]
+    },
+    {
+      "name": "touchidle_draw_conflict",
+      "fields": [
+        "draw_able_name",
+        "action_trigger",
+        "action_trigger_active"
+      ]
+    },
+    {
+      "name": "parts_data_format",
+      "fields": [
+        "parts_data"
+      ]
+    },
+    {
+      "name": "parts_data_range",
+      "fields": [
+        "parts_data",
+        "range"
+      ]
+    },
+    {
+      "name": "duplicate_initial",
+      "fields": []
+    }
   ],
   "nodes": {
     "Initial": {
@@ -138,14 +346,77 @@
       "body_color": "#2b4139",
       "accent_color": "#6fc49e",
       "fields": [
-        { "key": "tips", "label": "备注", "editor": "text", "default": "", "show_in_modes": ["simple", "advanced"] },
-        { "key": "version", "label": "版本", "editor": "date", "default": "2099-09-09", "show_in_modes": ["simple", "advanced"] },
-        { "key": "defaultState", "label": "默认状态", "editor": "text", "default": "idle0", "show_in_modes": ["simple", "advanced"] },
-        { "key": "CharName", "label": "角色名", "editor": "text", "default": "", "show_in_modes": ["simple", "advanced"] },
-        { "key": "memo", "label": "角色资源名", "editor": "text", "default": "", "show_in_modes": ["simple", "advanced"] },
-        { "key": "ship_skin_id", "label": "角色ID", "editor": "int", "default": 0, "show_in_modes": ["simple", "advanced"] },
-        { "key": "react_condition", "label": "允许目光拖拽的待机", "editor": "text", "default": "", "placeholder": "如 0,17", "show_in_modes": ["simple", "advanced"] },
-        { "key": "author", "label": "作者", "editor": "text", "default": "", "show_in_modes": ["simple", "advanced"] }
+        {
+          "key": "tips",
+          "label": "备注",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "version",
+          "label": "版本",
+          "editor": "date",
+          "default": "2099-09-09",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "CharName",
+          "label": "角色名",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "memo",
+          "label": "角色资源名",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "ship_skin_id",
+          "label": "角色ID",
+          "editor": "int",
+          "default": 0,
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "react_condition",
+          "label": "允许目光拖拽的待机",
+          "editor": "text",
+          "default": "",
+          "placeholder": "如 0,17",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "author",
+          "label": "作者",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        }
       ]
     },
     "TouchIdle": {
@@ -165,20 +436,71 @@
         "supports_quick_create": true
       },
       "fields": [
-        { "key": "tips", "label": "备注", "editor": "text", "default": "", "show_in_modes": ["simple"] },
-        { "key": "desc", "label": "说明", "editor": "text", "default": "", "show_in_modes": ["advanced"] },
-        { "key": "draw_able_name", "label": "框", "editor": "text", "default": "", "show_in_modes": ["simple", "advanced"] },
-        { "key": "parameter", "label": "参数", "editor": "text", "default": "", "show_in_modes": ["simple", "advanced"] },
-        { "key": "range", "label": "参数范围", "editor": "range", "default": "{0,1}", "show_in_modes": ["simple", "advanced"] },
+        {
+          "key": "tips",
+          "label": "备注",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "simple"
+          ]
+        },
+        {
+          "key": "desc",
+          "label": "说明",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "draw_able_name",
+          "label": "框",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "parameter",
+          "label": "参数",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "range",
+          "label": "参数范围",
+          "editor": "range",
+          "default": "{0,1}",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
         {
           "key": "control_type",
           "label": "交互类型",
           "editor": "combo",
           "default": "click",
-          "show_in_modes": ["simple"],
+          "show_in_modes": [
+            "simple"
+          ],
           "options": [
-            { "label": "点击", "value": "click" },
-            { "label": "拖拽", "value": "drag" }
+            {
+              "label": "点击",
+              "value": "click"
+            },
+            {
+              "label": "拖拽",
+              "value": "drag"
+            }
           ]
         },
         {
@@ -186,14 +508,34 @@
           "label": "拖拽方向",
           "editor": "combo",
           "default": "",
-          "show_in_modes": ["simple"],
-          "visibility": { "field": "control_type", "equals": "drag" },
+          "show_in_modes": [
+            "simple"
+          ],
+          "visibility": {
+            "field": "control_type",
+            "equals": "drag"
+          },
           "options": [
-            { "label": "无", "value": "" },
-            { "label": "上", "value": "up" },
-            { "label": "下", "value": "down" },
-            { "label": "左", "value": "left" },
-            { "label": "右", "value": "right" }
+            {
+              "label": "无",
+              "value": ""
+            },
+            {
+              "label": "上",
+              "value": "up"
+            },
+            {
+              "label": "下",
+              "value": "down"
+            },
+            {
+              "label": "左",
+              "value": "left"
+            },
+            {
+              "label": "右",
+              "value": "right"
+            }
           ]
         },
         {
@@ -201,10 +543,18 @@
           "label": "过渡形式",
           "editor": "combo",
           "default": "animated",
-          "show_in_modes": ["simple"],
+          "show_in_modes": [
+            "simple"
+          ],
           "options": [
-            { "label": "动画", "value": "animated" },
-            { "label": "硬切", "value": "hard" }
+            {
+              "label": "动画",
+              "value": "animated"
+            },
+            {
+              "label": "硬切",
+              "value": "hard"
+            }
           ]
         },
         {
@@ -212,22 +562,51 @@
           "label": "播放的动画",
           "editor": "text",
           "default": "",
-          "show_in_modes": ["simple", "advanced"],
-          "visibility": { "field": "transition_type", "not_equals": "hard" }
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ],
+          "visibility": {
+            "field": "transition_type",
+            "not_equals": "hard"
+          }
         },
-        { "key": "action_trigger_active", "label": "目标idle", "editor": "int", "default": 1, "show_in_modes": ["simple", "advanced"] },
+        {
+          "key": "action_trigger_active",
+          "label": "目标idle",
+          "editor": "int",
+          "default": 1,
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
         {
           "key": "action_trigger_kind_ui",
           "label": "触发器类型",
           "editor": "combo",
           "default": "type2_action",
-          "show_in_modes": ["advanced"],
+          "show_in_modes": [
+            "advanced"
+          ],
           "read_only": true,
           "options": [
-            { "label": "当前为空", "value": "empty" },
-            { "label": "type=2 动作触发", "value": "type2_action" },
-            { "label": "type=2 目标触发", "value": "type2_target" },
-            { "label": "预留其他类型", "value": "reserved_raw" }
+            {
+              "label": "当前为空",
+              "value": "empty"
+            },
+            {
+              "label": "type=2 动作触发",
+              "value": "type2_action"
+            },
+            {
+              "label": "type=2 目标触发",
+              "value": "type2_target"
+            },
+            {
+              "label": "预留其他类型",
+              "value": "reserved_raw"
+            }
           ]
         },
         {
@@ -236,20 +615,36 @@
           "editor": "text",
           "default": "",
           "read_only": true,
-          "show_in_modes": ["advanced"],
-          "visibility": { "field": "action_trigger_kind_ui", "equals": "reserved_raw" }
+          "show_in_modes": [
+            "advanced"
+          ],
+          "visibility": {
+            "field": "action_trigger_kind_ui",
+            "equals": "reserved_raw"
+          }
         },
         {
           "key": "action_trigger_active_kind_ui",
           "label": "状态门控类型",
           "editor": "combo",
           "default": "idle_gate",
-          "show_in_modes": ["advanced"],
+          "show_in_modes": [
+            "advanced"
+          ],
           "read_only": true,
           "options": [
-            { "label": "当前为空", "value": "empty" },
-            { "label": "idle 门控", "value": "idle_gate" },
-            { "label": "预留其他类型", "value": "reserved_raw" }
+            {
+              "label": "当前为空",
+              "value": "empty"
+            },
+            {
+              "label": "idle 门控",
+              "value": "idle_gate"
+            },
+            {
+              "label": "预留其他类型",
+              "value": "reserved_raw"
+            }
           ]
         },
         {
@@ -258,56 +653,268 @@
           "editor": "text",
           "default": "",
           "read_only": true,
-          "show_in_modes": ["advanced"],
-          "visibility": { "field": "action_trigger_active_kind_ui", "equals": "reserved_raw" }
+          "show_in_modes": [
+            "advanced"
+          ],
+          "visibility": {
+            "field": "action_trigger_active_kind_ui",
+            "equals": "reserved_raw"
+          }
         },
-        { "key": "id", "label": "ID", "editor": "int", "default": 0, "show_in_modes": ["advanced"], "read_only": true },
+        {
+          "key": "id",
+          "label": "ID",
+          "editor": "int",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ],
+          "read_only": true
+        },
         {
           "key": "mode",
           "label": "数值模式",
           "editor": "combo",
           "default": 1,
-          "show_in_modes": ["advanced"],
+          "show_in_modes": [
+            "advanced"
+          ],
           "options": [
-            { "label": "覆盖", "value": 1 },
-            { "label": "加法", "value": 2 },
-            { "label": "乘法", "value": 3 }
+            {
+              "label": "覆盖",
+              "value": 1
+            },
+            {
+              "label": "加法",
+              "value": 2
+            },
+            {
+              "label": "乘法",
+              "value": 3
+            }
           ]
         },
-        { "key": "start_value", "label": "初始值", "editor": "int", "default": 0, "show_in_modes": ["advanced"] },
-        { "key": "parts_data", "label": "数值吸附范围", "editor": "text", "default": "", "show_in_modes": ["advanced"] },
-        { "key": "ignore_react", "label": "屏蔽目光跟随", "editor": "bool", "default": 1, "show_in_modes": ["advanced"] },
-        { "key": "ignore_action", "label": "非待机状态不可拖动", "editor": "bool", "default": 1, "show_in_modes": ["advanced"] },
-        { "key": "range_abs", "label": "使用绝对值", "editor": "bool", "default": 1, "show_in_modes": ["advanced"] },
+        {
+          "key": "start_value",
+          "label": "初始值",
+          "editor": "int",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "parts_data",
+          "label": "数值吸附范围",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "ignore_react",
+          "label": "屏蔽目光跟随",
+          "editor": "bool",
+          "default": 1,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "ignore_action",
+          "label": "非待机状态不可拖动",
+          "editor": "bool",
+          "default": 1,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "range_abs",
+          "label": "使用绝对值",
+          "editor": "bool",
+          "default": 1,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
         {
           "key": "drag_direct",
           "label": "方向响应",
           "editor": "combo",
           "default": 0,
-          "show_in_modes": ["advanced"],
+          "show_in_modes": [
+            "advanced"
+          ],
           "options": [
-            { "label": "0 不适用", "value": 0 },
-            { "label": "1 正向", "value": 1 },
-            { "label": "2 负向", "value": 2 }
+            {
+              "label": "0 不适用",
+              "value": 0
+            },
+            {
+              "label": "1 正向",
+              "value": 1
+            },
+            {
+              "label": "2 负向",
+              "value": 2
+            }
           ]
         },
-        { "key": "react_pos_x", "label": "眼神跟随X", "editor": "nullable_int", "default": null, "show_in_modes": ["advanced"] },
-        { "key": "react_pos_y", "label": "眼神跟随Y", "editor": "nullable_int", "default": null, "show_in_modes": ["advanced"] },
-        { "key": "offset_circle", "label": "圆形偏移", "editor": "text", "default": "", "show_in_modes": ["advanced"] },
-        { "key": "offset_x", "label": "左右移动影响拖拽", "editor": "int", "default": 0, "show_in_modes": ["advanced"] },
-        { "key": "offset_y", "label": "上下移动影响拖拽", "editor": "int", "default": 0, "show_in_modes": ["advanced"] },
-        { "key": "smooth", "label": "开始拖拽响应系数", "editor": "int", "default": 100, "show_in_modes": ["advanced"] },
-        { "key": "revert_smooth", "label": "回弹拖拽响应系数", "editor": "int", "default": 100, "show_in_modes": ["advanced"] },
-        { "key": "revert", "label": "回弹延迟", "editor": "int", "default": -1, "show_in_modes": ["advanced"] },
-        { "key": "save_parameter", "label": "保存参数", "editor": "text", "default": "", "show_in_modes": ["advanced"] },
-        { "key": "gyro", "label": "陀螺仪启用", "editor": "bool", "default": 0, "show_in_modes": ["advanced"] },
-        { "key": "gyro_x", "label": "陀螺仪X轴", "editor": "int", "default": 0, "show_in_modes": ["advanced"] },
-        { "key": "gyro_y", "label": "陀螺仪Y轴", "editor": "int", "default": 0, "show_in_modes": ["advanced"] },
-        { "key": "gyro_z", "label": "陀螺仪Z轴", "editor": "int", "default": 0, "show_in_modes": ["advanced"] },
-        { "key": "limit_time", "label": "触发间隔", "editor": "float", "default": 1.0, "show_in_modes": ["advanced"] },
-        { "key": "listener_data", "label": "监听配置", "editor": "text", "default": "", "show_in_modes": ["advanced"] },
-        { "key": "shop_action", "label": "商店动作", "editor": "bool", "default": 0, "show_in_modes": ["advanced"] },
-        { "key": "relation_parameter", "label": "参数联动", "editor": "text", "default": "", "show_in_modes": ["advanced"] }
+        {
+          "key": "react_pos_x",
+          "label": "眼神跟随X",
+          "editor": "nullable_int",
+          "default": null,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "react_pos_y",
+          "label": "眼神跟随Y",
+          "editor": "nullable_int",
+          "default": null,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "offset_circle",
+          "label": "圆形偏移",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "offset_x",
+          "label": "左右移动影响拖拽",
+          "editor": "int",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "offset_y",
+          "label": "上下移动影响拖拽",
+          "editor": "int",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "smooth",
+          "label": "开始拖拽响应系数",
+          "editor": "int",
+          "default": 100,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "revert_smooth",
+          "label": "回弹拖拽响应系数",
+          "editor": "int",
+          "default": 100,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "revert",
+          "label": "回弹延迟",
+          "editor": "int",
+          "default": -1,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "save_parameter",
+          "label": "保存参数",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "gyro",
+          "label": "陀螺仪启用",
+          "editor": "bool",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "gyro_x",
+          "label": "陀螺仪X轴",
+          "editor": "int",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "gyro_y",
+          "label": "陀螺仪Y轴",
+          "editor": "int",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "gyro_z",
+          "label": "陀螺仪Z轴",
+          "editor": "int",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "limit_time",
+          "label": "触发间隔",
+          "editor": "float",
+          "default": 1.0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "listener_data",
+          "label": "监听配置",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "shop_action",
+          "label": "商店动作",
+          "editor": "bool",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "relation_parameter",
+          "label": "参数联动",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "advanced"
+          ]
+        }
       ]
     },
     "TouchDrag": {
@@ -327,20 +934,71 @@
         "supports_quick_create": true
       },
       "fields": [
-        { "key": "tips", "label": "备注", "editor": "text", "default": "", "show_in_modes": ["simple"] },
-        { "key": "desc", "label": "说明", "editor": "text", "default": "", "show_in_modes": ["advanced"] },
-        { "key": "draw_able_name", "label": "框", "editor": "text", "default": "", "show_in_modes": ["simple", "advanced"] },
-        { "key": "parameter", "label": "参数", "editor": "text", "default": "", "show_in_modes": ["simple", "advanced"] },
-        { "key": "range", "label": "参数范围", "editor": "range", "default": "{0,1}", "show_in_modes": ["simple", "advanced"] },
+        {
+          "key": "tips",
+          "label": "备注",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "simple"
+          ]
+        },
+        {
+          "key": "desc",
+          "label": "说明",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "draw_able_name",
+          "label": "框",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "parameter",
+          "label": "参数",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "range",
+          "label": "参数范围",
+          "editor": "range",
+          "default": "{0,1}",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
         {
           "key": "control_type",
           "label": "交互类型",
           "editor": "combo",
           "default": "click",
-          "show_in_modes": ["simple"],
+          "show_in_modes": [
+            "simple"
+          ],
           "options": [
-            { "label": "点击", "value": "click" },
-            { "label": "拖拽", "value": "drag" }
+            {
+              "label": "点击",
+              "value": "click"
+            },
+            {
+              "label": "拖拽",
+              "value": "drag"
+            }
           ]
         },
         {
@@ -348,14 +1006,34 @@
           "label": "拖拽方向",
           "editor": "combo",
           "default": "",
-          "show_in_modes": ["simple"],
-          "visibility": { "field": "control_type", "equals": "drag" },
+          "show_in_modes": [
+            "simple"
+          ],
+          "visibility": {
+            "field": "control_type",
+            "equals": "drag"
+          },
           "options": [
-            { "label": "无", "value": "" },
-            { "label": "上", "value": "up" },
-            { "label": "下", "value": "down" },
-            { "label": "左", "value": "left" },
-            { "label": "右", "value": "right" }
+            {
+              "label": "无",
+              "value": ""
+            },
+            {
+              "label": "上",
+              "value": "up"
+            },
+            {
+              "label": "下",
+              "value": "down"
+            },
+            {
+              "label": "左",
+              "value": "left"
+            },
+            {
+              "label": "右",
+              "value": "right"
+            }
           ]
         },
         {
@@ -363,10 +1041,18 @@
           "label": "交互结果",
           "editor": "combo",
           "default": "action",
-          "show_in_modes": ["simple"],
+          "show_in_modes": [
+            "simple"
+          ],
           "options": [
-            { "label": "播放动画", "value": "action" },
-            { "label": "数值变化", "value": "value" }
+            {
+              "label": "播放动画",
+              "value": "action"
+            },
+            {
+              "label": "数值变化",
+              "value": "value"
+            }
           ]
         },
         {
@@ -374,29 +1060,55 @@
           "label": "播放的动画",
           "editor": "text",
           "default": "",
-          "show_in_modes": ["simple", "advanced"],
-          "visibility": { "field": "result_type", "equals": "action" }
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ],
+          "visibility": {
+            "field": "result_type",
+            "equals": "action"
+          }
         },
         {
           "key": "action_trigger_active",
           "label": "目标idle",
           "editor": "int",
           "default": 1,
-          "show_in_modes": ["simple", "advanced"],
-          "visibility": { "field": "result_type", "equals": "action" }
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ],
+          "visibility": {
+            "field": "result_type",
+            "equals": "action"
+          }
         },
         {
           "key": "action_trigger_kind_ui",
           "label": "触发器类型",
           "editor": "combo",
           "default": "type2_action",
-          "show_in_modes": ["advanced"],
+          "show_in_modes": [
+            "advanced"
+          ],
           "read_only": true,
           "options": [
-            { "label": "当前为空", "value": "empty" },
-            { "label": "type=2 动作触发", "value": "type2_action" },
-            { "label": "type=2 目标触发", "value": "type2_target" },
-            { "label": "预留其他类型", "value": "reserved_raw" }
+            {
+              "label": "当前为空",
+              "value": "empty"
+            },
+            {
+              "label": "type=2 动作触发",
+              "value": "type2_action"
+            },
+            {
+              "label": "type=2 目标触发",
+              "value": "type2_target"
+            },
+            {
+              "label": "预留其他类型",
+              "value": "reserved_raw"
+            }
           ]
         },
         {
@@ -405,20 +1117,36 @@
           "editor": "text",
           "default": "",
           "read_only": true,
-          "show_in_modes": ["advanced"],
-          "visibility": { "field": "action_trigger_kind_ui", "equals": "reserved_raw" }
+          "show_in_modes": [
+            "advanced"
+          ],
+          "visibility": {
+            "field": "action_trigger_kind_ui",
+            "equals": "reserved_raw"
+          }
         },
         {
           "key": "action_trigger_active_kind_ui",
           "label": "状态门控类型",
           "editor": "combo",
           "default": "idle_gate",
-          "show_in_modes": ["advanced"],
+          "show_in_modes": [
+            "advanced"
+          ],
           "read_only": true,
           "options": [
-            { "label": "当前为空", "value": "empty" },
-            { "label": "idle 门控", "value": "idle_gate" },
-            { "label": "预留其他类型", "value": "reserved_raw" }
+            {
+              "label": "当前为空",
+              "value": "empty"
+            },
+            {
+              "label": "idle 门控",
+              "value": "idle_gate"
+            },
+            {
+              "label": "预留其他类型",
+              "value": "reserved_raw"
+            }
           ]
         },
         {
@@ -427,73 +1155,235 @@
           "editor": "text",
           "default": "",
           "read_only": true,
-          "show_in_modes": ["advanced"],
-          "visibility": { "field": "action_trigger_active_kind_ui", "equals": "reserved_raw" }
+          "show_in_modes": [
+            "advanced"
+          ],
+          "visibility": {
+            "field": "action_trigger_active_kind_ui",
+            "equals": "reserved_raw"
+          }
         },
         {
           "key": "target_value",
           "label": "数值变化到",
           "editor": "float",
           "default": 1.0,
-          "show_in_modes": ["simple"],
-          "visibility": { "field": "result_type", "equals": "value" }
+          "show_in_modes": [
+            "simple"
+          ],
+          "visibility": {
+            "field": "result_type",
+            "equals": "value"
+          }
         },
         {
           "key": "revert_enabled",
           "label": "数值是否回弹",
           "editor": "bool",
           "default": 0,
-          "show_in_modes": ["simple"],
-          "visibility": { "field": "result_type", "equals": "value" }
+          "show_in_modes": [
+            "simple"
+          ],
+          "visibility": {
+            "field": "result_type",
+            "equals": "value"
+          }
         },
-        { "key": "parts_data", "label": "数值吸附", "editor": "text", "default": "", "show_in_modes": ["simple", "advanced"] },
-        { "key": "id", "label": "ID", "editor": "int", "default": 0, "show_in_modes": ["advanced"], "read_only": true },
+        {
+          "key": "parts_data",
+          "label": "数值吸附",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "id",
+          "label": "ID",
+          "editor": "int",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ],
+          "read_only": true
+        },
         {
           "key": "mode",
           "label": "数值模式",
           "editor": "combo",
           "default": 1,
-          "show_in_modes": ["advanced"],
+          "show_in_modes": [
+            "advanced"
+          ],
           "options": [
-            { "label": "覆盖", "value": 1 },
-            { "label": "加法", "value": 2 },
-            { "label": "乘法", "value": 3 }
+            {
+              "label": "覆盖",
+              "value": 1
+            },
+            {
+              "label": "加法",
+              "value": 2
+            },
+            {
+              "label": "乘法",
+              "value": 3
+            }
           ]
         },
-        { "key": "start_value", "label": "初始值", "editor": "int", "default": 0, "show_in_modes": ["advanced"] },
-        { "key": "ignore_react", "label": "屏蔽目光跟随", "editor": "bool", "default": 1, "show_in_modes": ["advanced"] },
-        { "key": "ignore_action", "label": "非待机状态不可拖动", "editor": "bool", "default": 1, "show_in_modes": ["advanced"] },
-        { "key": "range_abs", "label": "使用绝对值", "editor": "bool", "default": 1, "show_in_modes": ["advanced"] },
+        {
+          "key": "start_value",
+          "label": "初始值",
+          "editor": "int",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "ignore_react",
+          "label": "屏蔽目光跟随",
+          "editor": "bool",
+          "default": 1,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "ignore_action",
+          "label": "非待机状态不可拖动",
+          "editor": "bool",
+          "default": 1,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "range_abs",
+          "label": "使用绝对值",
+          "editor": "bool",
+          "default": 1,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
         {
           "key": "drag_direct",
           "label": "方向响应",
           "editor": "combo",
           "default": 0,
-          "show_in_modes": ["advanced"],
+          "show_in_modes": [
+            "advanced"
+          ],
           "options": [
-            { "label": "0 不适用", "value": 0 },
-            { "label": "1 正向", "value": 1 },
-            { "label": "2 负向", "value": 2 }
+            {
+              "label": "0 不适用",
+              "value": 0
+            },
+            {
+              "label": "1 正向",
+              "value": 1
+            },
+            {
+              "label": "2 负向",
+              "value": 2
+            }
           ]
         },
-        { "key": "react_pos_x", "label": "眼神跟随X", "editor": "nullable_int", "default": null, "show_in_modes": ["advanced"] },
-        { "key": "react_pos_y", "label": "眼神跟随Y", "editor": "nullable_int", "default": null, "show_in_modes": ["advanced"] },
-        { "key": "offset_circle", "label": "圆形偏移", "editor": "text", "default": "", "show_in_modes": ["advanced"] },
-        { "key": "offset_x", "label": "左右移动影响拖拽", "editor": "int", "default": 0, "show_in_modes": ["advanced"] },
-        { "key": "offset_y", "label": "上下移动影响拖拽", "editor": "int", "default": 0, "show_in_modes": ["advanced"] },
-        { "key": "smooth", "label": "开始拖拽响应系数", "editor": "int", "default": 100, "show_in_modes": ["advanced"] },
-        { "key": "revert_smooth", "label": "回弹拖拽响应系数", "editor": "int", "default": 100, "show_in_modes": ["advanced"] },
-        { "key": "revert", "label": "回弹延迟", "editor": "int", "default": -1, "show_in_modes": ["advanced"] },
+        {
+          "key": "react_pos_x",
+          "label": "眼神跟随X",
+          "editor": "nullable_int",
+          "default": null,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "react_pos_y",
+          "label": "眼神跟随Y",
+          "editor": "nullable_int",
+          "default": null,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "offset_circle",
+          "label": "圆形偏移",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "offset_x",
+          "label": "左右移动影响拖拽",
+          "editor": "int",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "offset_y",
+          "label": "上下移动影响拖拽",
+          "editor": "int",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "smooth",
+          "label": "开始拖拽响应系数",
+          "editor": "int",
+          "default": 100,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "revert_smooth",
+          "label": "回弹拖拽响应系数",
+          "editor": "int",
+          "default": 100,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "revert",
+          "label": "回弹延迟",
+          "editor": "int",
+          "default": -1,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
         {
           "key": "revert_action_index",
           "label": "播放动画时数值归零",
           "editor": "combo",
           "default": "",
-          "show_in_modes": ["advanced"],
-          "visibility": { "field": "result_type", "equals": "value" },
+          "show_in_modes": [
+            "advanced"
+          ],
+          "visibility": {
+            "field": "result_type",
+            "equals": "value"
+          },
           "options": [
-            { "label": "否", "value": "" },
-            { "label": "是", "value": 1 }
+            {
+              "label": "否",
+              "value": ""
+            },
+            {
+              "label": "是",
+              "value": 1
+            }
           ]
         },
         {
@@ -501,22 +1391,105 @@
           "label": "切换待机时数值归零",
           "editor": "combo",
           "default": "",
-          "show_in_modes": ["advanced"],
-          "visibility": { "field": "result_type", "equals": "value" },
+          "show_in_modes": [
+            "advanced"
+          ],
+          "visibility": {
+            "field": "result_type",
+            "equals": "value"
+          },
           "options": [
-            { "label": "否", "value": "" },
-            { "label": "是", "value": 1 }
+            {
+              "label": "否",
+              "value": ""
+            },
+            {
+              "label": "是",
+              "value": 1
+            }
           ]
         },
-        { "key": "save_parameter", "label": "保存参数", "editor": "text", "default": "", "show_in_modes": ["advanced"] },
-        { "key": "gyro", "label": "陀螺仪启用", "editor": "bool", "default": 0, "show_in_modes": ["advanced"] },
-        { "key": "gyro_x", "label": "陀螺仪X轴", "editor": "int", "default": 0, "show_in_modes": ["advanced"] },
-        { "key": "gyro_y", "label": "陀螺仪Y轴", "editor": "int", "default": 0, "show_in_modes": ["advanced"] },
-        { "key": "gyro_z", "label": "陀螺仪Z轴", "editor": "int", "default": 0, "show_in_modes": ["advanced"] },
-        { "key": "limit_time", "label": "触发间隔", "editor": "float", "default": 1.0, "show_in_modes": ["advanced"] },
-        { "key": "listener_data", "label": "监听配置", "editor": "text", "default": "", "show_in_modes": ["advanced"] },
-        { "key": "shop_action", "label": "商店动作", "editor": "bool", "default": 0, "show_in_modes": ["advanced"] },
-        { "key": "relation_parameter", "label": "参数联动", "editor": "text", "default": "", "show_in_modes": ["advanced"] }
+        {
+          "key": "save_parameter",
+          "label": "保存参数",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "gyro",
+          "label": "陀螺仪启用",
+          "editor": "bool",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "gyro_x",
+          "label": "陀螺仪X轴",
+          "editor": "int",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "gyro_y",
+          "label": "陀螺仪Y轴",
+          "editor": "int",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "gyro_z",
+          "label": "陀螺仪Z轴",
+          "editor": "int",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "limit_time",
+          "label": "触发间隔",
+          "editor": "float",
+          "default": 1.0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "listener_data",
+          "label": "监听配置",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "shop_action",
+          "label": "商店动作",
+          "editor": "bool",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "relation_parameter",
+          "label": "参数联动",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "advanced"
+          ]
+        }
       ]
     },
     "Comment": {
@@ -529,7 +1502,67 @@
       "body_color": "#5a4a26",
       "accent_color": "#d9b766",
       "fields": [
-        { "key": "content", "label": "内容", "editor": "text", "default": "", "show_in_modes": ["simple", "advanced"], "multiline": true }
+        {
+          "key": "note_box_color",
+          "label": "框体颜色",
+          "editor": "color",
+          "default": "#76808d",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "note_box_alpha",
+          "label": "框体透明度",
+          "editor": "int",
+          "default": 62,
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "note_text_color",
+          "label": "字体颜色",
+          "editor": "color",
+          "default": "#f3f5f8",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "note_text_alpha",
+          "label": "字体透明度",
+          "editor": "int",
+          "default": 96,
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "note_font_size",
+          "label": "字体大小",
+          "editor": "int",
+          "default": 15,
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "content",
+          "label": "内容",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ],
+          "multiline": true
+        }
       ]
     }
   }

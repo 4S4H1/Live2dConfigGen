@@ -20,6 +20,25 @@ QMenu {
     border: 1px solid #41506b;
     padding: 4px;
 }
+QToolBar {
+    background: #243043;
+    border-bottom: 1px solid #3c4a61;
+    spacing: 8px;
+    padding: 4px 8px;
+}
+QToolBar QToolButton {
+    background: #34445c;
+    border: 1px solid #4b627f;
+    border-radius: 8px;
+    padding: 6px 12px;
+    color: #e5edf7;
+}
+QToolBar QToolButton:hover {
+    background: #405473;
+}
+QToolBar QToolButton:pressed {
+    background: #2c3c52;
+}
 QMenu::item:selected {
     background: #456791;
 }
