@@ -22,19 +22,22 @@ class AddNodesCommand(QUndoCommand):
 
 
 class RemoveNodesCommand(QUndoCommand):
-    def __init__(self, controller, nodes, connections) -> None:
+    def __init__(self, controller, nodes, connections, trash_entries) -> None:
         super().__init__("删除节点")
         self.controller = controller
         self.nodes = [node.clone() for node in nodes]
         self.connections = list(connections)
+        self.trash_entries = list(trash_entries)
 
     def redo(self) -> None:
-        node_uuids = [node.uuid for node in self.nodes]
-        pairs = [(connection.from_uuid, connection.to_uuid) for connection in self.connections]
-        self.controller._remove_nodes(node_uuids, pairs)
+        self.controller._delete_nodes([node.clone() for node in self.nodes], list(self.connections), list(self.trash_entries))
 
     def undo(self) -> None:
-        self.controller._insert_nodes([node.clone() for node in self.nodes], list(self.connections))
+        self.controller._restore_deleted_nodes(
+            [node.clone() for node in self.nodes],
+            list(self.connections),
+            [entry.entry_id for entry in self.trash_entries],
+        )
 
 
 class UpdateFieldCommand(QUndoCommand):
@@ -67,6 +70,20 @@ class MoveNodeCommand(QUndoCommand):
 
     def undo(self) -> None:
         self.controller._move_node(self.node_uuid, self.old_pos)
+
+
+class MoveNodesCommand(QUndoCommand):
+    def __init__(self, controller, old_positions, new_positions, label: str = "整理节点布局") -> None:
+        super().__init__(label)
+        self.controller = controller
+        self.old_positions = dict(old_positions)
+        self.new_positions = dict(new_positions)
+
+    def redo(self) -> None:
+        self.controller._move_nodes(self.new_positions)
+
+    def undo(self) -> None:
+        self.controller._move_nodes(self.old_positions)
 
 
 class AddConnectionCommand(QUndoCommand):

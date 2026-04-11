@@ -51,6 +51,8 @@ class NodeRecord:
     ui_position: dict[str, float] = field(default_factory=lambda: {"x": 0.0, "y": 0.0})
     ui_size: dict[str, float] | None = None
     sequence_no: int | None = None
+    type_slot: int | None = None
+    export_slot: int | None = None
     manual_fields: set[str] = field(default_factory=set)
 
     def clone(self) -> "NodeRecord":
@@ -61,8 +63,21 @@ class NodeRecord:
             ui_position=dict(self.ui_position),
             ui_size=dict(self.ui_size) if self.ui_size else None,
             sequence_no=self.sequence_no,
+            type_slot=self.type_slot,
+            export_slot=self.export_slot,
             manual_fields=set(self.manual_fields),
         )
+
+
+@dataclass
+class TrashEntry:
+    entry_id: str
+    node_uuid: str
+    node_type: str
+    title: str
+    type_slot: int | None = None
+    export_slot: int | None = None
+    reserved_fields: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -70,6 +85,7 @@ class DocumentModel:
     meta: MetaRecord = field(default_factory=MetaRecord)
     nodes: list[NodeRecord] = field(default_factory=list)
     connections: list[ConnectionRecord] = field(default_factory=list)
+    trash_bin: list[TrashEntry] = field(default_factory=list)
     canvas_view: CanvasViewState = field(default_factory=CanvasViewState)
     state: DocumentState = field(default_factory=DocumentState)
     global_mode: str = "simple"

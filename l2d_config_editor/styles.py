@@ -59,6 +59,10 @@ QListWidget::item {
 QListWidget::item:selected {
     background: #3c597f;
 }
+QListWidget#configFileList::item {
+    padding: 7px 8px;
+    margin: 2px 0;
+}
 QCheckBox {
     spacing: 6px;
 }
@@ -88,6 +92,11 @@ QScrollArea {
 QFrame#searchPanel {
     background: rgba(40, 51, 69, 0.92);
     border: 1px solid #45556f;
+    border-radius: 12px;
+}
+QFrame#sidebarToolPanel {
+    background: rgba(40, 51, 69, 0.96);
+    border: 1px solid #4d607d;
     border-radius: 12px;
 }
 QFrame#inlineNodeForm {
@@ -128,6 +137,11 @@ QLabel#searchTitle, QLabel#sectionTitle, QLabel#validationSummaryTitle {
     color: #f0f5ff;
     font-size: 14px;
     font-weight: 600;
+}
+QLabel#sidebarHint {
+    color: #c2d0e4;
+    font-size: 12px;
+    line-height: 1.35em;
 }
 QFrame#validationSummary {
     background: #253042;

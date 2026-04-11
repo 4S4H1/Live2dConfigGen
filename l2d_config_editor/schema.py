@@ -17,7 +17,8 @@ class Option:
 @dataclass(frozen=True)
 class VisibilitySpec:
     field: str
-    equals: Any
+    equals: Any = None
+    not_equals: Any = None
 
 
 @dataclass(frozen=True)
@@ -99,7 +100,8 @@ def _parse_field(raw: dict[str, Any]) -> FieldSchema:
     if "visibility" in raw and raw["visibility"]:
         visibility = VisibilitySpec(
             field=str(raw["visibility"]["field"]),
-            equals=raw["visibility"]["equals"],
+            equals=raw["visibility"].get("equals"),
+            not_equals=raw["visibility"].get("not_equals"),
         )
     options = tuple(Option(label=item["label"], value=item["value"]) for item in raw.get("options", []))
     return FieldSchema(
@@ -184,4 +186,7 @@ def field_visible(field: FieldSchema, node_fields: dict[str, Any], global_mode: 
         return False
     if not field.visibility:
         return True
-    return node_fields.get(field.visibility.field) == field.visibility.equals
+    value = node_fields.get(field.visibility.field)
+    if field.visibility.not_equals is not None:
+        return value != field.visibility.not_equals
+    return value == field.visibility.equals

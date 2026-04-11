@@ -1,0 +1,97 @@
+{
+  "global_mode": "simple",
+  "meta": {
+    "version": "2099-09-09",
+    "author": "123123",
+    "ship_skin_id": 1230,
+    "memo": "AAAA",
+    "default_state": "idle0",
+    "react_condition": 0,
+    "tips": "AAAAAAAAAAAAAAAAAA",
+    "CharName": "SSSSS"
+  },
+  "nodes": [
+    {
+      "uuid": "615c8e637d3146d6b5e8df850bd68b8a",
+      "type": "Initial",
+      "ui_position": {
+        "x": 22.0,
+        "y": 51.0
+      },
+      "tips": "AAAAAAAAAAAAAAAAAA",
+      "version": "2099-09-09",
+      "defaultState": "idle0",
+      "CharName": "SSSSS",
+      "memo": "AAAA",
+      "ship_skin_id": 1230,
+      "react_condition": 0,
+      "author": "123123"
+    },
+    {
+      "uuid": "61b5f7f5258e4372b9588914f826b0a7",
+      "type": "TouchIdle",
+      "ui_position": {
+        "x": 689.5911000000002,
+        "y": 89.31010000000002
+      },
+      "type_slot": 1,
+      "export_slot": 1,
+      "tips": "",
+      "draw_able_name": "TouchIdle1",
+      "parameter": "Paramtouch_idle1",
+      "range": "{0,1}",
+      "control_type": "click",
+      "drag_ui_direction": "",
+      "transition_type": "animated",
+      "action_trigger": "{type = 2 ,action = 'touch_idle1'}",
+      "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 1}",
+      "id": 123001,
+      "mode": 1,
+      "start_value": 0,
+      "parts_data": "",
+      "ignore_react": 1,
+      "ignore_action": 1,
+      "range_abs": 1,
+      "drag_direct": 0,
+      "react_pos_x": null,
+      "react_pos_y": null,
+      "offset_x": 0,
+      "offset_y": 0,
+      "smooth": 100,
+      "revert_smooth": 100,
+      "revert": -1,
+      "gyro": 0,
+      "gyro_x": 0,
+      "gyro_y": 0,
+      "gyro_z": 0,
+      "limit_time": 1,
+      "shop_action": 0
+    },
+    {
+      "uuid": "b1ce14160e4545c4a5fd8bc306c31e32",
+      "type": "Comment",
+      "ui_position": {
+        "x": 547.2796590810998,
+        "y": -267.1554733902999
+      },
+      "ui_size": {
+        "width": 757.0613690149997,
+        "height": 315.0
+      },
+      "content": "",
+      "drag_direct": 0
+    }
+  ],
+  "connections": [
+    {
+      "from_uuid": "615c8e637d3146d6b5e8df850bd68b8a",
+      "to_uuid": "61b5f7f5258e4372b9588914f826b0a7"
+    }
+  ],
+  "trash_bin": [],
+  "canvas_view": {
+    "scale": 0.3855432894295319,
+    "offset_x": 1055.6531812606995,
+    "offset_y": 176.3744872867999
+  }
+}

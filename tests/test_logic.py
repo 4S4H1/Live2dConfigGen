@@ -20,6 +20,7 @@ from l2d_config_editor.logic import (
     export_document_dict,
     get_default_schema,
     load_document,
+    node_title,
     reassign_function_ids,
     save_document,
     search_document,
@@ -166,6 +167,13 @@ class LogicTests(unittest.TestCase):
         hits = search_document(self.schema, document, "13")
         self.assertTrue(any(hit.field_name == "action_trigger_active" and hit.preview == "13" for hit in hits))
 
+    def test_node_title_uses_type_slot_and_tips(self) -> None:
+        document = self.make_ready_document()
+        node = create_node(self.schema, document, "TouchIdle")
+        node.fields["tips"] = "备注"
+        document.nodes.append(node)
+        self.assertEqual("TouchIdle1-备注", node_title(self.schema, node))
+
     def test_export_payload_contains_meta_and_nodes(self) -> None:
         document = self.make_ready_document()
         document.nodes.append(create_node(self.schema, document, "Comment"))
@@ -227,6 +235,71 @@ class LogicTests(unittest.TestCase):
         label = form._form.itemAt(0, form._form.ItemRole.LabelRole).widget()
         self.assertEqual(Qt.TextFormat.RichText, label.textFormat())
         self.assertEqual("<b><font color='#ffcc66'>备注</font></b>", label.text())
+
+    def test_touchidle_hard_hides_action_trigger_editor(self) -> None:
+        document = self.make_ready_document()
+        node = create_node(self.schema, document, "TouchIdle")
+        node.fields["transition_type"] = "hard"
+        apply_auto_rules(self.schema, document, node, source_mode="simple", changed_key="transition_type")
+        form = NodeFormWidget(self.schema, inline=False)
+        form.set_node(node, "simple")
+        self.assertNotIn("action_trigger", form._bindings)
+        self.assertIn("action_trigger_active", form._bindings)
+
+    def test_clipboard_copy_strips_tips_from_function_nodes(self) -> None:
+        controller = EditorController()
+        initial = next(node for node in controller.document.nodes if node.type == "Initial")
+        controller.update_field(initial.uuid, "author", "asahi", "simple")
+        controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+        controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+        node_uuid = controller.create_node("TouchIdle", (100, 100))
+        node = controller.get_node(node_uuid)
+        controller.update_field(node.uuid, "tips", "不要复制", "simple")
+        payload = controller.serialize_selection([node.uuid])
+        raw = json.loads(payload.decode("utf-8"))
+        self.assertNotIn("tips", raw["nodes"][0])
+
+    def test_remove_nodes_writes_trash_bin_and_persists(self) -> None:
+        controller = EditorController()
+        initial = next(node for node in controller.document.nodes if node.type == "Initial")
+        controller.update_field(initial.uuid, "author", "asahi", "simple")
+        controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+        controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+        node_uuid = controller.create_node("TouchIdle", (100, 100))
+        controller.remove_nodes([node_uuid])
+        self.assertEqual(1, len(controller.document.trash_bin))
+        self.assertEqual("TouchIdle", controller.document.trash_bin[0].node_type)
+        self.assertEqual(1, controller.document.trash_bin[0].type_slot)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "trash.json"
+            controller.save_document(str(path))
+            loaded = load_document(controller.schema, path)
+        self.assertEqual(1, len(loaded.trash_bin))
+        self.assertEqual("TouchIdle", loaded.trash_bin[0].node_type)
+
+    def test_file_list_includes_root_and_direct_child_directories(self) -> None:
+        controller = EditorController()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            save_document(self.schema, create_document(self.schema), root / "root.json")
+            (root / "sub").mkdir()
+            save_document(self.schema, create_document(self.schema), root / "sub" / "child.json")
+            (root / "sub" / "deep").mkdir()
+            save_document(self.schema, create_document(self.schema), root / "sub" / "deep" / "ignored.json")
+            files = controller.file_list(root)
+        self.assertIn("root.json", files)
+        self.assertIn("sub/child.json", files)
+        self.assertNotIn("sub/deep/ignored.json", files)
+
+    def test_file_list_ignores_non_editor_json(self) -> None:
+        controller = EditorController()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            save_document(self.schema, create_document(self.schema), root / "valid.json")
+            (root / "random.json").write_text('{"hello": "world"}', encoding="utf-8")
+            files = controller.file_list(root)
+        self.assertIn("valid.json", files)
+        self.assertNotIn("random.json", files)
 
 
 class ControllerAndGuiSmokeTests(unittest.TestCase):
@@ -331,6 +404,142 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         self.assertIn("action_trigger", item.form._bindings)
         self.assertIn("action_trigger_active", item.form._bindings)
         window.close()
+
+    def test_manual_save_keeps_undo_history_available(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            self.assertIsNotNone(created)
+            window.controller.document.path = str(Path(temp_dir) / "undo_after_save.json")
+            saved = window._save_current_file(silent=True)
+            self.assertIsNotNone(saved)
+            self.assertTrue(window.controller.undo_stack.canUndo())
+            window.controller.undo_stack.undo()
+            self.assertIsNone(window.controller.get_node(created))
+            window.close()
+
+    def test_switching_file_auto_saves_incomplete_draft_without_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            save_document(get_default_schema(), create_document(get_default_schema()), root / "target.json")
+
+            window = MainWindow(root)
+            draft_path = root / "draft.json"
+            window.controller.document.path = str(draft_path)
+            window.controller.pathChanged.emit(str(draft_path))
+            window._mark_saved_checkpoint(saved=False)
+
+            target_item = None
+            for index in range(window.file_list.count()):
+                item = window.file_list.item(index)
+                payload = item.data(Qt.ItemDataRole.UserRole)
+                if isinstance(payload, dict) and payload.get("kind") == "file" and payload.get("path") == "target.json":
+                    target_item = item
+                    break
+
+            self.assertIsNotNone(target_item)
+            window._open_selected_file(target_item)
+
+            self.assertTrue(draft_path.exists())
+            saved_payload = json.loads(draft_path.read_text(encoding="utf-8"))
+            self.assertEqual("l2d_config_editor/v1", saved_payload["editor_signature"])
+            self.assertEqual(str(root / "target.json"), window.controller.document.path)
+            window.close()
+
+    def test_group_header_click_toggles_collapsed_children(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "group1").mkdir()
+            save_document(get_default_schema(), create_document(get_default_schema()), root / "group1" / "a.json")
+            window = MainWindow(root)
+            initial_count = window.file_list.count()
+            header = window.file_list.item(0)
+            window._handle_file_list_item_clicked(header)
+            collapsed_count = window.file_list.count()
+            self.assertLess(collapsed_count, initial_count)
+            window.close()
+
+    def test_zooming_out_expands_node_header_height(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            item = window.canvas.node_items[created]
+            window.controller.update_field(created, "tips", "这是一个很长很长的标题备注用于测试缩小画布时的头部高度自适应", "simple")
+            original_header_height = item._header_height
+            window.canvas.scale(0.5, 0.5)
+            window.canvas._refresh_scale_sensitive_nodes()
+            self.app.processEvents()
+            self.assertGreater(item._header_height, original_header_height)
+            window.close()
+
+    def test_new_file_starts_as_unsaved_draft_without_filename_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir)
+            window._create_new_file()
+            self.assertIsNone(window.controller.document.path)
+            self.assertFalse(window.save_action.isEnabled())
+            window.close()
+
+    def test_switching_file_preserves_undo_history_after_auto_save(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            doc_a = create_document(get_default_schema())
+            initial_a = next(node for node in doc_a.nodes if node.type == "Initial")
+            initial_a.fields["author"] = "asahi"
+            initial_a.fields["ship_skin_id"] = 302291
+            initial_a.fields["memo"] = "file_a"
+            reassign_function_ids(get_default_schema(), doc_a)
+            save_document(get_default_schema(), doc_a, root / "a.json")
+
+            doc_b = create_document(get_default_schema())
+            initial_b = next(node for node in doc_b.nodes if node.type == "Initial")
+            initial_b.fields["author"] = "asahi"
+            initial_b.fields["ship_skin_id"] = 302292
+            initial_b.fields["memo"] = "file_b"
+            reassign_function_ids(get_default_schema(), doc_b)
+            save_document(get_default_schema(), doc_b, root / "b.json")
+
+            window = MainWindow(root)
+            window._open_existing_session_or_file(root / "a.json")
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            self.assertIsNotNone(created)
+
+            window._open_existing_session_or_file(root / "b.json")
+            window._open_existing_session_or_file(root / "a.json")
+
+            self.assertTrue(window.controller.undo_stack.canUndo())
+            window.controller.undo_stack.undo()
+            self.assertIsNone(window.controller.get_node(created))
+            window.close()
+
+    def test_optimize_layout_keeps_unconnected_nodes_fixed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+
+            first = window.controller.create_node("TouchIdle", (420, 280))
+            second = window.controller.create_node("TouchDrag", (80, 120))
+            isolated = window.controller.create_node("TouchDrag", (880, 520))
+            window.controller.add_connection(first, second)
+            isolated_before = dict(window.controller.get_node(isolated).ui_position)
+
+            changed = window.canvas.optimize_connection_layout()
+
+            self.assertTrue(changed)
+            self.assertEqual(isolated_before, window.controller.get_node(isolated).ui_position)
+            self.assertEqual(1, len(window.controller.document.connections))
+            window.close()
 
 
 if __name__ == "__main__":

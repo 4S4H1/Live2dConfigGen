@@ -106,6 +106,7 @@ class ValidationSummaryWidget(QFrame):
         self.title.setObjectName("validationSummaryTitle")
         self.list_widget = QListWidget()
         self.list_widget.setAlternatingRowColors(True)
+        self.list_widget.setSpacing(6)
         self.empty = QLabel("当前节点没有警告")
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.title)
@@ -125,8 +126,28 @@ class ValidationSummaryWidget(QFrame):
             text = issue.message
             if issue.related_titles:
                 text = f"{text} | 相关节点: {', '.join(issue.related_titles)}"
-            item = QListWidgetItem(text)
+            item = QListWidgetItem()
+            label = QLabel(text)
+            label.setWordWrap(True)
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            label.setMargin(4)
             self.list_widget.addItem(item)
+            self.list_widget.setItemWidget(item, label)
+        self._refresh_item_sizes()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._refresh_item_sizes()
+
+    def _refresh_item_sizes(self) -> None:
+        available_width = max(120, self.list_widget.viewport().width() - 18)
+        for index in range(self.list_widget.count()):
+            item = self.list_widget.item(index)
+            label = self.list_widget.itemWidget(item)
+            if not isinstance(label, QLabel):
+                continue
+            label.setFixedWidth(available_width)
+            item.setSizeHint(label.sizeHint())
 
 
 class NodeFormWidget(QFrame):

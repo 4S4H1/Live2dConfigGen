@@ -129,7 +129,7 @@
   ],
   "nodes": {
     "Initial": {
-      "title": "Initial",
+      "title": "初始节点",
       "category": "meta",
       "copyable": false,
       "quick_create": false,
@@ -206,7 +206,14 @@
             { "label": "硬切", "value": "hard" }
           ]
         },
-        { "key": "action_trigger", "label": "播放的动画", "editor": "text", "default": "", "show_in_modes": ["simple", "advanced"] },
+        {
+          "key": "action_trigger",
+          "label": "播放的动画",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": ["simple", "advanced"],
+          "visibility": { "field": "transition_type", "not_equals": "hard" }
+        },
         { "key": "action_trigger_active", "label": "目标idle", "editor": "int", "default": 1, "show_in_modes": ["simple", "advanced"] },
         { "key": "id", "label": "ID", "editor": "int", "default": 0, "show_in_modes": ["advanced"], "read_only": true },
         {
@@ -389,7 +396,7 @@
       ]
     },
     "Comment": {
-      "title": "Comment",
+      "title": "备注节点",
       "category": "comment",
       "copyable": true,
       "quick_create": true,

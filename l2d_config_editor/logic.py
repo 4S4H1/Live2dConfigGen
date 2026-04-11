@@ -18,6 +18,7 @@ from .models import (
     MetaRecord,
     NodeRecord,
     SearchHit,
+    TrashEntry,
     ValidationIssue,
 )
 from .schema import EditorSchema, FieldSchema, NodeSchema, load_editor_schema
@@ -26,6 +27,15 @@ RANGE_PATTERN = re.compile(r"^\{\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\
 ACTION_NAME_PATTERN = re.compile(r"action\s*=\s*'([^']*)'")
 TARGET_IDLE_PATTERN = re.compile(r"idle\s*=\s*(-?\d+)")
 HIDDEN_NODE_FIELDS = {"target_idle"}
+EDITOR_DOCUMENT_SIGNATURE = "l2d_config_editor/v1"
+RESERVED_FIELD_KEYS = (
+    "draw_able_name",
+    "parameter",
+    "action_trigger",
+    "action_trigger_active",
+    "target_idle",
+    "id",
+)
 
 
 @lru_cache(maxsize=2)
@@ -35,6 +45,28 @@ def get_default_schema(schema_path: str | None = None) -> EditorSchema:
 
 def new_uuid() -> str:
     return uuid.uuid4().hex
+
+
+def is_editor_document_payload(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("editor_signature") == EDITOR_DOCUMENT_SIGNATURE:
+        return True
+    nodes = payload.get("nodes")
+    meta = payload.get("meta")
+    canvas_view = payload.get("canvas_view")
+    connections = payload.get("connections")
+    if not isinstance(nodes, list) or not isinstance(meta, dict) or not isinstance(canvas_view, dict) or not isinstance(connections, list):
+        return False
+    return any(isinstance(node, dict) and node.get("type") == "Initial" for node in nodes)
+
+
+def is_editor_document_file(path: str | Path) -> bool:
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return is_editor_document_payload(payload)
 
 
 def default_fields(schema: EditorSchema, node_type: str) -> dict[str, Any]:
@@ -106,6 +138,60 @@ def _format_ignore_values(values: tuple[str, ...]) -> str:
 def _function_nodes(schema: EditorSchema, document: DocumentModel) -> list[NodeRecord]:
     node_types = set(function_node_types(schema))
     return [node for node in document.nodes if node.type in node_types]
+
+
+def _next_available_slot(used_slots: set[int]) -> int:
+    slot = 1
+    while slot in used_slots:
+        slot += 1
+    return slot
+
+
+def _occupied_type_slots(document: DocumentModel, node_type: str, *, exclude_uuid: str | None = None) -> set[int]:
+    occupied = {
+        int(node.type_slot)
+        for node in document.nodes
+        if node.uuid != exclude_uuid and node.type == node_type and isinstance(node.type_slot, int) and node.type_slot > 0
+    }
+    occupied.update(
+        int(entry.type_slot)
+        for entry in document.trash_bin
+        if entry.node_type == node_type and isinstance(entry.type_slot, int) and entry.type_slot > 0
+    )
+    return occupied
+
+
+def _occupied_export_slots(document: DocumentModel, *, exclude_uuid: str | None = None) -> set[int]:
+    occupied = {
+        int(node.export_slot)
+        for node in document.nodes
+        if node.uuid != exclude_uuid and isinstance(node.export_slot, int) and node.export_slot > 0
+    }
+    occupied.update(
+        int(entry.export_slot)
+        for entry in document.trash_bin
+        if isinstance(entry.export_slot, int) and entry.export_slot > 0
+    )
+    return occupied
+
+
+def allocate_type_slot(document: DocumentModel, node_type: str, *, exclude_uuid: str | None = None) -> int:
+    return _next_available_slot(_occupied_type_slots(document, node_type, exclude_uuid=exclude_uuid))
+
+
+def allocate_export_slot(document: DocumentModel, *, exclude_uuid: str | None = None) -> int:
+    return _next_available_slot(_occupied_export_slots(document, exclude_uuid=exclude_uuid))
+
+
+def backfill_slots(schema: EditorSchema, document: DocumentModel) -> None:
+    function_types = set(function_node_types(schema))
+    for node in document.nodes:
+        if node.type not in function_types:
+            continue
+        if not isinstance(node.type_slot, int) or node.type_slot <= 0:
+            node.type_slot = allocate_type_slot(document, node.type, exclude_uuid=node.uuid)
+        if not isinstance(node.export_slot, int) or node.export_slot <= 0:
+            node.export_slot = allocate_export_slot(document, exclude_uuid=node.uuid)
 
 
 def _next_sequence_no(document: DocumentModel, node_type: str) -> int:
@@ -210,7 +296,7 @@ def apply_sequence_defaults(schema: EditorSchema, node: NodeRecord) -> None:
     if node.type not in function_node_types(schema):
         return
     node_schema = _node_schema(schema, node.type)
-    sequence = node.sequence_no or 1
+    sequence = node.type_slot or node.sequence_no or 1
     target_idle = sequence if node_schema.auto_rules.use_sequence_for_target_idle else _coerce_int(node.fields.get("target_idle"), sequence)
     node.fields["draw_able_name"] = node_schema.auto_rules.draw_template.format(sequence=sequence, target_idle=target_idle)
     node.fields["target_idle"] = target_idle
@@ -306,9 +392,13 @@ def create_node(
         ui_position={"x": float(position[0]), "y": float(position[1])},
         ui_size=dict(base_node.ui_size) if base_node and base_node.ui_size else ({"width": 360.0, "height": 180.0} if node_type == "Comment" else None),
         sequence_no=_next_sequence_no(document, node_type),
+        type_slot=base_node.type_slot if base_node and node_type not in function_node_types(schema) else None,
+        export_slot=base_node.export_slot if base_node and node_type not in function_node_types(schema) else None,
         manual_fields=set(),
     )
     if node.type in function_node_types(schema):
+        node.type_slot = allocate_type_slot(document, node.type)
+        node.export_slot = allocate_export_slot(document)
         apply_sequence_defaults(schema, node)
     else:
         apply_auto_rules(schema, document, node, force_generated=False)
@@ -378,24 +468,47 @@ def create_document(schema: EditorSchema | None = None) -> DocumentModel:
 def reassign_function_ids(schema: EditorSchema, document: DocumentModel) -> None:
     sync_meta_from_initial(document)
     base = document.meta.ship_skin_id or 0
-    counter = 1
+    backfill_slots(schema, document)
     for node in document.nodes:
         if node.type not in function_node_types(schema):
             continue
-        node.fields["id"] = int(f"{base}{counter:02d}") if base else counter
-        counter += 1
+        export_slot = node.export_slot or allocate_export_slot(document, exclude_uuid=node.uuid)
+        node.export_slot = export_slot
+        node.fields["id"] = int(f"{base}{export_slot:02d}") if base else export_slot
         apply_auto_rules(schema, document, node, source_mode="advanced", force_generated=False)
     recompute_document_state(schema, document)
 
 
 def node_title(schema: EditorSchema, node: NodeRecord) -> str:
     definition = _node_schema(schema, node.type)
-    if node.type == "Initial":
-        return definition.title
+    if node.type in function_node_types(schema):
+        slot = node.type_slot or node.sequence_no or 1
+        prefix = f"{definition.title}{slot}"
+        tips = str(node.fields.get("tips", "") or "").strip()
+        return f"{prefix}-{tips}" if tips else prefix
     if node.type == "Comment":
-        return node.fields.get("content", "").splitlines()[0][:24] or definition.title
-    draw_name = node.fields.get("draw_able_name") or node.fields.get("parameter") or definition.title
-    return f"{definition.title}: {draw_name}"
+        content = str(node.fields.get("content", "") or "").strip().splitlines()
+        first_line = content[0][:24] if content else ""
+        return f"{definition.title}-{first_line}" if first_line else definition.title
+    tips = str(node.fields.get("tips", "") or "").strip()
+    return f"{definition.title}-{tips}" if tips else definition.title
+
+
+def make_trash_entry(schema: EditorSchema, node: NodeRecord) -> TrashEntry:
+    reserved_fields = {
+        key: value
+        for key, value in node.fields.items()
+        if key in RESERVED_FIELD_KEYS and value not in (None, "")
+    }
+    return TrashEntry(
+        entry_id=new_uuid(),
+        node_uuid=node.uuid,
+        node_type=node.type,
+        title=node_title(schema, node),
+        type_slot=node.type_slot,
+        export_slot=node.export_slot,
+        reserved_fields=reserved_fields,
+    )
 
 
 def _export_node_fields(node: NodeRecord) -> dict[str, Any]:
@@ -412,15 +525,21 @@ def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[
             "type": node.type,
             "ui_position": node.ui_position,
         }
+        if node.type_slot is not None:
+            payload["type_slot"] = node.type_slot
+        if node.export_slot is not None:
+            payload["export_slot"] = node.export_slot
         if node.ui_size:
             payload["ui_size"] = node.ui_size
         payload.update(_export_node_fields(node))
         serialized_nodes.append(payload)
     return {
+        "editor_signature": EDITOR_DOCUMENT_SIGNATURE,
         "global_mode": document.global_mode,
         "meta": asdict(document.meta),
         "nodes": serialized_nodes,
         "connections": [asdict(connection) for connection in document.connections],
+        "trash_bin": [asdict(entry) for entry in document.trash_bin],
         "canvas_view": asdict(document.canvas_view),
     }
 
@@ -433,10 +552,13 @@ def save_document(schema: EditorSchema, document: DocumentModel, path: str | Pat
 
 def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not is_editor_document_payload(payload):
+        raise ValueError("不是 L2D Config Editor 配置文件")
     document = DocumentModel(
         global_mode=str(payload.get("global_mode", "simple")),
         meta=MetaRecord(**payload.get("meta", {})),
         connections=[ConnectionRecord(**item) for item in payload.get("connections", [])],
+        trash_bin=[TrashEntry(**item) for item in payload.get("trash_bin", [])],
         canvas_view=CanvasViewState(**payload.get("canvas_view", {})),
         path=str(path),
     )
@@ -456,11 +578,14 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
             ui_position=raw.get("ui_position", {"x": 0.0, "y": 0.0}),
             ui_size=raw.get("ui_size"),
             sequence_no=sequence_map[node_type],
+            type_slot=raw.get("type_slot"),
+            export_slot=raw.get("export_slot"),
         )
         infer_manual_fields(schema, node)
         apply_auto_rules(schema, document, node, source_mode="advanced", force_generated=False)
         document.nodes.append(node)
     sync_initial_from_meta(schema, document)
+    backfill_slots(schema, document)
     reassign_function_ids(schema, document)
     recompute_document_state(schema, document)
     return document

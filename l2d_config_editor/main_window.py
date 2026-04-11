@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
-from PyQt6.QtCore import QSettings, Qt
-from PyQt6.QtGui import QAction, QActionGroup, QGuiApplication, QKeySequence
+from PyQt6.QtCore import QSettings, Qt, QTimer
+from PyQt6.QtGui import QAction, QActionGroup, QCloseEvent, QGuiApplication, QKeySequence, QUndoStack
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -18,7 +19,6 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
-    QMenu,
     QMessageBox,
     QPushButton,
     QRadioButton,
@@ -36,6 +36,7 @@ from PyQt6.QtWidgets import (
 from .canvas import NodeCanvasView
 from .constants import CLIPBOARD_MIME
 from .controller import EditorController
+from .logic import create_document, load_document
 from .widgets import NodeFormWidget, ValidationSummaryWidget
 
 
@@ -64,7 +65,61 @@ class CsvPreviewDialog(QDialog):
                 self.table.setItem(row_index, column_index, QTableWidgetItem(str(row.values.get(column, ""))))
 
 
+class TrashDialog(QDialog):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("节点垃圾箱")
+        self.resize(720, 520)
+        layout = QVBoxLayout(self)
+        description = QLabel("已删除节点的编号槽位会先保留在这里。清理后，对应槽位才能被后续新节点复用。")
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        self.list_widget = QListWidget()
+        self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        layout.addWidget(self.list_widget, 1)
+
+        button_row = QHBoxLayout()
+        self.remove_selected_button = QPushButton("清理选中")
+        self.clear_all_button = QPushButton("全部清空")
+        self.close_button = QPushButton("关闭")
+        button_row.addWidget(self.remove_selected_button)
+        button_row.addWidget(self.clear_all_button)
+        button_row.addStretch(1)
+        button_row.addWidget(self.close_button)
+        layout.addLayout(button_row)
+
+    def set_entries(self, entries) -> None:
+        self.list_widget.clear()
+        for entry in entries:
+            detail_bits = []
+            if entry.type_slot:
+                detail_bits.append(f"类型序号 {entry.type_slot}")
+            if entry.export_slot:
+                detail_bits.append(f"导出ID槽位 {entry.export_slot}")
+            if entry.reserved_fields.get("draw_able_name"):
+                detail_bits.append(f"框 {entry.reserved_fields['draw_able_name']}")
+            if entry.reserved_fields.get("parameter"):
+                detail_bits.append(f"参数 {entry.reserved_fields['parameter']}")
+            line = f"{entry.title} | {' / '.join(detail_bits)}" if detail_bits else entry.title
+            item = QListWidgetItem(line)
+            item.setData(Qt.ItemDataRole.UserRole, entry.entry_id)
+            item.setToolTip(line)
+            self.list_widget.addItem(item)
+
+    def selected_entry_ids(self) -> list[str]:
+        result: list[str] = []
+        for item in self.list_widget.selectedItems():
+            entry_id = item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(entry_id, str) and entry_id:
+                result.append(entry_id)
+        return result
+
+
 class MainWindow(QMainWindow):
+    AUTOSAVE_DELAY_MS = 1800
+    PASTE_GAP = 96.0
+
     def __init__(self, workdir: str | Path) -> None:
         super().__init__()
         self.workdir = Path(workdir)
@@ -72,6 +127,20 @@ class MainWindow(QMainWindow):
         self.controller = EditorController(self)
         self.validation_cache: dict[str, list] = {}
         self.csv_dialog = CsvPreviewDialog(self.controller.schema, self)
+        self.trash_dialog: TrashDialog | None = None
+        self._auto_save_timer = QTimer(self)
+        self._auto_save_timer.setSingleShot(True)
+        self._auto_save_timer.timeout.connect(self._run_auto_save)
+        self._last_saved_undo_index = 0
+        self._has_saved_snapshot = False
+        self._last_paste_payload: bytes | None = None
+        self._paste_repeat_count = 0
+        self._collapsed_groups: set[str] = set()
+        self._pending_group_dir = ""
+        self._document_sessions: dict[str, dict[str, object]] = {}
+        self._current_session_key: str | None = None
+        self._connected_undo_stack: QUndoStack | None = None
+
         self.controller.pathChanged.connect(self._update_window_title)
         self.controller.selectionChanged.connect(self._update_inspector)
         self.controller.csvPreviewChanged.connect(self._update_csv_preview)
@@ -82,14 +151,19 @@ class MainWindow(QMainWindow):
         self.controller.documentStateChanged.connect(self._update_document_state)
         self.controller.globalModeChanged.connect(self._handle_global_mode_changed)
         self.controller.schemaChanged.connect(self._handle_schema_changed)
+        self.controller.trashBinChanged.connect(self._refresh_trash_dialog)
+        self._set_active_undo_stack(self.controller.undo_stack)
+
         self.setWindowTitle("L2D Config Editor")
         self.resize(1680, 980)
         self._build_ui()
         self._build_actions()
         self._refresh_file_list()
         self._apply_saved_preferences()
+        self._mark_saved_checkpoint(saved=False)
         self._update_window_title(self.controller.document.path)
         self._update_inspector(None)
+        self._sync_undo_actions()
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -118,6 +192,7 @@ class MainWindow(QMainWindow):
         title = QLabel("配置文件")
         title.setObjectName("sectionTitle")
         layout.addWidget(title)
+
         button_row = QHBoxLayout()
         self.refresh_button = QPushButton("刷新")
         self.new_button = QPushButton("新建")
@@ -130,10 +205,13 @@ class MainWindow(QMainWindow):
         for button in (self.refresh_button, self.new_button, self.rename_button, self.delete_button):
             button_row.addWidget(button)
         layout.addLayout(button_row)
+
         self.file_list = QListWidget()
+        self.file_list.setObjectName("configFileList")
+        self.file_list.itemClicked.connect(self._handle_file_list_item_clicked)
         self.file_list.itemDoubleClicked.connect(self._open_selected_file)
         layout.addWidget(self.file_list, 1)
-        panel.setMinimumWidth(270)
+        panel.setMinimumWidth(290)
         return panel
 
     def _build_canvas_panel(self) -> QWidget:
@@ -142,10 +220,9 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
-        top_row = QHBoxLayout()
-        top_row.setContentsMargins(0, 0, 0, 0)
         self.search_panel = QFrame()
         self.search_panel.setObjectName("searchPanel")
+        self.search_panel.setMaximumWidth(460)
         search_layout = QVBoxLayout(self.search_panel)
         search_layout.setContentsMargins(10, 10, 10, 10)
         search_layout.setSpacing(6)
@@ -155,31 +232,15 @@ class MainWindow(QMainWindow):
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("输入字段值，例如 idle=13")
         self.search_edit.textChanged.connect(self._refresh_search_results)
-        self.simple_mode_radio = QRadioButton("简易")
-        self.advanced_mode_radio = QRadioButton("高级")
-        self.mode_button_group = QButtonGroup(self)
-        self.mode_button_group.setExclusive(True)
-        self.mode_button_group.addButton(self.simple_mode_radio)
-        self.mode_button_group.addButton(self.advanced_mode_radio)
-        self.simple_mode_radio.toggled.connect(
-            lambda checked: checked and self.controller.set_global_mode("simple")
-        )
-        self.advanced_mode_radio.toggled.connect(
-            lambda checked: checked and self.controller.set_global_mode("advanced")
-        )
         search_row.addWidget(search_title)
         search_row.addWidget(self.search_edit, 1)
-        search_row.addWidget(self.simple_mode_radio)
-        search_row.addWidget(self.advanced_mode_radio)
         self.search_results = QListWidget()
         self.search_results.setMaximumHeight(180)
         self.search_results.itemClicked.connect(self._jump_to_search_result)
         self.search_results.hide()
         search_layout.addLayout(search_row)
         search_layout.addWidget(self.search_results)
-        top_row.addWidget(self.search_panel, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        top_row.addStretch(1)
-        layout.addLayout(top_row)
+        layout.addWidget(self.search_panel, 0, Qt.AlignmentFlag.AlignLeft)
 
         self.canvas = NodeCanvasView(self.controller.schema, self.controller)
         self.canvas.selectionSummaryChanged.connect(self._handle_selection_summary)
@@ -191,6 +252,72 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
+
+        self.control_panel = QFrame()
+        self.control_panel.setObjectName("sidebarToolPanel")
+        control_layout = QVBoxLayout(self.control_panel)
+        control_layout.setContentsMargins(12, 12, 12, 12)
+        control_layout.setSpacing(10)
+
+        control_title = QLabel("编辑控制")
+        control_title.setObjectName("sectionTitle")
+        control_layout.addWidget(control_title)
+
+        control_hint = QLabel("这里放全局编辑行为，而不是当前节点字段。模式切换、布局整理和垃圾箱与 Inspector 分层显示，侧边栏会更稳定。")
+        control_hint.setObjectName("sidebarHint")
+        control_hint.setWordWrap(True)
+        control_layout.addWidget(control_hint)
+
+        mode_block = QVBoxLayout()
+        mode_block.setContentsMargins(0, 0, 0, 0)
+        mode_block.setSpacing(6)
+        mode_label = QLabel("编辑模式")
+        mode_label.setObjectName("searchTitle")
+        mode_block.addWidget(mode_label)
+
+        mode_row = QHBoxLayout()
+        mode_row.setContentsMargins(0, 0, 0, 0)
+        mode_row.setSpacing(8)
+        self.simple_mode_radio = QRadioButton("简易")
+        self.advanced_mode_radio = QRadioButton("高级")
+        self.mode_button_group = QButtonGroup(self)
+        self.mode_button_group.setExclusive(True)
+        self.mode_button_group.addButton(self.simple_mode_radio)
+        self.mode_button_group.addButton(self.advanced_mode_radio)
+        self.simple_mode_radio.toggled.connect(lambda checked: checked and self.controller.set_global_mode("simple"))
+        self.advanced_mode_radio.toggled.connect(lambda checked: checked and self.controller.set_global_mode("advanced"))
+        mode_row.addWidget(self.simple_mode_radio)
+        mode_row.addWidget(self.advanced_mode_radio)
+        mode_row.addStretch(1)
+        mode_block.addLayout(mode_row)
+        control_layout.addLayout(mode_block)
+
+        actions_block = QVBoxLayout()
+        actions_block.setContentsMargins(0, 0, 0, 0)
+        actions_block.setSpacing(6)
+        actions_label = QLabel("工具")
+        actions_label.setObjectName("searchTitle")
+        actions_block.addWidget(actions_label)
+
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.setSpacing(8)
+        self.optimize_layout_button = QPushButton("优化布局")
+        self.optimize_layout_button.clicked.connect(self._optimize_connection_layout)
+        self.trash_button = QPushButton("节点垃圾箱")
+        self.trash_button.clicked.connect(self._show_trash_dialog)
+        action_row.addWidget(self.optimize_layout_button)
+        action_row.addWidget(self.trash_button)
+        actions_block.addLayout(action_row)
+
+        action_hint = QLabel("优化布局只会整理已连线节点的位置，不会改动节点字段和连线关系。")
+        action_hint.setObjectName("sidebarHint")
+        action_hint.setWordWrap(True)
+        actions_block.addWidget(action_hint)
+        control_layout.addLayout(actions_block)
+
+        layout.addWidget(self.control_panel)
+
         title = QLabel("Inspector")
         title.setObjectName("sectionTitle")
         layout.addWidget(title)
@@ -214,7 +341,7 @@ class MainWindow(QMainWindow):
         scroll.setWidget(inspector_body)
         layout.addWidget(self.inspector_placeholder)
         layout.addWidget(scroll, 1)
-        panel.setMinimumWidth(360)
+        panel.setMinimumWidth(380)
         return panel
 
     def _build_actions(self) -> None:
@@ -228,25 +355,27 @@ class MainWindow(QMainWindow):
         file_menu.addAction(open_action)
         self.addAction(open_action)
 
-        save_action = QAction("保存", self)
-        save_action.setShortcut(QKeySequence.StandardKey.Save)
-        save_action.triggered.connect(self._save_current_file)
-        file_menu.addAction(save_action)
-        self.addAction(save_action)
+        self.save_action = QAction("保存", self)
+        self.save_action.setShortcut(QKeySequence.StandardKey.Save)
+        self.save_action.triggered.connect(self._save_current_file)
+        file_menu.addAction(self.save_action)
+        self.addAction(self.save_action)
 
         reload_schema_action = QAction("重载字段配置", self)
         reload_schema_action.triggered.connect(self._reload_schema)
         file_menu.addAction(reload_schema_action)
 
-        undo_action = self.controller.undo_stack.createUndoAction(self, "撤销")
-        undo_action.setShortcut(QKeySequence.StandardKey.Undo)
-        edit_menu.addAction(undo_action)
-        self.addAction(undo_action)
+        self.undo_action = QAction("撤销", self)
+        self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
+        self.undo_action.triggered.connect(self._trigger_undo)
+        edit_menu.addAction(self.undo_action)
+        self.addAction(self.undo_action)
 
-        redo_action = self.controller.undo_stack.createRedoAction(self, "重做")
-        redo_action.setShortcut(QKeySequence.StandardKey.Redo)
-        edit_menu.addAction(redo_action)
-        self.addAction(redo_action)
+        self.redo_action = QAction("重做", self)
+        self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
+        self.redo_action.triggered.connect(self._trigger_redo)
+        edit_menu.addAction(self.redo_action)
+        self.addAction(self.redo_action)
 
         copy_action = QAction("复制", self)
         copy_action.setShortcut(QKeySequence.StandardKey.Copy)
@@ -278,6 +407,14 @@ class MainWindow(QMainWindow):
         view_menu.addAction(search_action)
         self.addAction(search_action)
 
+        layout_action = QAction("优化连线布局", self)
+        layout_action.triggered.connect(self._optimize_connection_layout)
+        view_menu.addAction(layout_action)
+
+        trash_action = QAction("节点垃圾箱", self)
+        trash_action.triggered.connect(self._show_trash_dialog)
+        view_menu.addAction(trash_action)
+
         csv_action = QAction("CSV 预览", self)
         csv_action.triggered.connect(self._show_csv_preview)
         view_menu.addAction(csv_action)
@@ -294,47 +431,207 @@ class MainWindow(QMainWindow):
         mode_menu.addAction(self.simple_mode_action)
         mode_menu.addAction(self.advanced_mode_action)
 
+    def _trigger_undo(self) -> None:
+        if self.controller.undo_stack.canUndo():
+            self.controller.undo_stack.undo()
+
+    def _trigger_redo(self) -> None:
+        if self.controller.undo_stack.canRedo():
+            self.controller.undo_stack.redo()
+
+    def _sync_undo_actions(self, *_args) -> None:
+        if hasattr(self, "undo_action"):
+            self.undo_action.setEnabled(self.controller.undo_stack.canUndo())
+        if hasattr(self, "redo_action"):
+            self.redo_action.setEnabled(self.controller.undo_stack.canRedo())
+
+    def _set_active_undo_stack(self, stack: QUndoStack) -> None:
+        if self._connected_undo_stack is stack:
+            self._sync_undo_actions()
+            return
+        if self._connected_undo_stack is not None:
+            try:
+                self._connected_undo_stack.indexChanged.disconnect(self._handle_undo_index_changed)
+            except TypeError:
+                pass
+            try:
+                self._connected_undo_stack.canUndoChanged.disconnect(self._sync_undo_actions)
+            except TypeError:
+                pass
+            try:
+                self._connected_undo_stack.canRedoChanged.disconnect(self._sync_undo_actions)
+            except TypeError:
+                pass
+        self._connected_undo_stack = stack
+        stack.indexChanged.connect(self._handle_undo_index_changed)
+        stack.canUndoChanged.connect(self._sync_undo_actions)
+        stack.canRedoChanged.connect(self._sync_undo_actions)
+        self._sync_undo_actions()
+
+    @staticmethod
+    def _session_key_for_path(path: str | Path | None) -> str | None:
+        if not path:
+            return None
+        return str(Path(path).resolve())
+
+    def _stash_current_document_session(self) -> None:
+        key = self._session_key_for_path(self.controller.document.path)
+        if not key:
+            self._current_session_key = None
+            return
+        self._document_sessions[key] = {
+            "document": self.controller.document,
+            "undo_stack": self.controller.undo_stack,
+            "last_saved_undo_index": self._last_saved_undo_index,
+            "has_saved_snapshot": self._has_saved_snapshot,
+            "group_dir": self._pending_group_dir,
+        }
+        self._current_session_key = key
+
+    def _switch_to_document(self, document, *, undo_stack: QUndoStack, saved: bool, session_key: str | None, group_dir: str = "") -> None:
+        self._auto_save_timer.stop()
+        self.controller.document = document
+        self.controller.undo_stack = undo_stack
+        self.controller.selected_node_uuid = None
+        self.controller.preferences.global_mode = document.global_mode
+        self._pending_group_dir = group_dir
+        self._current_session_key = session_key
+        self._set_active_undo_stack(undo_stack)
+        self._mark_saved_checkpoint(saved=saved)
+        self.controller.globalModeChanged.emit(self.controller.preferences.global_mode)
+        self.controller.documentLoaded.emit()
+        self.controller.pathChanged.emit(document.path)
+        self.controller.refresh_derived()
+        self._sync_undo_actions()
+
+    def _open_existing_session_or_file(self, path: str | Path) -> None:
+        session_key = self._session_key_for_path(path)
+        current_key = self._session_key_for_path(self.controller.document.path)
+        if current_key and current_key != session_key:
+            self._stash_current_document_session()
+        session = self._document_sessions.get(session_key or "")
+        if session:
+            self._switch_to_document(
+                session["document"],
+                undo_stack=session["undo_stack"],
+                saved=bool(session.get("has_saved_snapshot", False)),
+                session_key=session_key,
+                group_dir=str(session.get("group_dir") or Path(path).parent.name),
+            )
+            self._last_saved_undo_index = int(session.get("last_saved_undo_index", 0))
+            self._update_window_title(self.controller.document.path)
+            return
+        document = load_document(self.controller.schema, path)
+        undo_stack = QUndoStack(self)
+        try:
+            group_dir = str(Path(path).resolve().parent.relative_to(self.workdir.resolve())).replace("\\", "/")
+        except Exception:
+            group_dir = ""
+        if group_dir == ".":
+            group_dir = ""
+        self._switch_to_document(
+            document,
+            undo_stack=undo_stack,
+            saved=True,
+            session_key=session_key,
+            group_dir=group_dir,
+        )
+
+    def _create_blank_document_session(self, *, group_dir: str = "") -> None:
+        document = create_document(self.controller.schema)
+        undo_stack = QUndoStack(self)
+        self._switch_to_document(document, undo_stack=undo_stack, saved=False, session_key=None, group_dir=group_dir)
+
+    def _sanitize_filename_stem(self, value: str) -> str:
+        stem = re.sub(r'[<>:\"/\\\\|?*]+', "_", str(value or "").strip())
+        stem = stem.strip(" ._")
+        return stem or "config"
+
+    def _generated_save_path(self) -> Path | None:
+        allowed, _reason = self.controller.can_create_graph_content()
+        if not allowed:
+            return None
+        group_dir = self._pending_group_dir.strip().replace("\\", "/")
+        parent = self.workdir / group_dir if group_dir else self.workdir
+        parent.mkdir(parents=True, exist_ok=True)
+        base_name = self._sanitize_filename_stem(self.controller.document.meta.memo or self.controller.document.meta.CharName or "config")
+        candidate = parent / f"{base_name}.json"
+        if not candidate.exists():
+            return candidate
+        index = 2
+        while True:
+            numbered = parent / f"{base_name}_{index}.json"
+            if not numbered.exists():
+                return numbered
+            index += 1
+
+    def _update_save_action_state(self) -> None:
+        allowed, _reason = self.controller.can_create_graph_content()
+        can_save = bool(self.controller.document.path) or allowed
+        if hasattr(self, "save_action"):
+            self.save_action.setEnabled(can_save)
+
     def _apply_saved_preferences(self) -> None:
+        mode = self.settings.value("ui/global_mode", self.controller.preferences.global_mode)
+        if isinstance(mode, str):
+            self.controller.set_global_mode(mode)
         self.simple_mode_action.setChecked(self.controller.preferences.global_mode == "simple")
         self.advanced_mode_action.setChecked(self.controller.preferences.global_mode == "advanced")
         self.simple_mode_radio.setChecked(self.controller.preferences.global_mode == "simple")
         self.advanced_mode_radio.setChecked(self.controller.preferences.global_mode == "advanced")
+        self._update_save_action_state()
 
     def _refresh_file_list(self) -> None:
-        current = Path(self.controller.document.path).name if self.controller.document.path else None
+        current = self._relative_path_for_document(self.controller.document.path)
         self.file_list.clear()
-        grouped: dict[str, list[tuple[str, str]]] = {}
-        for name in self.controller.file_list(self.workdir):
-            version, display_name = self._read_file_display_meta(self.workdir / name)
-            grouped.setdefault(version, []).append((name, display_name))
+        grouped: dict[str, list[str]] = {}
+        for relative_path in self.controller.file_list(self.workdir):
+            group = str(Path(relative_path).parent).replace("\\", "/")
+            if group == ".":
+                group = ""
+            grouped.setdefault(group, []).append(relative_path)
 
-        for version in sorted(grouped.keys(), reverse=True):
-            header = QListWidgetItem(f"🗓 版本分组 | {version}")
-            header.setFlags(Qt.ItemFlag.NoItemFlags)
-            header.setData(Qt.ItemDataRole.UserRole, None)
+        for group_name in sorted(grouped.keys(), key=lambda value: (value != "", value)):
+            if current and group_name == str(Path(current).parent).replace("\\", "/").replace(".", ""):
+                self._collapsed_groups.discard(group_name)
+            paths = sorted(grouped[group_name], key=lambda item: self._read_file_display_meta(self.workdir / item)[1])
+            is_collapsed = group_name in self._collapsed_groups
+            header = QListWidgetItem(self._group_header_text(group_name, len(paths), is_collapsed))
+            header.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            header.setData(Qt.ItemDataRole.UserRole, {"kind": "group", "group_dir": group_name})
             header.setForeground(Qt.GlobalColor.white)
             header.setBackground(Qt.GlobalColor.darkGray)
+            header_font = header.font()
+            header_font.setBold(True)
+            header.setFont(header_font)
             self.file_list.addItem(header)
-            for filename, display_name in sorted(grouped[version], key=lambda pair: pair[1]):
-                item = QListWidgetItem(display_name)
-                item.setData(Qt.ItemDataRole.UserRole, filename)
-                item.setToolTip(filename)
+            if is_collapsed:
+                continue
+            for relative_path in paths:
+                _, display_name = self._read_file_display_meta(self.workdir / relative_path)
+                item = QListWidgetItem(f"配置 · {display_name}")
+                item.setData(Qt.ItemDataRole.UserRole, {"kind": "file", "path": relative_path})
+                item.setToolTip(relative_path)
                 self.file_list.addItem(item)
-                if filename == current:
-                    item.setSelected(True)
+                if relative_path == current:
+                    self.file_list.setCurrentItem(item)
+
+    @staticmethod
+    def _group_header_text(group_name: str, count: int, collapsed: bool) -> str:
+        arrow = "▶" if collapsed else "▼"
+        label = group_name or "根目录"
+        return f"[目录] {arrow} {label} · {count} 个配置"
 
     def _read_file_display_meta(self, path: Path) -> tuple[str, str]:
         fallback_name = path.name
-        fallback_version = "0.0.0"
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
-            return fallback_version, fallback_name
+            return "", fallback_name
 
         meta = payload.get("meta") if isinstance(payload, dict) else {}
         if not isinstance(meta, dict):
             meta = {}
-        version = str(meta.get("version") or "").strip() or fallback_version
         char_name = str(meta.get("CharName") or "").strip()
         if not char_name:
             nodes = payload.get("nodes") if isinstance(payload, dict) else []
@@ -342,119 +639,160 @@ class MainWindow(QMainWindow):
                 initial = next((node for node in nodes if isinstance(node, dict) and node.get("type") == "Initial"), None)
                 if isinstance(initial, dict):
                     char_name = str(initial.get("CharName") or "").strip()
-                    version = str(initial.get("version") or version).strip() or fallback_version
-
         display_name = f"{char_name} ({path.name})" if char_name else path.name
-        return version, display_name
+        return char_name, display_name
 
-    def _current_filename(self) -> str | None:
+    def _current_file_relative_path(self) -> str | None:
         item = self.file_list.currentItem()
         if not item:
             return None
-        filename = item.data(Qt.ItemDataRole.UserRole)
-        return filename if isinstance(filename, str) and filename else None
+        payload = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(payload, dict) and payload.get("kind") == "file":
+            path = payload.get("path")
+            if isinstance(path, str) and path:
+                return path
+        return None
+
+    def _current_group_dir(self) -> str:
+        item = self.file_list.currentItem()
+        if not item:
+            return ""
+        payload = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(payload, dict):
+            if payload.get("kind") == "group":
+                return str(payload.get("group_dir") or "")
+            if payload.get("kind") == "file":
+                return str(Path(str(payload.get("path") or "")).parent).replace("\\", "/").replace(".", "")
+        return ""
 
     def _create_new_file(self) -> None:
-        name, ok = QInputDialog.getText(self, "新建配置", "文件名")
-        if not ok or not name.strip():
+        group_dir = self._current_group_dir()
+        if not self._ensure_safe_to_leave_document(self.workdir / "__new__"):
             return
-        filename = name.strip()
-        if not filename.endswith(".json"):
-            filename += ".json"
-        path = self.workdir / filename
-        if path.exists():
-            QMessageBox.warning(self, "文件已存在", f"{filename} 已存在")
-            return
-        self.controller.new_document()
-        self.controller.document.path = str(path)
-        self.controller.pathChanged.emit(str(path))
-        self.controller.undo_stack.setClean()
-        self._show_status("已创建草稿，请先完善 Initial 节点后保存。")
+        self._stash_current_document_session()
+        self._create_blank_document_session(group_dir=group_dir)
+        self._refresh_file_list()
+        self._show_status("已创建草稿，请先完善初始节点后保存。")
 
     def _rename_selected_file(self) -> None:
-        selected_filename = self._current_filename()
-        if not selected_filename:
+        selected_relative = self._current_file_relative_path()
+        if not selected_relative:
             return
-        old_path = self.workdir / selected_filename
-        new_name, ok = QInputDialog.getText(self, "重命名配置", "新文件名", text=selected_filename)
+        old_path = self.workdir / selected_relative
+        new_name, ok = QInputDialog.getText(self, "重命名配置", "新文件名", text=old_path.name)
         if not ok or not new_name.strip():
             return
         filename = new_name.strip()
         if not filename.endswith(".json"):
             filename += ".json"
-        new_path = self.workdir / filename
+        new_path = old_path.parent / filename
         old_path.rename(new_path)
         if self.controller.document.path == str(old_path):
             self.controller.document.path = str(new_path)
+            old_key = self._session_key_for_path(old_path)
+            if old_key:
+                self._document_sessions.pop(old_key, None)
+            self._current_session_key = self._session_key_for_path(new_path)
             self.controller.pathChanged.emit(str(new_path))
         self._refresh_file_list()
-        self._select_file_in_list(filename)
+        self._select_file_in_list(new_path.relative_to(self.workdir).as_posix())
 
     def _delete_selected_file(self) -> None:
-        selected_filename = self._current_filename()
-        if not selected_filename:
+        selected_relative = self._current_file_relative_path()
+        if not selected_relative:
             return
-        path = self.workdir / selected_filename
-        reply = QMessageBox.question(self, "删除配置", f"确认删除 {path.name} 吗？")
+        path = self.workdir / selected_relative
+        reply = QMessageBox.question(self, "删除配置", f"确认删除 {selected_relative} 吗？")
         if reply != QMessageBox.StandardButton.Yes:
             return
         path.unlink(missing_ok=True)
+        session_key = self._session_key_for_path(path)
+        if session_key:
+            self._document_sessions.pop(session_key, None)
         if self.controller.document.path == str(path):
-            self.controller.new_document()
+            self._create_blank_document_session()
         self._refresh_file_list()
 
     def _open_selected_file(self, item: QListWidgetItem) -> None:
-        filename = item.data(Qt.ItemDataRole.UserRole)
-        if not isinstance(filename, str) or not filename:
+        payload = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(payload, dict) or payload.get("kind") != "file":
             return
-        if not self._auto_save_before_switch(filename):
+        relative_path = str(payload.get("path") or "")
+        if not relative_path:
             return
-        path = self.workdir / filename
-        self.controller.open_document(path)
+        path = self.workdir / relative_path
+        if not self._ensure_safe_to_leave_document(path):
+            return
+        try:
+            self._stash_current_document_session()
+            self._open_existing_session_or_file(path)
+        except Exception as exc:
+            QMessageBox.warning(self, "无法打开", str(exc))
+            self._refresh_file_list()
+            return
         self._refresh_file_list()
 
     def _open_dialog(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "打开配置", str(self.workdir), "JSON Files (*.json)")
         if not path:
             return
-        if not self._auto_save_before_switch(Path(path).name):
+        if not self._ensure_safe_to_leave_document(path):
             return
-        self.controller.open_document(path)
+        try:
+            self._stash_current_document_session()
+            self._open_existing_session_or_file(path)
+        except Exception as exc:
+            QMessageBox.warning(self, "无法打开", str(exc))
+            return
         self._refresh_file_list()
-        self._select_file_in_list(Path(path).name)
+        relative_path = self._relative_path_for_document(path)
+        if relative_path:
+            self._select_file_in_list(relative_path)
 
-    def _save_current_file(self, silent: bool = False) -> str | None:
+    def _save_current_file(self, silent: bool = False, *, allow_incomplete: bool = False) -> str | None:
         allowed, reason = self.controller.can_create_graph_content()
-        if not allowed:
-            QMessageBox.warning(self, "无法保存", f"{reason}\n首次保存前请先完成 Initial 节点。")
+        if not allow_incomplete and not allowed:
+            QMessageBox.warning(self, "无法保存", f"{reason}\n首次保存前请先完成初始节点。")
             return None
         target = self.controller.document.path
         if not target:
-            default_name = str(self.controller.document.meta.memo or "").strip() or "config"
-            target, _ = QFileDialog.getSaveFileName(
-                self,
-                "保存配置",
-                str(self.workdir / f"{default_name}.json"),
-                "JSON Files (*.json)",
-            )
-            if not target:
+            generated = self._generated_save_path()
+            if not generated:
+                if not silent:
+                    QMessageBox.warning(self, "无法保存", "请先完成初始节点内容，再生成配置文件。")
                 return None
+            target = str(generated)
         saved = self.controller.save_document(target)
         if saved:
+            self._mark_saved_checkpoint(saved=True)
+            try:
+                self._pending_group_dir = str(Path(saved).resolve().parent.relative_to(self.workdir.resolve())).replace("\\", "/")
+            except Exception:
+                self._pending_group_dir = ""
+            if self._pending_group_dir == ".":
+                self._pending_group_dir = ""
+            self._current_session_key = self._session_key_for_path(saved)
+            self._stash_current_document_session()
             if not silent:
                 self._show_status(f"已保存 {Path(saved).name}")
             self._refresh_file_list()
-            self._select_file_in_list(Path(saved).name)
-            self.controller.undo_stack.setClean()
+            relative_path = self._relative_path_for_document(saved)
+            if relative_path:
+                self._select_file_in_list(relative_path)
         return saved
 
-    def _auto_save_before_switch(self, target_filename: str | None) -> bool:
-        current = self.controller.document.path
-        if current and target_filename and Path(current).name == target_filename:
-            return True
-        if self.controller.undo_stack.isClean():
-            return True
-        return bool(self._save_current_file(silent=True))
+    def _handle_file_list_item_clicked(self, item: QListWidgetItem) -> None:
+        payload = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(payload, dict):
+            return
+        if payload.get("kind") != "group":
+            return
+        group_dir = str(payload.get("group_dir") or "")
+        if group_dir in self._collapsed_groups:
+            self._collapsed_groups.remove(group_dir)
+        else:
+            self._collapsed_groups.add(group_dir)
+        self._refresh_file_list()
 
     def _copy_selection(self) -> None:
         node_uuids = self.canvas.selected_node_uuids()
@@ -466,6 +804,8 @@ class MainWindow(QMainWindow):
         data = QMimeData()
         data.setData(CLIPBOARD_MIME, payload)
         QGuiApplication.clipboard().setMimeData(data)
+        self._last_paste_payload = payload
+        self._paste_repeat_count = 0
         self._show_status("已复制节点")
 
     def _paste_selection(self) -> None:
@@ -473,15 +813,26 @@ class MainWindow(QMainWindow):
         if not mime or not mime.hasFormat(CLIPBOARD_MIME):
             return
         payload = bytes(mime.data(CLIPBOARD_MIME))
-        self.controller.paste_payload(payload, self.canvas.paste_position())
+        position = self._next_paste_position(payload)
+        self.controller.paste_payload(payload, position)
 
     def _duplicate_selection(self) -> None:
         node_uuids = self.canvas.selected_node_uuids()
         payload = self.controller.serialize_selection(node_uuids)
         if not payload:
             return
-        x, y = self.canvas.paste_position()
-        self.controller.paste_payload(payload, (x + 42, y + 42))
+        connect_from = None
+        if len(node_uuids) == 1:
+            source_node = self.controller.get_node(node_uuids[0])
+            if source_node and source_node.type not in {"Comment", "Initial"}:
+                connect_from = source_node.uuid
+        self._last_paste_payload = payload
+        self._paste_repeat_count = 0
+        position = self._next_paste_position(payload)
+        if connect_from:
+            existing_children = sum(1 for connection in self.controller.document.connections if connection.from_uuid == connect_from)
+            position = (position[0], position[1] + existing_children * 44.0)
+        self.controller.paste_payload(payload, position, connect_from=connect_from)
 
     def _delete_selection(self) -> None:
         node_uuids = self.canvas.selected_node_uuids()
@@ -547,6 +898,8 @@ class MainWindow(QMainWindow):
         title = "L2D Config Editor"
         if path:
             title = f"{Path(path).name} - {title}"
+        if self._is_dirty():
+            title = f"* {title}"
         self.setWindowTitle(title)
 
     def _show_status(self, message: str) -> None:
@@ -559,10 +912,11 @@ class MainWindow(QMainWindow):
         elif not node_uuids:
             self.controller.set_selected_node(None)
 
-    def _select_file_in_list(self, filename: str) -> None:
+    def _select_file_in_list(self, relative_path: str) -> None:
         for index in range(self.file_list.count()):
             item = self.file_list.item(index)
-            if item.data(Qt.ItemDataRole.UserRole) == filename:
+            payload = item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(payload, dict) and payload.get("kind") == "file" and payload.get("path") == relative_path:
                 self.file_list.setCurrentItem(item)
                 return
 
@@ -580,9 +934,10 @@ class MainWindow(QMainWindow):
 
     def _update_document_state(self, state) -> None:
         if state.is_meta_ready:
-            self.inspector_meta.setText("Initial 节点已完成，允许创建节点与连线。")
+            self.inspector_meta.setText("初始节点已完成，允许创建节点与连线。")
         else:
-            self.inspector_meta.setText(f"需先完成 Initial 节点字段：{' / '.join(state.meta_missing_fields)}")
+            self.inspector_meta.setText(f"需先完成初始节点字段：{' / '.join(state.meta_missing_fields)}")
+        self._update_save_action_state()
 
     def _handle_global_mode_changed(self, mode: str) -> None:
         self.settings.setValue("ui/global_mode", mode)
@@ -609,3 +964,111 @@ class MainWindow(QMainWindow):
         self.csv_dialog.set_schema(self.controller.schema)
         if self.controller.selected_node_uuid:
             self._update_inspector(self.controller.selected_node_uuid)
+
+    def _optimize_connection_layout(self) -> None:
+        self.canvas.optimize_connection_layout()
+
+    def _show_trash_dialog(self) -> None:
+        if self.trash_dialog is None:
+            self.trash_dialog = TrashDialog(self)
+            self.trash_dialog.remove_selected_button.clicked.connect(self._clear_selected_trash_entries)
+            self.trash_dialog.clear_all_button.clicked.connect(self._clear_all_trash_entries)
+            self.trash_dialog.close_button.clicked.connect(self.trash_dialog.close)
+        self._refresh_trash_dialog(self.controller.document.trash_bin)
+        self.trash_dialog.show()
+        self.trash_dialog.raise_()
+        self.trash_dialog.activateWindow()
+
+    def _refresh_trash_dialog(self, entries) -> None:
+        if self.trash_dialog is not None:
+            self.trash_dialog.set_entries(entries)
+
+    def _clear_selected_trash_entries(self) -> None:
+        if not self.trash_dialog:
+            return
+        removed = self.controller.clear_trash_entries(self.trash_dialog.selected_entry_ids())
+        if removed:
+            self._show_status(f"已清理 {removed} 条垃圾箱记录")
+
+    def _clear_all_trash_entries(self) -> None:
+        removed = self.controller.clear_all_trash()
+        if removed:
+            self._show_status("已清空垃圾箱")
+
+    def _relative_path_for_document(self, path: str | Path | None) -> str | None:
+        if not path:
+            return None
+        try:
+            return Path(path).resolve().relative_to(self.workdir.resolve()).as_posix()
+        except Exception:
+            return None
+
+    def _mark_saved_checkpoint(self, *, saved: bool) -> None:
+        self._last_saved_undo_index = self.controller.undo_stack.index()
+        self._has_saved_snapshot = saved
+        if not self._is_dirty():
+            self._auto_save_timer.stop()
+        self._sync_undo_actions()
+        self._update_window_title(self.controller.document.path)
+
+    def _is_dirty(self) -> bool:
+        if not self._has_saved_snapshot:
+            return bool(self.controller.document.path) or self.controller.undo_stack.index() != 0
+        return self.controller.undo_stack.index() != self._last_saved_undo_index
+
+    def _handle_undo_index_changed(self, _index: int) -> None:
+        if self._has_saved_snapshot and self.controller.document.path and self._is_dirty():
+            self._auto_save_timer.start(self.AUTOSAVE_DELAY_MS)
+        else:
+            self._auto_save_timer.stop()
+        self._sync_undo_actions()
+        self._update_window_title(self.controller.document.path)
+
+    def _run_auto_save(self) -> None:
+        if self._has_saved_snapshot and self.controller.document.path and self._is_dirty():
+            saved = self._save_current_file(silent=True, allow_incomplete=True)
+            if saved:
+                self.statusBar().showMessage(f"已自动保存 {Path(saved).name}", 2500)
+
+    def _ensure_safe_to_leave_document(self, target_path: str | Path | None) -> bool:
+        current = self.controller.document.path
+        if current and target_path and Path(current).resolve() == Path(target_path).resolve():
+            return True
+        self._auto_save_timer.stop()
+        if not self._is_dirty():
+            return True
+        if target_path is not None:
+            if self.controller.document.path:
+                return bool(self._save_current_file(silent=True, allow_incomplete=True))
+            return True
+        if self._has_saved_snapshot and self.controller.document.path:
+            return bool(self._save_current_file(silent=True, allow_incomplete=True))
+        box = QMessageBox(self)
+        box.setWindowTitle("保存当前更改")
+        box.setText("当前文档尚未保存，是否先保存？")
+        save_button = box.addButton("保存", QMessageBox.ButtonRole.AcceptRole)
+        discard_button = box.addButton("不保存", QMessageBox.ButtonRole.DestructiveRole)
+        cancel_button = box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked == save_button:
+            return bool(self._save_current_file(silent=False, allow_incomplete=True))
+        if clicked == discard_button:
+            return True
+        return clicked != cancel_button
+
+    def _next_paste_position(self, payload: bytes) -> tuple[float, float]:
+        if self._last_paste_payload != payload:
+            self._last_paste_payload = payload
+            self._paste_repeat_count = 0
+        self._paste_repeat_count += 1
+        min_x, min_y, max_x, _max_y = self.controller.clipboard_bounds(payload)
+        width = max(120.0, max_x - min_x)
+        offset = width + self.PASTE_GAP
+        return min_x + offset * self._paste_repeat_count, min_y
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self._ensure_safe_to_leave_document(None):
+            event.accept()
+        else:
+            event.ignore()

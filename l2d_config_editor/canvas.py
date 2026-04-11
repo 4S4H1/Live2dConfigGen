@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict, deque
 from typing import Any
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QLineF, QTimer, pyqtSignal
@@ -17,6 +18,7 @@ from PyQt6.QtWidgets import (
     QMenu,
 )
 
+from .logic import node_title
 from .schema import EditorSchema
 from .widgets import NodeFormWidget
 
@@ -24,7 +26,7 @@ from .widgets import NodeFormWidget
 class GridScene(QGraphicsScene):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setSceneRect(-6000, -6000, 12000, 12000)
+        self.setSceneRect(-1_000_000, -1_000_000, 2_000_000, 2_000_000)
         self.minor_grid = 20
         self.major_grid = 100
         self.top_right_hint = ""
@@ -114,8 +116,11 @@ class NodeItem(QGraphicsObject):
         self._warnings: list[str] = []
         self._search_highlight = False
         self._margin = 14
-        self._header_height = 34
-        self._content_top_gap = 14
+        self._base_header_height = 34.0
+        self._base_content_top_gap = 14.0
+        self._header_height = self._base_header_height
+        self._content_top_gap = self._base_content_top_gap
+        self._title_rect = QRectF(14.0, 8.0, 180.0, 20.0)
         self._pin_radius = 8
         self._resizing = False
         self._resize_start = QPointF()
@@ -139,17 +144,25 @@ class NodeItem(QGraphicsObject):
     def boundingRect(self) -> QRectF:
         return self._rect
 
+    def _pin_center(self, side: str) -> QPointF:
+        x = 0.0 if side == "input" else self._rect.width()
+        return QPointF(x, self._header_height + 18.0)
+
+    def _pin_rect(self, side: str, radius: float) -> QRectF:
+        center = self._pin_center(side)
+        return QRectF(center.x() - radius, center.y() - radius, radius * 2.0, radius * 2.0)
+
     def input_pin_scene_pos(self) -> QPointF:
-        return self.mapToScene(QPointF(0, self._header_height + 18))
+        return self.mapToScene(self._pin_center("input"))
 
     def output_pin_scene_pos(self) -> QPointF:
-        return self.mapToScene(QPointF(self._rect.width(), self._header_height + 18))
+        return self.mapToScene(self._pin_center("output"))
 
     def input_pin_rect(self) -> QRectF:
-        return QRectF(-self._pin_radius, self._header_height + 18 - self._pin_radius, self._pin_radius * 2, self._pin_radius * 2)
+        return self._pin_rect("input", self._pin_radius)
 
     def output_pin_rect(self) -> QRectF:
-        return QRectF(self._rect.width() - self._pin_radius, self._header_height + 18 - self._pin_radius, self._pin_radius * 2, self._pin_radius * 2)
+        return self._pin_rect("output", self._pin_radius)
 
     def resize_handle_rect(self) -> QRectF:
         size = 18 if self.node.type == "Comment" else 12
@@ -157,8 +170,8 @@ class NodeItem(QGraphicsObject):
 
     def pin_hit(self, scene_pos: QPointF) -> str | None:
         local = self.mapFromScene(scene_pos)
-        input_hit = self.input_pin_rect().adjusted(-5, -5, 5, 5)
-        output_hit = self.output_pin_rect().adjusted(-5, -5, 5, 5)
+        input_hit = self._pin_rect("input", self._pin_radius + 7.0)
+        output_hit = self._pin_rect("output", self._pin_radius + 7.0)
         if output_hit.contains(local):
             return "output"
         if input_hit.contains(local):
@@ -177,6 +190,7 @@ class NodeItem(QGraphicsObject):
         width = content_width + self._margin * 2
         if definition.resizable and node.ui_size:
             width = max(width, float(node.ui_size.get("width", width)))
+        self._recompute_header_layout(width)
         final_content_width = int(width - self._margin * 2)
         self.form.setFixedWidth(final_content_width)
         self.form.ensurePolished()
@@ -191,6 +205,7 @@ class NodeItem(QGraphicsObject):
         self.proxy.resize(final_content_width, content_height)
         if definition.resizable:
             node.ui_size = {"width": self._rect.width(), "height": self._rect.height()}
+        self.setToolTip(self._full_title_text())
         self.update()
         self.geometryChanged.emit(self.node.uuid)
 
@@ -241,24 +256,14 @@ class NodeItem(QGraphicsObject):
             painter.setPen(QPen(panel_border, 1.0))
             painter.drawRoundedRect(content_rect, 12, 12)
         base_title = self.schema.nodes[self.node.type].title
-        tips = str(self.node.fields.get("tips", "") or "").strip()
-        title_rect = QRectF(14, 8, self._rect.width() - 90, 18)
-        painter.setPen(QColor("#e8eef8"))
-        painter.setFont(self.form.font())
-        if tips:
-            left_text = f"{base_title} - "
-            metrics = QFontMetrics(self.form.font())
-            left_width = metrics.horizontalAdvance(left_text)
-            painter.drawText(title_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, left_text)
-            highlight_font = QFont(self.form.font())
-            highlight_font.setBold(True)
-            highlight_font.setUnderline(True)
-            painter.setFont(highlight_font)
-            painter.setPen(QColor("#f6d365"))
-            right_rect = QRectF(title_rect.x() + left_width, title_rect.y(), max(1.0, title_rect.width() - left_width), title_rect.height())
-            painter.drawText(right_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, tips)
-        else:
-            painter.drawText(title_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, base_title)
+        painter.setPen(QColor("#f6d365" if self.node.fields.get("tips") else "#e8eef8"))
+        title_font = self._title_font()
+        painter.setFont(title_font)
+        painter.drawText(
+            self._title_rect,
+            int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap),
+            self._full_title_text(),
+        )
         painter.setBrush(accent)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(self.input_pin_rect())
@@ -325,6 +330,50 @@ class NodeItem(QGraphicsObject):
     def _commit_field(self, key: str, value: Any) -> None:
         self.controller.update_field(self.node.uuid, key, value, self.controller.preferences.global_mode)
 
+    def _view_scale(self) -> float:
+        if self.scene() and self.scene().views():
+            return max(0.06, float(self.scene().views()[0].transform().m11()))
+        return 1.0
+
+    def refresh_view_scale(self) -> None:
+        self.update_node(self.node)
+
+    def _title_font(self) -> QFont:
+        title_font = QFont(self.form.font())
+        title_font.setBold(True)
+        title_font.setPointSizeF(max(7.5, 11.0 / self._view_scale()))
+        return title_font
+
+    def _recompute_header_layout(self, width: float) -> None:
+        title_font = self._title_font()
+        metrics = QFontMetrics(title_font)
+        available_width = max(140, int(width - 60.0))
+        title_text = self._full_title_text()
+        title_bounds = metrics.boundingRect(
+            0,
+            0,
+            available_width,
+            4096,
+            int(Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap),
+            title_text,
+        )
+        padding_top = max(8.0, 10.0 / self._view_scale())
+        padding_bottom = max(10.0, 12.0 / self._view_scale())
+        self._title_rect = QRectF(
+            14.0,
+            padding_top,
+            width - 60.0,
+            max(24.0, float(title_bounds.height())),
+        )
+        self._header_height = max(
+            self._base_header_height,
+            self._title_rect.y() + self._title_rect.height() + padding_bottom,
+        )
+        self._content_top_gap = max(self._base_content_top_gap, 16.0 / self._view_scale())
+
+    def _full_title_text(self) -> str:
+        return node_title(self.schema, self.node)
+
 
 class NodeCanvasView(QGraphicsView):
     selectionSummaryChanged = pyqtSignal(object, object)
@@ -381,6 +430,7 @@ class NodeCanvasView(QGraphicsView):
         scale = self.controller.document.canvas_view.scale
         if scale != 1.0:
             self.scale(scale, scale)
+        self._refresh_scale_sensitive_nodes()
         self.centerOn(self.controller.document.canvas_view.offset_x, self.controller.document.canvas_view.offset_y)
         self._refresh_hint_overlay()
 
@@ -408,8 +458,15 @@ class NodeCanvasView(QGraphicsView):
 
     def wheelEvent(self, event: QMouseEvent) -> None:
         factor = 1.1 if event.angleDelta().y() > 0 else 1 / 1.1
+        current_scale = max(0.001, float(self.transform().m11()))
+        target_scale = current_scale * factor
+        if target_scale < 0.03 or target_scale > 8.0:
+            event.accept()
+            return
         self.scale(factor, factor)
+        self._refresh_scale_sensitive_nodes()
         self._store_canvas_view()
+        event.accept()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.MiddleButton:
@@ -580,6 +637,7 @@ class NodeCanvasView(QGraphicsView):
     def _handle_mode_changed(self, _: str) -> None:
         for node_uuid in list(self.node_items):
             self._update_node_item(node_uuid)
+        self._refresh_scale_sensitive_nodes()
 
     def _on_node_geometry_changed(self, node_uuid: str) -> None:
         self._update_connections_for_node(node_uuid)
@@ -655,6 +713,230 @@ class NodeCanvasView(QGraphicsView):
                 self.controller.create_node_with_connection(self._connecting_from, node_type, (scene_pos.x(), scene_pos.y()))
                 break
 
+    def optimize_connection_layout(self) -> bool:
+        movable_nodes = {
+            node.uuid: node
+            for node in self.controller.document.nodes
+            if node.type != "Comment"
+        }
+        edge_pairs = [
+            (connection.from_uuid, connection.to_uuid)
+            for connection in self.controller.document.connections
+            if connection.from_uuid in movable_nodes and connection.to_uuid in movable_nodes
+        ]
+        connected_ids = {node_uuid for pair in edge_pairs for node_uuid in pair}
+        movable_nodes = {
+            node_uuid: node
+            for node_uuid, node in movable_nodes.items()
+            if node_uuid in connected_ids
+        }
+        if not movable_nodes:
+            self.controller.statusMessage.emit("当前没有可优化的连线布局")
+            return False
+
+        adjacency: dict[str, set[str]] = defaultdict(set)
+        outgoing: dict[str, list[str]] = defaultdict(list)
+        incoming: dict[str, list[str]] = defaultdict(list)
+        for from_uuid, to_uuid in edge_pairs:
+            if from_uuid not in movable_nodes or to_uuid not in movable_nodes:
+                continue
+            adjacency[from_uuid].add(to_uuid)
+            adjacency[to_uuid].add(from_uuid)
+            outgoing[from_uuid].append(to_uuid)
+            incoming[to_uuid].append(from_uuid)
+
+        for node_uuid in movable_nodes:
+            adjacency.setdefault(node_uuid, set())
+            outgoing.setdefault(node_uuid, [])
+            incoming.setdefault(node_uuid, [])
+
+        components: list[list[str]] = []
+        remaining = set(movable_nodes)
+        while remaining:
+            start = min(remaining, key=lambda node_uuid: (movable_nodes[node_uuid].ui_position["x"], movable_nodes[node_uuid].ui_position["y"]))
+            queue = deque([start])
+            component: list[str] = []
+            remaining.remove(start)
+            while queue:
+                current = queue.popleft()
+                component.append(current)
+                for neighbor in sorted(adjacency[current], key=lambda node_uuid: (movable_nodes[node_uuid].ui_position["x"], movable_nodes[node_uuid].ui_position["y"])):
+                    if neighbor in remaining:
+                        remaining.remove(neighbor)
+                        queue.append(neighbor)
+            components.append(component)
+
+        occupied_rects = self._static_obstacle_rects(set(movable_nodes))
+        final_positions: dict[str, tuple[float, float]] = {}
+        for component in sorted(
+            components,
+            key=lambda comp: (
+                min(movable_nodes[node_uuid].ui_position["x"] for node_uuid in comp),
+                min(movable_nodes[node_uuid].ui_position["y"] for node_uuid in comp),
+            ),
+        ):
+            component_positions = self._layout_component(component, outgoing, incoming, occupied_rects)
+            if not component_positions:
+                continue
+            for node_uuid, position in component_positions.items():
+                final_positions[node_uuid] = position
+                occupied_rects.append(self._expanded_rect_for(node_uuid, position))
+
+        changed_positions = {
+            node_uuid: position
+            for node_uuid, position in final_positions.items()
+            if node_uuid in movable_nodes
+            and (
+                abs(movable_nodes[node_uuid].ui_position["x"] - position[0]) > 0.5
+                or abs(movable_nodes[node_uuid].ui_position["y"] - position[1]) > 0.5
+            )
+        }
+        if not changed_positions:
+            self.controller.statusMessage.emit("当前布局已经比较规整")
+            return False
+        self.controller.move_nodes(changed_positions, label="优化连线布局")
+        return True
+
+    def _layout_component(
+        self,
+        component: list[str],
+        outgoing: dict[str, list[str]],
+        incoming: dict[str, list[str]],
+        occupied_rects: list[QRectF],
+    ) -> dict[str, tuple[float, float]]:
+        if not component:
+            return {}
+        component_set = set(component)
+        original_x = {node_uuid: float(self.controller.get_node(node_uuid).ui_position["x"]) for node_uuid in component}
+        original_y = {node_uuid: float(self.controller.get_node(node_uuid).ui_position["y"]) for node_uuid in component}
+        indegree = {node_uuid: sum(1 for source in incoming[node_uuid] if source in component_set) for node_uuid in component}
+        roots = sorted(
+            [node_uuid for node_uuid in component if indegree[node_uuid] == 0],
+            key=lambda node_uuid: (original_x[node_uuid], original_y[node_uuid]),
+        )
+        if not roots:
+            roots = [min(component, key=lambda node_uuid: (original_x[node_uuid], original_y[node_uuid]))]
+
+        levels: dict[str, int] = {node_uuid: 0 for node_uuid in roots}
+        queue = deque(roots)
+        while queue:
+            current = queue.popleft()
+            for target in sorted(
+                (value for value in outgoing[current] if value in component_set),
+                key=lambda node_uuid: (original_y[node_uuid], original_x[node_uuid]),
+            ):
+                next_level = levels[current] + 1
+                if next_level > levels.get(target, -1):
+                    levels[target] = next_level
+                    queue.append(target)
+        for node_uuid in component:
+            levels.setdefault(node_uuid, 0)
+
+        max_width = max(self.node_items[node_uuid].boundingRect().width() for node_uuid in component if node_uuid in self.node_items)
+        column_gap = max(180.0, max_width * 0.55)
+        row_gap = 96.0
+        anchor_x = min(original_x.values())
+        positions: dict[str, tuple[float, float]] = {}
+        child_anchor_cache: dict[str, float] = {}
+
+        for column in sorted(set(levels.values())):
+            column_nodes = [node_uuid for node_uuid in component if levels[node_uuid] == column]
+            column_nodes.sort(
+                key=lambda node_uuid: (
+                    self._desired_y_for_layout(
+                        node_uuid,
+                        positions,
+                        outgoing,
+                        incoming,
+                        original_y,
+                        child_anchor_cache,
+                        component_set,
+                        row_gap,
+                    ),
+                    original_y[node_uuid],
+                    original_x[node_uuid],
+                )
+            )
+            for node_uuid in column_nodes:
+                desired_y = self._desired_y_for_layout(
+                    node_uuid,
+                    positions,
+                    outgoing,
+                    incoming,
+                    original_y,
+                    child_anchor_cache,
+                    component_set,
+                    row_gap,
+                )
+                x = anchor_x + column * (max_width + column_gap)
+                y = self._resolve_non_overlapping_y(node_uuid, x, desired_y, occupied_rects)
+                positions[node_uuid] = (x, y)
+                occupied_rects.append(self._expanded_rect_for(node_uuid, (x, y)))
+
+                parent_ids = [source for source in incoming[node_uuid] if source in component_set and source in positions]
+                if len(parent_ids) == 1:
+                    parent_id = parent_ids[0]
+                    siblings = [child for child in outgoing[parent_id] if child in component_set]
+                    siblings.sort(key=lambda child_uuid: (original_y[child_uuid], original_x[child_uuid]))
+                    if len(siblings) > 1 and siblings[0] == node_uuid:
+                        child_anchor_cache[parent_id] = y
+        return positions
+
+    def _desired_y_for_layout(
+        self,
+        node_uuid: str,
+        positions: dict[str, tuple[float, float]],
+        outgoing: dict[str, list[str]],
+        incoming: dict[str, list[str]],
+        original_y: dict[str, float],
+        child_anchor_cache: dict[str, float],
+        component_set: set[str],
+        row_gap: float,
+    ) -> float:
+        parent_ids = [source for source in incoming[node_uuid] if source in component_set and source in positions]
+        if not parent_ids:
+            return original_y.get(node_uuid, 0.0)
+        if len(parent_ids) > 1:
+            return sum(positions[parent_uuid][1] for parent_uuid in parent_ids) / len(parent_ids)
+        parent_id = parent_ids[0]
+        siblings = [child for child in outgoing[parent_id] if child in component_set]
+        siblings.sort(key=lambda child_uuid: (original_y.get(child_uuid, 0.0), child_uuid))
+        parent_y = positions[parent_id][1]
+        if len(siblings) <= 1:
+            return parent_y
+        base_y = child_anchor_cache.get(parent_id, parent_y)
+        return base_y + siblings.index(node_uuid) * row_gap
+
+    def _static_obstacle_rects(self, excluded_node_ids: set[str]) -> list[QRectF]:
+        rects: list[QRectF] = []
+        for node_uuid, item in self.node_items.items():
+            if node_uuid in excluded_node_ids:
+                continue
+            rects.append(self._expanded_rect_for(node_uuid, (item.pos().x(), item.pos().y())))
+        return rects
+
+    def _expanded_rect_for(self, node_uuid: str, position: tuple[float, float]) -> QRectF:
+        item = self.node_items[node_uuid]
+        margin = 26.0
+        width = item.boundingRect().width()
+        height = item.boundingRect().height()
+        return QRectF(position[0] - margin, position[1] - margin, width + margin * 2.0, height + margin * 2.0)
+
+    def _resolve_non_overlapping_y(
+        self,
+        node_uuid: str,
+        x: float,
+        desired_y: float,
+        occupied_rects: list[QRectF],
+    ) -> float:
+        candidate_y = desired_y
+        for _ in range(240):
+            candidate_rect = self._expanded_rect_for(node_uuid, (x, candidate_y))
+            if not any(candidate_rect.intersects(other) for other in occupied_rects):
+                return candidate_y
+            candidate_y += 36.0
+        return candidate_y
+
     def _handle_document_state_changed(self, state) -> None:
         self.scene_ref.top_right_hint = "" if state.is_meta_ready else "请先完成初始节点里的内容"
         self._refresh_hint_overlay()
@@ -664,3 +946,7 @@ class NodeCanvasView(QGraphicsView):
         tips = str(self.controller.document.meta.tips or "").strip()
         self.scene_ref.bottom_right_hint = tips or "按住中键平移 / 滚轮缩放 / Delete 删除"
         self.scene_ref.update()
+
+    def _refresh_scale_sensitive_nodes(self) -> None:
+        for item in self.node_items.values():
+            item.refresh_view_scale()
