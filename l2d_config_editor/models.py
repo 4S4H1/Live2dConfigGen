@@ -13,7 +13,7 @@ class MetaRecord:
     ship_skin_id: int = 0
     memo: str = ""
     default_state: str = "idle0"
-    react_condition: int = 0
+    react_condition: str = ""
     tips: str = ""
     CharName: str = ""
 
@@ -35,6 +35,7 @@ class ConnectionRecord:
 class EditorPreferences:
     global_mode: str = "simple"
     schema_path: str | None = None
+    debug_json_field_names: bool = False
 
 
 @dataclass

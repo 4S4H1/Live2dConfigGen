@@ -232,8 +232,11 @@ class MainWindow(QMainWindow):
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("输入字段值，例如 idle=13")
         self.search_edit.textChanged.connect(self._refresh_search_results)
+        self.restore_layout_button = QPushButton("还原布局")
+        self.restore_layout_button.clicked.connect(self._restore_canvas_layout)
         search_row.addWidget(search_title)
         search_row.addWidget(self.search_edit, 1)
+        search_row.addWidget(self.restore_layout_button, 0)
         self.search_results = QListWidget()
         self.search_results.setMaximumHeight(180)
         self.search_results.itemClicked.connect(self._jump_to_search_result)
@@ -258,15 +261,6 @@ class MainWindow(QMainWindow):
         control_layout = QVBoxLayout(self.control_panel)
         control_layout.setContentsMargins(12, 12, 12, 12)
         control_layout.setSpacing(10)
-
-        control_title = QLabel("编辑控制")
-        control_title.setObjectName("sectionTitle")
-        control_layout.addWidget(control_title)
-
-        control_hint = QLabel("这里放全局编辑行为，而不是当前节点字段。模式切换、布局整理和垃圾箱与 Inspector 分层显示，侧边栏会更稳定。")
-        control_hint.setObjectName("sidebarHint")
-        control_hint.setWordWrap(True)
-        control_layout.addWidget(control_hint)
 
         mode_block = QVBoxLayout()
         mode_block.setContentsMargins(0, 0, 0, 0)
@@ -318,12 +312,18 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(self.control_panel)
 
+        self.inspector_shell = QFrame()
+        self.inspector_shell.setObjectName("inspectorShell")
+        inspector_layout = QVBoxLayout(self.inspector_shell)
+        inspector_layout.setContentsMargins(12, 12, 12, 12)
+        inspector_layout.setSpacing(8)
+
         title = QLabel("Inspector")
         title.setObjectName("sectionTitle")
-        layout.addWidget(title)
+        inspector_layout.addWidget(title)
         self.inspector_meta = QLabel("")
         self.inspector_meta.setWordWrap(True)
-        layout.addWidget(self.inspector_meta)
+        inspector_layout.addWidget(self.inspector_meta)
         self.inspector_placeholder = QLabel("请选择一个节点")
         self.inspector_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.inspector_form = NodeFormWidget(self.controller.schema, inline=False)
@@ -339,8 +339,9 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(inspector_body)
-        layout.addWidget(self.inspector_placeholder)
-        layout.addWidget(scroll, 1)
+        inspector_layout.addWidget(self.inspector_placeholder)
+        inspector_layout.addWidget(scroll, 1)
+        layout.addWidget(self.inspector_shell, 1)
         panel.setMinimumWidth(380)
         return panel
 
@@ -418,6 +419,10 @@ class MainWindow(QMainWindow):
         csv_action = QAction("CSV 预览", self)
         csv_action.triggered.connect(self._show_csv_preview)
         view_menu.addAction(csv_action)
+
+        self.debug_json_fields_action = QAction("调试模式：显示 JSON 字段名", self, checkable=True)
+        self.debug_json_fields_action.toggled.connect(self._set_debug_json_field_names)
+        view_menu.addAction(self.debug_json_fields_action)
 
         mode_menu = view_menu.addMenu("编辑模式")
         mode_group = QActionGroup(self)
@@ -575,11 +580,31 @@ class MainWindow(QMainWindow):
         mode = self.settings.value("ui/global_mode", self.controller.preferences.global_mode)
         if isinstance(mode, str):
             self.controller.set_global_mode(mode)
+        debug_json_fields = self.settings.value("ui/debug_json_field_names", self.controller.preferences.debug_json_field_names)
+        debug_enabled = debug_json_fields in (True, "true", "1", 1)
+        self.controller.preferences.debug_json_field_names = bool(debug_enabled)
+        self.debug_json_fields_action.setChecked(bool(debug_enabled))
         self.simple_mode_action.setChecked(self.controller.preferences.global_mode == "simple")
         self.advanced_mode_action.setChecked(self.controller.preferences.global_mode == "advanced")
         self.simple_mode_radio.setChecked(self.controller.preferences.global_mode == "simple")
         self.advanced_mode_radio.setChecked(self.controller.preferences.global_mode == "advanced")
         self._update_save_action_state()
+
+    def _set_debug_json_field_names(self, enabled: bool) -> None:
+        self.controller.preferences.debug_json_field_names = enabled
+        self.settings.setValue("ui/debug_json_field_names", enabled)
+        if self.controller.selected_node_uuid:
+            node = self.controller.get_node(self.controller.selected_node_uuid)
+            if node:
+                self.inspector_form.set_node(
+                    node,
+                    self.controller.preferences.global_mode,
+                    self.controller.preferences.debug_json_field_names,
+                )
+        for node_uuid in list(self.canvas.node_items):
+            self.canvas._update_node_item(node_uuid)
+        if self.search_edit.text().strip():
+            self._refresh_search_results()
 
     def _refresh_file_list(self) -> None:
         current = self._relative_path_for_document(self.controller.document.path)
@@ -853,7 +878,11 @@ class MainWindow(QMainWindow):
         self.inspector_form.setVisible(node is not None)
         self.validation_summary.setVisible(node is not None)
         if node:
-            self.inspector_form.set_node(node, self.controller.preferences.global_mode)
+            self.inspector_form.set_node(
+                node,
+                self.controller.preferences.global_mode,
+                self.controller.preferences.debug_json_field_names,
+            )
             self.validation_summary.set_issues(self.validation_cache.get(node.uuid, []))
         else:
             self.validation_summary.set_issues([])
@@ -862,7 +891,11 @@ class MainWindow(QMainWindow):
         if node_uuid == self.controller.selected_node_uuid:
             node = self.controller.get_node(node_uuid)
             if node:
-                self.inspector_form.set_node(node, self.controller.preferences.global_mode)
+                self.inspector_form.set_node(
+                    node,
+                    self.controller.preferences.global_mode,
+                    self.controller.preferences.debug_json_field_names,
+                )
                 self.validation_summary.set_issues(self.validation_cache.get(node.uuid, []))
         if self.search_edit.text().strip():
             self._refresh_search_results()
@@ -885,6 +918,9 @@ class MainWindow(QMainWindow):
         self.canvas.flash_node(node_uuid)
         if node_uuid in self.canvas.node_items:
             self.canvas.node_items[node_uuid].setSelected(True)
+
+    def _restore_canvas_layout(self) -> None:
+        self.canvas.reset_view_layout()
 
     def _show_csv_preview(self) -> None:
         self.csv_dialog.show()
@@ -948,7 +984,11 @@ class MainWindow(QMainWindow):
         if self.controller.selected_node_uuid:
             node = self.controller.get_node(self.controller.selected_node_uuid)
             if node:
-                self.inspector_form.set_node(node, mode)
+                self.inspector_form.set_node(
+                    node,
+                    mode,
+                    self.controller.preferences.debug_json_field_names,
+                )
 
     def _reload_schema(self) -> None:
         try:

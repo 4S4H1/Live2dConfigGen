@@ -1,6 +1,6 @@
 {
   "editor_signature": "l2d_config_editor/v1",
-  "global_mode": "advanced",
+  "global_mode": "simple",
   "meta": {
     "version": "2099-09-09",
     "author": "阿斯蒂芬",
@@ -37,7 +37,7 @@
       },
       "ui_size": {
         "width": 556.0033672970758,
-        "height": 525.0
+        "height": 1277.1797792769976
       },
       "content": "",
       "drag_direct": 0
@@ -46,8 +46,8 @@
       "uuid": "42baffa097024684a73cb550db64a5f2",
       "type": "TouchIdle",
       "ui_position": {
-        "x": -83.06978930076855,
-        "y": 2108.3001613547203
+        "x": -100.66978930076857,
+        "y": 2396.3001613547212
       },
       "type_slot": 1,
       "export_slot": 1,
@@ -166,8 +166,8 @@
       "uuid": "42260453ab87437aa128bc2cd3069963",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 504.93021069923145,
-        "y": 3314.3001613547203
+        "x": 469.7302106992314,
+        "y": 4100.300161354721
       },
       "type_slot": 1,
       "export_slot": 1,
@@ -206,8 +206,8 @@
       "uuid": "66c989ecbd6c4a5f8f9c9b8af0524074",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 504.93021069923145,
-        "y": 2108.3001613547212
+        "x": 469.7302106992314,
+        "y": 3248.3001613547212
       },
       "type_slot": 1,
       "export_slot": 1,
@@ -246,8 +246,8 @@
       "uuid": "d97b4356f85c4f038640616eb12af192",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 504.93021069923145,
-        "y": 902.300161354721
+        "x": 469.7302106992314,
+        "y": 2396.3001613547212
       },
       "type_slot": 1,
       "export_slot": 1,
@@ -286,8 +286,8 @@
       "uuid": "8152cca46f244cb69141c2cd3029404b",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 2890.27412511891,
-        "y": 1539.5880872140538
+        "x": 2872.67412511891,
+        "y": 1598.5961326667252
       },
       "type_slot": 8,
       "export_slot": 8,
@@ -300,7 +300,7 @@
       "transition_type": "animated",
       "action_trigger": "{type = 2 ,action = 'touch_idle9'}",
       "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 9}",
-      "id": 1111109,
+      "id": 1111108,
       "mode": 1,
       "start_value": 0,
       "parts_data": "",
@@ -326,8 +326,8 @@
       "uuid": "c06621568d2e4a3dba01c47bbdaeb04a",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 3478.27412511891,
-        "y": 846.9670009857715
+        "x": 3443.07412511891,
+        "y": 1598.5961326667252
       },
       "type_slot": 8,
       "export_slot": 8,
@@ -340,7 +340,7 @@
       "transition_type": "animated",
       "action_trigger": "{type = 2 ,action = 'touch_idle10'}",
       "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 10}",
-      "id": 1111110,
+      "id": 1111108,
       "mode": 1,
       "start_value": 0,
       "parts_data": "",
@@ -366,8 +366,8 @@
       "uuid": "18edbf41d7bb40c5952945e77bec3186",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 4066.27412511891,
-        "y": 1122.023208627294
+        "x": 4013.47412511891,
+        "y": 1598.5961326667252
       },
       "type_slot": 8,
       "export_slot": 8,
@@ -380,7 +380,7 @@
       "transition_type": "animated",
       "action_trigger": "{type = 2 ,action = 'touch_idle11'}",
       "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 11}",
-      "id": 1111111,
+      "id": 1111108,
       "mode": 1,
       "start_value": 0,
       "parts_data": "",
@@ -406,8 +406,8 @@
       "uuid": "d76de40653794dec80eaf7b1716ff343",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 4654.27412511891,
-        "y": 1340.5421901860145
+        "x": 4583.874125118909,
+        "y": 1598.5961326667252
       },
       "type_slot": 8,
       "export_slot": 8,
@@ -420,7 +420,7 @@
       "transition_type": "animated",
       "action_trigger": "{type = 2 ,action = 'touch_idle12'}",
       "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 12}",
-      "id": 1111112,
+      "id": 1111108,
       "mode": 1,
       "start_value": 0,
       "parts_data": "",
@@ -446,8 +446,8 @@
       "uuid": "f57ef4d363364ae185026be06adf9d8e",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 5242.27412511891,
-        "y": 1504.431426355055
+        "x": 5154.27412511891,
+        "y": 1598.5961326667252
       },
       "type_slot": 8,
       "export_slot": 8,
@@ -460,7 +460,7 @@
       "transition_type": "animated",
       "action_trigger": "{type = 2 ,action = 'touch_idle13'}",
       "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 13}",
-      "id": 1111113,
+      "id": 1111108,
       "mode": 1,
       "start_value": 0,
       "parts_data": "",
@@ -486,8 +486,8 @@
       "uuid": "fe14b255d5a64714b91960447238242e",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 3478.27412511891,
-        "y": 2052.9670009857714
+        "x": 3443.07412511891,
+        "y": 2450.596132666725
       },
       "type_slot": 8,
       "export_slot": 8,
@@ -500,7 +500,7 @@
       "transition_type": "animated",
       "action_trigger": "{type = 2 ,action = 'touch_idle14'}",
       "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 14}",
-      "id": 1111114,
+      "id": 1111108,
       "mode": 1,
       "start_value": 0,
       "parts_data": "",
@@ -540,7 +540,7 @@
       "transition_type": "animated",
       "action_trigger": "{type = 2 ,action = 'touch_idle15'}",
       "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 15}",
-      "id": 1111115,
+      "id": 1111108,
       "mode": 1,
       "start_value": 0,
       "parts_data": "",
@@ -580,7 +580,7 @@
       "transition_type": "animated",
       "action_trigger": "{type = 2 ,action = 'touch_idle16'}",
       "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 16}",
-      "id": 1111116,
+      "id": 1111108,
       "mode": 1,
       "start_value": 0,
       "parts_data": "",
@@ -620,7 +620,7 @@
       "transition_type": "animated",
       "action_trigger": "{type = 2 ,action = 'touch_idle17'}",
       "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 17}",
-      "id": 1111117,
+      "id": 1111108,
       "mode": 1,
       "start_value": 0,
       "parts_data": "",
@@ -646,8 +646,8 @@
       "uuid": "9c7c8959de294a7bad04776ba7bc8017",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 5830.27412511891,
-        "y": 1504.431426355055
+        "x": 5724.67412511891,
+        "y": 2450.596132666725
       },
       "type_slot": 8,
       "export_slot": 8,
@@ -660,7 +660,7 @@
       "transition_type": "animated",
       "action_trigger": "{type = 2 ,action = 'touch_idle18'}",
       "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 18}",
-      "id": 1111118,
+      "id": 1111108,
       "mode": 1,
       "start_value": 0,
       "parts_data": "",
@@ -686,8 +686,8 @@
       "uuid": "809431d45901450ab89ca4ef622adf09",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 5830.27412511891,
-        "y": 2710.431426355055
+        "x": 5724.67412511891,
+        "y": 3302.596132666725
       },
       "type_slot": 8,
       "export_slot": 8,
@@ -700,7 +700,7 @@
       "transition_type": "animated",
       "action_trigger": "{type = 2 ,action = 'touch_idle19'}",
       "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 19}",
-      "id": 1111119,
+      "id": 1111108,
       "mode": 1,
       "start_value": 0,
       "parts_data": "",
@@ -726,8 +726,8 @@
       "uuid": "c7369a18144b4e388e608a0158c1af49",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 5830.27412511891,
-        "y": 298.4314263550549
+        "x": 5724.67412511891,
+        "y": 1598.5961326667252
       },
       "type_slot": 8,
       "export_slot": 8,
@@ -740,7 +740,7 @@
       "transition_type": "animated",
       "action_trigger": "{type = 2 ,action = 'touch_idle20'}",
       "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 20}",
-      "id": 1111120,
+      "id": 1111108,
       "mode": 1,
       "start_value": 0,
       "parts_data": "",
@@ -780,7 +780,7 @@
       "transition_type": "animated",
       "action_trigger": "{type = 2 ,action = 'touch_idle21'}",
       "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 21}",
-      "id": 1111121,
+      "id": 1111108,
       "mode": 1,
       "start_value": 0,
       "parts_data": "",
@@ -820,7 +820,7 @@
       "transition_type": "animated",
       "action_trigger": "{type = 2 ,action = 'touch_idle22'}",
       "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 22}",
-      "id": 1111122,
+      "id": 1111108,
       "mode": 1,
       "start_value": 0,
       "parts_data": "",
@@ -860,7 +860,7 @@
       "transition_type": "animated",
       "action_trigger": "{type = 2 ,action = 'touch_idle23'}",
       "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 23}",
-      "id": 1111123,
+      "id": 1111108,
       "mode": 1,
       "start_value": 0,
       "parts_data": "",
@@ -1096,8 +1096,8 @@
     }
   ],
   "canvas_view": {
-    "scale": 0.9090909090909124,
-    "offset_x": 4430.799999999984,
-    "offset_y": 2329.7999999999915
+    "scale": 0.3504938994813938,
+    "offset_x": 4245.437658691664,
+    "offset_y": 1780.3448246126331
   }
 }

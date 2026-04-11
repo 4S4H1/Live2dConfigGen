@@ -1,4 +1,5 @@
 {
+  "editor_signature": "l2d_config_editor/v1",
   "global_mode": "simple",
   "meta": {
     "version": "2099-09-09",
@@ -40,7 +41,7 @@
       "draw_able_name": "TouchIdle1",
       "parameter": "Paramtouch_idle1",
       "range": "{0,1}",
-      "control_type": "click",
+      "control_type": "drag",
       "drag_ui_direction": "",
       "transition_type": "animated",
       "action_trigger": "{type = 2 ,action = 'touch_idle1'}",
@@ -52,7 +53,7 @@
       "ignore_react": 1,
       "ignore_action": 1,
       "range_abs": 1,
-      "drag_direct": 0,
+      "drag_direct": 1,
       "react_pos_x": null,
       "react_pos_y": null,
       "offset_x": 0,
@@ -76,10 +77,52 @@
       },
       "ui_size": {
         "width": 757.0613690149997,
-        "height": 315.0
+        "height": 416.56221348379995
       },
       "content": "",
       "drag_direct": 0
+    },
+    {
+      "uuid": "3e02002e3e9841328df5f37e9deea32d",
+      "type": "TouchDrag",
+      "ui_position": {
+        "x": 1115.6200000000001,
+        "y": 257.73
+      },
+      "type_slot": 1,
+      "export_slot": 2,
+      "tips": "",
+      "draw_able_name": "TouchDrag1",
+      "parameter": "Touch_drag0",
+      "range": "{0,1}",
+      "control_type": "click",
+      "drag_ui_direction": "",
+      "result_type": "value",
+      "action_trigger": "",
+      "action_trigger_active": "",
+      "target_value": 1.0,
+      "revert_enabled": 0,
+      "parts_data": "",
+      "id": 123002,
+      "mode": 1,
+      "start_value": 0,
+      "ignore_react": 1,
+      "ignore_action": 1,
+      "range_abs": 1,
+      "drag_direct": 0,
+      "react_pos_x": null,
+      "react_pos_y": null,
+      "offset_x": 0,
+      "offset_y": 0,
+      "smooth": 100,
+      "revert_smooth": 100,
+      "revert": -1,
+      "gyro": 0,
+      "gyro_x": 0,
+      "gyro_y": 0,
+      "gyro_z": 0,
+      "limit_time": 1,
+      "shop_action": 0
     }
   ],
   "connections": [
@@ -90,8 +133,8 @@
   ],
   "trash_bin": [],
   "canvas_view": {
-    "scale": 0.3855432894295319,
-    "offset_x": 1055.6531812606995,
-    "offset_y": 176.3744872867999
+    "scale": 1.1,
+    "offset_x": 1179.090909090909,
+    "offset_y": 438.1818181818182
   }
 }

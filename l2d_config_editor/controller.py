@@ -233,7 +233,12 @@ class EditorController(QObject):
             self.undo_stack.push(RemoveConnectionCommand(self, target))
 
     def search(self, text: str):
-        return search_document(self.schema, self.document, text)
+        return search_document(
+            self.schema,
+            self.document,
+            text,
+            use_json_field_names=self.preferences.debug_json_field_names,
+        )
 
     def serialize_selection(self, node_uuids: list[str]) -> bytes | None:
         selected_nodes = [

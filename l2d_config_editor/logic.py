@@ -26,7 +26,15 @@ from .schema import EditorSchema, FieldSchema, NodeSchema, load_editor_schema
 RANGE_PATTERN = re.compile(r"^\{\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\}$")
 ACTION_NAME_PATTERN = re.compile(r"action\s*=\s*'([^']*)'")
 TARGET_IDLE_PATTERN = re.compile(r"idle\s*=\s*(-?\d+)")
-HIDDEN_NODE_FIELDS = {"target_idle"}
+PARTS_DATA_PATTERN = re.compile(r"^\{\s*parts\s*=\s*\{(?P<values>.*)\}\s*\}$", re.IGNORECASE)
+REACT_CONDITION_PATTERN = re.compile(r"^\{\s*idle_on\s*=\s*\{(?P<values>.*)\}\s*\}$", re.IGNORECASE)
+HIDDEN_NODE_FIELDS = {
+    "target_idle",
+    "action_trigger_kind_ui",
+    "action_trigger_reserved_ui",
+    "action_trigger_active_kind_ui",
+    "action_trigger_active_reserved_ui",
+}
 EDITOR_DOCUMENT_SIGNATURE = "l2d_config_editor/v1"
 RESERVED_FIELD_KEYS = (
     "draw_able_name",
@@ -89,6 +97,11 @@ def normalize_parts_data(value: str) -> list[float] | None:
     text = str(value or "").strip()
     if not text:
         return []
+    match = PARTS_DATA_PATTERN.match(text)
+    if match:
+        text = match.group("values").strip()
+    if not text:
+        return []
     result: list[float] = []
     for chunk in text.split(","):
         chunk = chunk.strip()
@@ -97,6 +110,53 @@ def normalize_parts_data(value: str) -> list[float] | None:
         except ValueError:
             return None
     return result
+
+
+def _format_number(value: float) -> str:
+    return str(int(value)) if float(value).is_integer() else f"{value:g}"
+
+
+def canonicalize_parts_data(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parts = normalize_parts_data(text)
+    if parts is None:
+        return text
+    return f"{{parts={{{','.join(_format_number(part) for part in parts)}}}}}"
+
+
+def normalize_react_condition_list(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    match = REACT_CONDITION_PATTERN.match(text)
+    if match:
+        text = match.group("values").strip()
+    if not text:
+        return ""
+    normalized: list[str] = []
+    for chunk in text.split(","):
+        item = chunk.strip()
+        if not item:
+            continue
+        try:
+            normalized.append(str(int(item)))
+        except ValueError:
+            return str(value or "").strip()
+    return ",".join(normalized)
+
+
+def format_react_condition_for_csv(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    normalized = normalize_react_condition_list(raw)
+    if not normalized:
+        return ""
+    if normalized == raw and raw.startswith("{"):
+        return raw
+    return f"{{idle_on={{{normalized}}}}}"
 
 
 def _coerce_int(value: Any, default: int = 0) -> int:
@@ -122,6 +182,35 @@ def _target_idle_from_raw(value: Any) -> int | None:
     if not match:
         return None
     return _coerce_int(match.group(1), 0)
+
+
+def _classify_action_trigger(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "empty"
+    if "type" in text and "2" in text and "action" in text:
+        return "type2_target" if "target" in text else "type2_action"
+    return "reserved_raw"
+
+
+def _classify_action_trigger_active(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "empty"
+    return "idle_gate" if "idle" in text else "reserved_raw"
+
+
+def _refresh_trigger_interface_fields(node: NodeRecord) -> None:
+    if node.type not in {"TouchIdle", "TouchDrag"}:
+        return
+    action_raw = str(node.fields.get("action_trigger", "") or "").strip()
+    active_raw = str(node.fields.get("action_trigger_active", "") or "").strip()
+    action_kind = _classify_action_trigger(action_raw)
+    active_kind = _classify_action_trigger_active(active_raw)
+    node.fields["action_trigger_kind_ui"] = action_kind
+    node.fields["action_trigger_reserved_ui"] = action_raw if action_kind == "reserved_raw" else ""
+    node.fields["action_trigger_active_kind_ui"] = active_kind
+    node.fields["action_trigger_active_reserved_ui"] = active_raw if active_kind == "reserved_raw" else ""
 
 
 def normalized_target_idle(node: NodeRecord) -> int:
@@ -244,6 +333,10 @@ def display_value_for_field(schema: EditorSchema, node: NodeRecord, key: str, ra
         return _action_name_from_raw(value)
     if key == "action_trigger_active":
         return normalized_target_idle(node)
+    if key == "parts_data":
+        return canonicalize_parts_data(value)
+    if key == "react_condition":
+        return normalize_react_condition_list(value)
     return value
 
 
@@ -259,6 +352,10 @@ def normalize_field_input(schema: EditorSchema, node: NodeRecord, key: str, disp
         if node.type == "TouchIdle" and node.fields.get("transition_type") == "hard":
             return _hard_cut_action(schema, target_idle)[1]
         return _animated_action(schema, _node_schema(schema, node.type), target_idle)[1]
+    if key == "parts_data":
+        return canonicalize_parts_data(display_value)
+    if key == "react_condition":
+        return normalize_react_condition_list(display_value)
     return display_value
 
 
@@ -283,6 +380,7 @@ def infer_manual_fields(schema: EditorSchema, node: NodeRecord) -> None:
         node.manual_fields.discard("parameter")
     if node.type == "TouchDrag" and node.fields.get("result_type") == "value":
         node.manual_fields.discard("action_trigger")
+        _refresh_trigger_interface_fields(node)
         return
     expected_action, expected_active = _infer_expected_actions(schema, node)
     if str(node.fields.get("action_trigger", "")) != expected_action:
@@ -290,6 +388,7 @@ def infer_manual_fields(schema: EditorSchema, node: NodeRecord) -> None:
     else:
         node.manual_fields.discard("action_trigger")
     node.fields["action_trigger_active"] = expected_active
+    _refresh_trigger_interface_fields(node)
 
 
 def apply_sequence_defaults(schema: EditorSchema, node: NodeRecord) -> None:
@@ -305,6 +404,7 @@ def apply_sequence_defaults(schema: EditorSchema, node: NodeRecord) -> None:
     node.fields["action_trigger"] = action
     node.fields["action_trigger_active"] = active
     node.manual_fields.difference_update({"parameter", "action_trigger"})
+    _refresh_trigger_interface_fields(node)
 
 
 def _update_drag_offsets(node: NodeRecord, changed_key: str | None, source_mode: str) -> None:
@@ -336,7 +436,7 @@ def _update_range_abs(node: NodeRecord) -> None:
     parsed = parse_range(node.fields.get("range", ""))
     if not parsed:
         return
-    node.fields["range_abs"] = 0 if parsed[0] < 0 else node.fields.get("range_abs", 1)
+    node.fields["range_abs"] = 0 if parsed[0] < 0 else 1
 
 
 def apply_auto_rules(
@@ -353,6 +453,8 @@ def apply_auto_rules(
         return
     if changed_key in {"target_idle", "action_trigger_active"} and source_mode == "simple":
         node.manual_fields.discard("parameter")
+    if "parts_data" in node.fields:
+        node.fields["parts_data"] = canonicalize_parts_data(node.fields.get("parts_data", ""))
     _update_drag_offsets(node, changed_key, source_mode)
     _update_range_abs(node)
     if node.type not in function_node_types(schema):
@@ -368,11 +470,13 @@ def apply_auto_rules(
             node.fields["action_trigger_active"] = ""
         node.fields["target_idle"] = 0
         node.manual_fields.discard("action_trigger")
+        _refresh_trigger_interface_fields(node)
         return
     expected_action, expected_active = _infer_expected_actions(schema, node)
     if force_generated or "action_trigger" not in node.manual_fields:
         node.fields["action_trigger"] = expected_action
     node.fields["action_trigger_active"] = expected_active
+    _refresh_trigger_interface_fields(node)
 
 
 def create_node(
@@ -415,7 +519,7 @@ def sync_meta_from_initial(document: DocumentModel) -> None:
         ship_skin_id=int(initial.fields.get("ship_skin_id") or 0),
         memo=str(initial.fields.get("memo", "")),
         default_state=str(initial.fields.get("defaultState", "idle0")),
-        react_condition=int(initial.fields.get("react_condition") or 0),
+        react_condition=normalize_react_condition_list(initial.fields.get("react_condition", "")),
         tips=str(initial.fields.get("tips", "")),
         CharName=str(initial.fields.get("CharName", "")),
     )
@@ -592,6 +696,10 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
 
 
 def _csv_value_for_mapping(mapping, document: DocumentModel, node: NodeRecord) -> Any:
+    if mapping.column == "parts_data":
+        return canonicalize_parts_data(node.fields.get(mapping.field or "", mapping.default))
+    if mapping.column == "react_condition":
+        return format_react_condition_for_csv(getattr(document.meta, mapping.field or "", mapping.default))
     if mapping.kind == "node":
         return node.fields.get(mapping.field, mapping.default)
     if mapping.kind == "meta":
@@ -656,7 +764,7 @@ def validate_document(schema: EditorSchema, document: DocumentModel) -> list[Val
                 issues.append(
                     ValidationIssue(
                         node_uuid=node.uuid,
-                        message="parts_data 不是合法的逗号分隔数字列表",
+                        message="parts_data 不是合法的 {parts={...}} 数字列表",
                         field_keys=["parts_data"],
                     )
                 )
@@ -694,13 +802,21 @@ def validate_document(schema: EditorSchema, document: DocumentModel) -> list[Val
     return issues
 
 
-def _field_label(schema: EditorSchema, node: NodeRecord, key: str) -> str:
+def _field_label(schema: EditorSchema, node: NodeRecord, key: str, *, use_json_field_names: bool = False) -> str:
+    if use_json_field_names:
+        return key
     definition = schema.nodes[node.type]
     field = next((item for item in definition.fields if item.key == key), None)
     return field.label if field else key
 
 
-def search_document(schema: EditorSchema, document: DocumentModel, text: str) -> list[SearchHit]:
+def search_document(
+    schema: EditorSchema,
+    document: DocumentModel,
+    text: str,
+    *,
+    use_json_field_names: bool = False,
+) -> list[SearchHit]:
     needle = text.strip().lower()
     if not needle:
         return []
@@ -721,7 +837,7 @@ def search_document(schema: EditorSchema, document: DocumentModel, text: str) ->
                     node_type=node.type,
                     title=node_title(schema, node),
                     field_name=key,
-                    field_label=_field_label(schema, node, key),
+                    field_label=_field_label(schema, node, key, use_json_field_names=use_json_field_names),
                     preview=str(display_value)[:120],
                 )
             )

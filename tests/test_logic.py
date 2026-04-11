@@ -71,7 +71,7 @@ class LogicTests(unittest.TestCase):
         node = create_node(self.schema, document, "TouchDrag")
         self.assertEqual("TouchDrag1", node.fields["draw_able_name"])
         self.assertEqual(1, node.fields["target_idle"])
-        self.assertEqual("Touch_drag1", node.fields["parameter"])
+        self.assertEqual("touch_drag1", node.fields["parameter"])
         self.assertIn("touch_idle1", node.fields["action_trigger"])
 
     def test_touchidle_target_idle_regenerates_simple_fields(self) -> None:
@@ -123,7 +123,7 @@ class LogicTests(unittest.TestCase):
         node.fields["parts_data"] = "1,hello"
         document.nodes.append(node)
         issues = validate_document(self.schema, document)
-        self.assertTrue(any(issue.message == "parts_data 不是合法的逗号分隔数字列表" for issue in issues))
+        self.assertTrue(any(issue.message == "parts_data 不是合法的 {parts={...}} 数字列表" for issue in issues))
 
     def test_validation_catches_parts_out_of_range(self) -> None:
         document = self.make_ready_document()
@@ -148,15 +148,41 @@ class LogicTests(unittest.TestCase):
         self.assertEqual(idle.uuid, loaded.connections[0].from_uuid)
         self.assertEqual(drag.uuid, loaded.connections[0].to_uuid)
 
-    def test_csv_preview_uses_meta_desc(self) -> None:
+    def test_csv_preview_uses_node_desc(self) -> None:
+        document = self.make_ready_document()
+        node = create_node(self.schema, document, "TouchIdle")
+        node.fields["desc"] = "节点说明"
+        document.nodes.append(node)
+        rows = document_to_csv_rows(self.schema, document)
+        self.assertEqual("节点说明", rows[0].values["desc"])
+        self.assertEqual(302291, rows[0].values["ship_skin_id"])
+
+    def test_parts_data_is_canonicalized_to_wrapped_format(self) -> None:
+        document = self.make_ready_document()
+        node = create_node(self.schema, document, "TouchDrag")
+        node.fields["parts_data"] = "1,2.5"
+        apply_auto_rules(self.schema, document, node, source_mode="advanced", changed_key="parts_data")
+        self.assertEqual("{parts={1,2.5}}", node.fields["parts_data"])
+
+    def test_csv_preview_wraps_react_condition_idle_list(self) -> None:
         document = self.make_ready_document()
         initial = next(node for node in document.nodes if node.type == "Initial")
-        initial.fields["CharName"] = "名取"
+        initial.fields["react_condition"] = "0,17"
         node = create_node(self.schema, document, "TouchIdle")
         document.nodes.append(node)
         rows = document_to_csv_rows(self.schema, document)
-        self.assertEqual("mingji_2", rows[0].values["desc"])
-        self.assertEqual(302291, rows[0].values["ship_skin_id"])
+        self.assertEqual("{idle_on={0,17}}", rows[0].values["react_condition"])
+
+    def test_range_abs_tracks_signed_range(self) -> None:
+        document = self.make_ready_document()
+        node = create_node(self.schema, document, "TouchDrag")
+        node.fields["range_abs"] = 0
+        node.fields["range"] = "{0,2}"
+        apply_auto_rules(self.schema, document, node, source_mode="advanced", changed_key="range")
+        self.assertEqual(1, node.fields["range_abs"])
+        node.fields["range"] = "{-1,2}"
+        apply_auto_rules(self.schema, document, node, source_mode="advanced", changed_key="range")
+        self.assertEqual(0, node.fields["range_abs"])
 
     def test_search_uses_human_readable_action_fields(self) -> None:
         document = self.make_ready_document()
@@ -166,6 +192,14 @@ class LogicTests(unittest.TestCase):
         document.nodes.append(node)
         hits = search_document(self.schema, document, "13")
         self.assertTrue(any(hit.field_name == "action_trigger_active" and hit.preview == "13" for hit in hits))
+
+    def test_search_can_use_json_field_names(self) -> None:
+        document = self.make_ready_document()
+        node = create_node(self.schema, document, "TouchIdle")
+        node.fields["tips"] = "备注"
+        document.nodes.append(node)
+        hits = search_document(self.schema, document, "备注", use_json_field_names=True)
+        self.assertTrue(any(hit.field_label == "tips" for hit in hits))
 
     def test_node_title_uses_type_slot_and_tips(self) -> None:
         document = self.make_ready_document()
@@ -245,6 +279,18 @@ class LogicTests(unittest.TestCase):
         form.set_node(node, "simple")
         self.assertNotIn("action_trigger", form._bindings)
         self.assertIn("action_trigger_active", form._bindings)
+
+    def test_form_can_show_json_field_names(self) -> None:
+        document = self.make_ready_document()
+        initial = next(node for node in document.nodes if node.type == "Initial")
+        form = NodeFormWidget(self.schema, inline=False)
+        form.set_node(initial, "simple", show_json_field_names=True)
+        labels = []
+        for row in range(form._form.rowCount()):
+            item = form._form.itemAt(row, form._form.ItemRole.LabelRole)
+            if item and item.widget():
+                labels.append(item.widget().text())
+        self.assertIn("author", labels)
 
     def test_clipboard_copy_strips_tips_from_function_nodes(self) -> None:
         controller = EditorController()
@@ -404,6 +450,36 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         self.assertIn("action_trigger", item.form._bindings)
         self.assertIn("action_trigger_active", item.form._bindings)
         window.close()
+
+    def test_touchdrag_value_mode_shows_revert_fields_in_advanced(self) -> None:
+        window = MainWindow("/Users/asahi/Live2dConfigGen")
+        window.controller.set_global_mode("advanced")
+        initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+        window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+        window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+        window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+        created = window.controller.create_node("TouchDrag", (200, 120))
+        window.controller.update_field(created, "result_type", "value", "simple")
+        item = window.canvas.node_items[created]
+
+        self.assertIn("revert_action_index", item.form._bindings)
+        self.assertIn("revert_idle_index", item.form._bindings)
+        self.assertIn("action_trigger_kind_ui", item.form._bindings)
+        window.close()
+
+    def test_touchdrag_value_result_keeps_action_fields_empty(self) -> None:
+        schema = get_default_schema()
+        document = create_document(schema)
+        initial = next(node for node in document.nodes if node.type == "Initial")
+        initial.fields["author"] = "asahi"
+        initial.fields["ship_skin_id"] = 302291
+        initial.fields["memo"] = "mingji_2"
+        node = create_node(schema, document, "TouchDrag")
+        node.fields["result_type"] = "value"
+        node.fields["target_value"] = 3.5
+        apply_auto_rules(schema, document, node, source_mode="simple", changed_key="result_type")
+        self.assertEqual("", node.fields["action_trigger"])
+        self.assertEqual("", node.fields["action_trigger_active"])
 
     def test_manual_save_keeps_undo_history_available(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

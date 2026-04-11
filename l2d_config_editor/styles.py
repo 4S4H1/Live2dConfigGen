@@ -99,6 +99,11 @@ QFrame#sidebarToolPanel {
     border: 1px solid #4d607d;
     border-radius: 12px;
 }
+QFrame#inspectorShell {
+    background: rgba(40, 51, 69, 0.96);
+    border: 1px solid #4d607d;
+    border-radius: 12px;
+}
 QFrame#inlineNodeForm {
     background: transparent;
     border: none;
@@ -139,9 +144,12 @@ QLabel#searchTitle, QLabel#sectionTitle, QLabel#validationSummaryTitle {
     font-weight: 600;
 }
 QLabel#sidebarHint {
+    background: transparent;
+    border: none;
     color: #c2d0e4;
     font-size: 12px;
     line-height: 1.35em;
+    padding: 0;
 }
 QFrame#validationSummary {
     background: #253042;

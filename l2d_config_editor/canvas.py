@@ -182,7 +182,11 @@ class NodeItem(QGraphicsObject):
         self.prepareGeometryChange()
         self.node = node
         definition = self.schema.nodes[node.type]
-        self.form.set_node(node, self.controller.preferences.global_mode)
+        self.form.set_node(
+            node,
+            self.controller.preferences.global_mode,
+            self.controller.preferences.debug_json_field_names,
+        )
         base_width = 340 if self.controller.preferences.global_mode == "simple" else 380
         content_width = base_width
         if definition.resizable and node.ui_size:
@@ -455,6 +459,19 @@ class NodeCanvasView(QGraphicsView):
     def paste_position(self) -> tuple[float, float]:
         point = self.mapToScene(self.viewport().rect().center())
         return point.x(), point.y()
+
+    def reset_view_layout(self) -> None:
+        self.resetTransform()
+        target_rect: QRectF | None = None
+        for item in self.node_items.values():
+            item_rect = item.mapRectToScene(item.boundingRect())
+            target_rect = item_rect if target_rect is None else target_rect.united(item_rect)
+        if target_rect is not None and target_rect.isValid():
+            self.centerOn(target_rect.center())
+        else:
+            self.centerOn(0.0, 0.0)
+        self._refresh_scale_sensitive_nodes()
+        self._store_canvas_view()
 
     def wheelEvent(self, event: QMouseEvent) -> None:
         factor = 1.1 if event.angleDelta().y() > 0 else 1 / 1.1

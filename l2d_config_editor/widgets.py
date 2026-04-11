@@ -159,6 +159,7 @@ class NodeFormWidget(QFrame):
         self.inline = inline
         self.node = None
         self.global_mode = "simple"
+        self.show_json_field_names = False
         self._bindings: dict[str, EditorBinding] = {}
         self.setObjectName("inlineNodeForm" if inline else "inspectorNodeForm")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -187,18 +188,21 @@ class NodeFormWidget(QFrame):
         if inline:
             self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
-    def set_node(self, node, global_mode: str) -> None:
+    def set_node(self, node, global_mode: str, show_json_field_names: bool = False) -> None:
         same_node = bool(self.node and self.node.uuid == node.uuid and self.node.type == node.type)
         self.node = node
         self.global_mode = global_mode
+        self.show_json_field_names = show_json_field_names
         if same_node and self._bindings:
             self.refresh()
             return
         self._rebuild()
 
-    def refresh(self, global_mode: str | None = None) -> None:
+    def refresh(self, global_mode: str | None = None, show_json_field_names: bool | None = None) -> None:
         if global_mode:
             self.global_mode = global_mode
+        if show_json_field_names is not None:
+            self.show_json_field_names = show_json_field_names
         if not self.node:
             return
         definition = self.schema.nodes[self.node.type]
@@ -244,16 +248,17 @@ class NodeFormWidget(QFrame):
             widget, setter = self._build_editor(field)
             label = QLabel()
             highlighted_keys = {"draw_able_name", "parameter", "action_trigger", "action_trigger_active"}
+            label_text = field.key if self.show_json_field_names else field.label
             if field.key in highlighted_keys:
                 label.setTextFormat(Qt.TextFormat.RichText)
                 label.setText(
-                    f"<span style='color:#f8d66d;font-weight:700;text-decoration: underline;'>★ {field.label}</span>"
+                    f"<span style='color:#f8d66d;font-weight:700;text-decoration: underline;'>★ {label_text}</span>"
                 )
             else:
                 label.setTextFormat(
-                    Qt.TextFormat.RichText if field.label_html else Qt.TextFormat.PlainText
+                    Qt.TextFormat.RichText if (field.label_html and not self.show_json_field_names) else Qt.TextFormat.PlainText
                 )
-                label.setText(field.label_html or field.label)
+                label.setText(field.key if self.show_json_field_names else (field.label_html or field.label))
             label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
             self._form.addRow(label, widget)
             self._bindings[field.key] = EditorBinding(widget=widget, setter=setter)
@@ -316,6 +321,7 @@ class NodeFormWidget(QFrame):
             widget = QDateEdit()
             widget.setCalendarPopup(True)
             widget.setDisplayFormat("yyyy-MM-dd")
+            widget.setEnabled(not field.read_only)
             widget.dateChanged.connect(
                 lambda _, key=field.key, target=widget: self.fieldCommitted.emit(key, target.date().toString("yyyy-MM-dd"))
             )
@@ -323,6 +329,7 @@ class NodeFormWidget(QFrame):
 
         if field.editor == "bool":
             widget = QCheckBox()
+            widget.setEnabled(not field.read_only)
             widget.stateChanged.connect(lambda state, key=field.key: self.fieldCommitted.emit(key, 1 if state else 0))
             return widget, lambda value, target=widget: self._set_checked(target, bool(int(value or 0)))
 
@@ -330,12 +337,14 @@ class NodeFormWidget(QFrame):
             widget = CommitComboBox()
             for option in field.options:
                 widget.addItem(option.label, option.value)
+            widget.setEnabled(not field.read_only)
             widget.committed.connect(lambda value, key=field.key: self.fieldCommitted.emit(key, value))
             return widget, lambda value, target=widget: self._set_combo_value(target, value)
 
         if field.editor == "range":
             widget = CommitLineEdit()
             widget.setPlaceholderText(field.placeholder or "{0,1}")
+            widget.setReadOnly(field.read_only)
             widget.committed.connect(lambda value, key=field.key: self.fieldCommitted.emit(key, value))
             return widget, lambda value, target=widget: self._set_line_text(target, "" if value is None else str(value))
 
