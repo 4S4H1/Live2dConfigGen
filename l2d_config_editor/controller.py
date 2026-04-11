@@ -64,7 +64,12 @@ class EditorController(QObject):
         self.schema = load_editor_schema(schema_path)
         self.document = create_document(self.schema)
         self.selected_node_uuid: str | None = None
+        self._workspace_root: Path | None = None
         self.refresh_derived()
+
+    def set_workspace_root(self, path: str | Path) -> None:
+        """Root directory for listing editor JSON files (must stay in sync with MainWindow.workdir)."""
+        self._workspace_root = Path(path).resolve()
 
     def reload_schema(self, schema_path: str | None = None) -> None:
         path = schema_path or self.preferences.schema_path
@@ -464,14 +469,26 @@ class EditorController(QObject):
         self.connectionsChanged.emit()
         self.refresh_derived()
 
-    def file_list(self, directory: str | Path) -> list[str]:
-        root = Path(directory)
-        if not root.exists():
+    def file_list(self, directory: str | Path | None = None) -> list[str]:
+        """List editor JSON paths relative to *directory*, or to ``set_workspace_root`` if omitted."""
+        root = Path(directory).resolve() if directory is not None else self._workspace_root
+        if root is None or not root.is_dir():
             return []
-        items = [path.relative_to(root).as_posix() for path in root.glob("*.json") if is_editor_document_file(path)]
-        for child in sorted(path for path in root.iterdir() if path.is_dir()):
-            items.extend(path.relative_to(root).as_posix() for path in child.glob("*.json") if is_editor_document_file(path))
-        return sorted(items)
+        items: list[str] = []
+        try:
+            for path in root.rglob("*.json"):
+                if not path.is_file():
+                    continue
+                if not is_editor_document_file(path):
+                    continue
+                try:
+                    rel = path.relative_to(root)
+                except ValueError:
+                    continue
+                items.append(rel.as_posix())
+        except OSError:
+            return []
+        return sorted(items, key=lambda s: s.replace("\\", "/").lower())
 
     def node_summary(self, node_uuid: str) -> str:
         node = self.get_node(node_uuid)

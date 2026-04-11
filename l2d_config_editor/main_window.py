@@ -119,12 +119,18 @@ class TrashDialog(QDialog):
 class MainWindow(QMainWindow):
     AUTOSAVE_DELAY_MS = 1800
     PASTE_GAP = 96.0
+    # QSettings 键：存 Windows 注册表 HKCU\Software\OpenAI\L2DConfigEditor，不是仓库里的 config.json。
+    SETTINGS_WORKSPACE_ROOT = "workspace_root"
 
-    def __init__(self, workdir: str | Path) -> None:
+    def __init__(self, workdir: str | Path, *, prefer_saved_workspace: bool = True) -> None:
         super().__init__()
-        self.workdir = Path(workdir)
         self.settings = QSettings("OpenAI", "L2DConfigEditor")
+        if prefer_saved_workspace:
+            self.workdir = self._resolved_workspace_path(workdir)
+        else:
+            self.workdir = Path(workdir).resolve()
         self.controller = EditorController(self)
+        self.controller.set_workspace_root(self.workdir)
         self.validation_cache: dict[str, list] = {}
         self.csv_dialog = CsvPreviewDialog(self.controller.schema, self)
         self.trash_dialog: TrashDialog | None = None
@@ -157,6 +163,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("L2D Config Editor")
         self.resize(1680, 980)
         self._build_ui()
+        self._update_workspace_path_display()
         self._build_actions()
         self._refresh_file_list()
         self._apply_saved_preferences()
@@ -164,6 +171,56 @@ class MainWindow(QMainWindow):
         self._update_window_title(self.controller.document.path)
         self._update_inspector(None)
         self._sync_undo_actions()
+
+    def _resolved_workspace_path(self, default: str | Path) -> Path:
+        default_path = Path(default).resolve()
+        raw = self.settings.value(self.SETTINGS_WORKSPACE_ROOT)
+        if raw is None or raw == "":
+            return default_path
+        candidate = Path(str(raw).strip())
+        if candidate.is_dir():
+            return candidate.resolve()
+        return default_path
+
+    def _update_workspace_path_display(self) -> None:
+        self.workspace_path_edit.setText(str(self.workdir))
+
+    def _choose_workspace_directory(self) -> None:
+        chosen = QFileDialog.getExistingDirectory(self, "选择 JSON 配置文件所在目录", str(self.workdir))
+        if not chosen:
+            return
+        new_root = Path(chosen).resolve()
+        if new_root == self.workdir.resolve():
+            if not self.settings.contains(self.SETTINGS_WORKSPACE_ROOT):
+                self.settings.setValue(self.SETTINGS_WORKSPACE_ROOT, str(self.workdir))
+                self.settings.sync()
+            return
+        if not self._ensure_safe_before_workspace_change():
+            return
+        self.workdir = new_root
+        self.controller.set_workspace_root(self.workdir)
+        self.settings.setValue(self.SETTINGS_WORKSPACE_ROOT, str(self.workdir))
+        self.settings.sync()
+        self._update_workspace_path_display()
+        self._refresh_file_list()
+
+    def _ensure_safe_before_workspace_change(self) -> bool:
+        self._auto_save_timer.stop()
+        if not self._is_dirty():
+            return True
+        box = QMessageBox(self)
+        box.setWindowTitle("保存当前更改")
+        box.setText("切换工程目录前，是否保存当前文档的更改？")
+        save_button = box.addButton("保存", QMessageBox.ButtonRole.AcceptRole)
+        discard_button = box.addButton("不保存", QMessageBox.ButtonRole.DestructiveRole)
+        cancel_button = box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked == save_button:
+            return bool(self._save_current_file(silent=False, allow_incomplete=True))
+        if clicked == discard_button:
+            return True
+        return False
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -192,6 +249,21 @@ class MainWindow(QMainWindow):
         title = QLabel("配置文件")
         title.setObjectName("sectionTitle")
         layout.addWidget(title)
+
+        workspace_row = QHBoxLayout()
+        self.workspace_path_edit = QLineEdit()
+        self.workspace_path_edit.setObjectName("workspacePathField")
+        self.workspace_path_edit.setReadOnly(True)
+        self.workspace_path_edit.setPlaceholderText("未选择工程目录")
+        self.workspace_path_edit.setToolTip("当前列出 JSON 配置的根目录（可全选复制路径）")
+        self.choose_workspace_button = QPushButton("选择目录…")
+        self.choose_workspace_button.setToolTip(
+            "选择存放 JSON 配置文件的文件夹；路径保存在本机（Windows：注册表 HKCU\\Software\\OpenAI\\L2DConfigEditor，不是仓库里的 config.json）"
+        )
+        self.choose_workspace_button.clicked.connect(self._choose_workspace_directory)
+        workspace_row.addWidget(self.workspace_path_edit, 1)
+        workspace_row.addWidget(self.choose_workspace_button, 0)
+        layout.addLayout(workspace_row)
 
         button_row = QHBoxLayout()
         self.refresh_button = QPushButton("刷新")
@@ -610,7 +682,7 @@ class MainWindow(QMainWindow):
         current = self._relative_path_for_document(self.controller.document.path)
         self.file_list.clear()
         grouped: dict[str, list[str]] = {}
-        for relative_path in self.controller.file_list(self.workdir):
+        for relative_path in self.controller.file_list():
             group = str(Path(relative_path).parent).replace("\\", "/")
             if group == ".":
                 group = ""

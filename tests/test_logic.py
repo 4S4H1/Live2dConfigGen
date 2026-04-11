@@ -323,7 +323,7 @@ class LogicTests(unittest.TestCase):
         self.assertEqual(1, len(loaded.trash_bin))
         self.assertEqual("TouchIdle", loaded.trash_bin[0].node_type)
 
-    def test_file_list_includes_root_and_direct_child_directories(self) -> None:
+    def test_file_list_recurses_nested_directories(self) -> None:
         controller = EditorController()
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -331,11 +331,26 @@ class LogicTests(unittest.TestCase):
             (root / "sub").mkdir()
             save_document(self.schema, create_document(self.schema), root / "sub" / "child.json")
             (root / "sub" / "deep").mkdir()
-            save_document(self.schema, create_document(self.schema), root / "sub" / "deep" / "ignored.json")
+            save_document(self.schema, create_document(self.schema), root / "sub" / "deep" / "nested.json")
             files = controller.file_list(root)
         self.assertIn("root.json", files)
         self.assertIn("sub/child.json", files)
-        self.assertNotIn("sub/deep/ignored.json", files)
+        self.assertIn("sub/deep/nested.json", files)
+
+    def test_file_list_without_directory_uses_workspace_root(self) -> None:
+        controller = EditorController()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            save_document(self.schema, create_document(self.schema), root / "a.json")
+            controller.set_workspace_root(root)
+            files_default = controller.file_list()
+            files_explicit = controller.file_list(root)
+        self.assertEqual(files_default, files_explicit)
+        self.assertIn("a.json", files_default)
+
+    def test_file_list_returns_empty_without_workspace_when_no_directory(self) -> None:
+        controller = EditorController()
+        self.assertEqual(controller.file_list(), [])
 
     def test_file_list_ignores_non_editor_json(self) -> None:
         controller = EditorController()
@@ -360,7 +375,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         self.assertEqual(1, len(controller.document.nodes))
 
     def test_main_window_smoke(self) -> None:
-        window = MainWindow("/Users/asahi/Live2dConfigGen")
+        window = MainWindow("/Users/asahi/Live2dConfigGen", prefer_saved_workspace=False)
         initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
         window.controller.update_field(initial.uuid, "author", "asahi", "simple")
         window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
@@ -398,7 +413,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         self.assertIs(original_author, form._bindings["author"].widget)
 
     def test_node_frame_encloses_inline_form_content(self) -> None:
-        window = MainWindow("/Users/asahi/Live2dConfigGen")
+        window = MainWindow("/Users/asahi/Live2dConfigGen", prefer_saved_workspace=False)
         window.controller.set_global_mode("simple")
         initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
         window.controller.update_field(initial.uuid, "author", "asahi", "simple")
@@ -417,7 +432,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         window.close()
 
     def test_inline_combo_selection_updates_without_breaking_form(self) -> None:
-        window = MainWindow("/Users/asahi/Live2dConfigGen")
+        window = MainWindow("/Users/asahi/Live2dConfigGen", prefer_saved_workspace=False)
         window.controller.set_global_mode("simple")
         initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
         window.controller.update_field(initial.uuid, "author", "asahi", "simple")
@@ -437,7 +452,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         window.close()
 
     def test_touchdrag_hides_legacy_target_idle_field(self) -> None:
-        window = MainWindow("/Users/asahi/Live2dConfigGen")
+        window = MainWindow("/Users/asahi/Live2dConfigGen", prefer_saved_workspace=False)
         window.controller.set_global_mode("simple")
         initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
         window.controller.update_field(initial.uuid, "author", "asahi", "simple")
@@ -452,7 +467,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         window.close()
 
     def test_touchdrag_value_mode_shows_revert_fields_in_advanced(self) -> None:
-        window = MainWindow("/Users/asahi/Live2dConfigGen")
+        window = MainWindow("/Users/asahi/Live2dConfigGen", prefer_saved_workspace=False)
         window.controller.set_global_mode("advanced")
         initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
         window.controller.update_field(initial.uuid, "author", "asahi", "simple")
@@ -483,7 +498,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
 
     def test_manual_save_keeps_undo_history_available(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            window = MainWindow(temp_dir)
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
             initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
             window.controller.update_field(initial.uuid, "author", "asahi", "simple")
             window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
@@ -503,7 +518,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             root = Path(temp_dir)
             save_document(get_default_schema(), create_document(get_default_schema()), root / "target.json")
 
-            window = MainWindow(root)
+            window = MainWindow(root, prefer_saved_workspace=False)
             draft_path = root / "draft.json"
             window.controller.document.path = str(draft_path)
             window.controller.pathChanged.emit(str(draft_path))
@@ -531,7 +546,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             root = Path(temp_dir)
             (root / "group1").mkdir()
             save_document(get_default_schema(), create_document(get_default_schema()), root / "group1" / "a.json")
-            window = MainWindow(root)
+            window = MainWindow(root, prefer_saved_workspace=False)
             initial_count = window.file_list.count()
             header = window.file_list.item(0)
             window._handle_file_list_item_clicked(header)
@@ -541,7 +556,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
 
     def test_zooming_out_expands_node_header_height(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            window = MainWindow(temp_dir)
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
             initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
             window.controller.update_field(initial.uuid, "author", "asahi", "simple")
             window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
@@ -558,7 +573,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
 
     def test_new_file_starts_as_unsaved_draft_without_filename_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            window = MainWindow(temp_dir)
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
             window._create_new_file()
             self.assertIsNone(window.controller.document.path)
             self.assertFalse(window.save_action.isEnabled())
@@ -583,7 +598,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             reassign_function_ids(get_default_schema(), doc_b)
             save_document(get_default_schema(), doc_b, root / "b.json")
 
-            window = MainWindow(root)
+            window = MainWindow(root, prefer_saved_workspace=False)
             window._open_existing_session_or_file(root / "a.json")
             created = window.controller.create_node("TouchIdle", (200, 120))
             self.assertIsNotNone(created)
@@ -598,7 +613,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
 
     def test_optimize_layout_keeps_unconnected_nodes_fixed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            window = MainWindow(temp_dir)
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
             initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
             window.controller.update_field(initial.uuid, "author", "asahi", "simple")
             window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
