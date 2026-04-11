@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from PyQt6.QtCore import QSettings, Qt
@@ -282,11 +283,54 @@ class MainWindow(QMainWindow):
     def _refresh_file_list(self) -> None:
         current = Path(self.controller.document.path).name if self.controller.document.path else None
         self.file_list.clear()
+        grouped: dict[str, list[tuple[str, str]]] = {}
         for name in self.controller.file_list(self.workdir):
-            item = QListWidgetItem(name)
-            self.file_list.addItem(item)
-            if name == current:
-                item.setSelected(True)
+            version, display_name = self._read_file_display_meta(self.workdir / name)
+            grouped.setdefault(version, []).append((name, display_name))
+
+        for version in sorted(grouped.keys(), reverse=True):
+            header = QListWidgetItem(f"版本 {version}")
+            header.setFlags(Qt.ItemFlag.NoItemFlags)
+            header.setData(Qt.ItemDataRole.UserRole, None)
+            self.file_list.addItem(header)
+            for filename, display_name in sorted(grouped[version], key=lambda pair: pair[1]):
+                item = QListWidgetItem(display_name)
+                item.setData(Qt.ItemDataRole.UserRole, filename)
+                item.setToolTip(filename)
+                self.file_list.addItem(item)
+                if filename == current:
+                    item.setSelected(True)
+
+    def _read_file_display_meta(self, path: Path) -> tuple[str, str]:
+        fallback_name = path.name
+        fallback_version = "0.0.0"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return fallback_version, fallback_name
+
+        meta = payload.get("meta") if isinstance(payload, dict) else {}
+        if not isinstance(meta, dict):
+            meta = {}
+        version = str(meta.get("version") or "").strip() or fallback_version
+        char_name = str(meta.get("CharName") or "").strip()
+        if not char_name:
+            nodes = payload.get("nodes") if isinstance(payload, dict) else []
+            if isinstance(nodes, list):
+                initial = next((node for node in nodes if isinstance(node, dict) and node.get("type") == "Initial"), None)
+                if isinstance(initial, dict):
+                    char_name = str(initial.get("CharName") or "").strip()
+                    version = str(initial.get("version") or version).strip() or fallback_version
+
+        display_name = f"{char_name} ({path.name})" if char_name else path.name
+        return version, display_name
+
+    def _current_filename(self) -> str | None:
+        item = self.file_list.currentItem()
+        if not item:
+            return None
+        filename = item.data(Qt.ItemDataRole.UserRole)
+        return filename if isinstance(filename, str) and filename else None
 
     def _create_new_file(self) -> None:
         name, ok = QInputDialog.getText(self, "新建配置", "文件名")
@@ -305,11 +349,11 @@ class MainWindow(QMainWindow):
         self._select_file_in_list(filename)
 
     def _rename_selected_file(self) -> None:
-        item = self.file_list.currentItem()
-        if not item:
+        selected_filename = self._current_filename()
+        if not selected_filename:
             return
-        old_path = self.workdir / item.text()
-        new_name, ok = QInputDialog.getText(self, "重命名配置", "新文件名", text=item.text())
+        old_path = self.workdir / selected_filename
+        new_name, ok = QInputDialog.getText(self, "重命名配置", "新文件名", text=selected_filename)
         if not ok or not new_name.strip():
             return
         filename = new_name.strip()
@@ -324,10 +368,10 @@ class MainWindow(QMainWindow):
         self._select_file_in_list(filename)
 
     def _delete_selected_file(self) -> None:
-        item = self.file_list.currentItem()
-        if not item:
+        selected_filename = self._current_filename()
+        if not selected_filename:
             return
-        path = self.workdir / item.text()
+        path = self.workdir / selected_filename
         reply = QMessageBox.question(self, "删除配置", f"确认删除 {path.name} 吗？")
         if reply != QMessageBox.StandardButton.Yes:
             return
@@ -337,7 +381,10 @@ class MainWindow(QMainWindow):
         self._refresh_file_list()
 
     def _open_selected_file(self, item: QListWidgetItem) -> None:
-        path = self.workdir / item.text()
+        filename = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(filename, str) or not filename:
+            return
+        path = self.workdir / filename
         self.controller.open_document(path)
         self._refresh_file_list()
 
@@ -467,7 +514,7 @@ class MainWindow(QMainWindow):
     def _select_file_in_list(self, filename: str) -> None:
         for index in range(self.file_list.count()):
             item = self.file_list.item(index)
-            if item.text() == filename:
+            if item.data(Qt.ItemDataRole.UserRole) == filename:
                 self.file_list.setCurrentItem(item)
                 return
 
