@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from PyQt6.QtCore import QSettings, Qt
@@ -20,6 +21,7 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QSplitter,
     QStatusBar,
@@ -28,6 +30,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QLineEdit,
+    QButtonGroup,
 )
 
 from .canvas import NodeCanvasView
@@ -146,17 +149,33 @@ class MainWindow(QMainWindow):
         search_layout = QVBoxLayout(self.search_panel)
         search_layout.setContentsMargins(10, 10, 10, 10)
         search_layout.setSpacing(6)
+        search_row = QHBoxLayout()
         search_title = QLabel("搜索")
         search_title.setObjectName("searchTitle")
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("输入字段值，例如 idle=13")
         self.search_edit.textChanged.connect(self._refresh_search_results)
+        self.simple_mode_radio = QRadioButton("简易")
+        self.advanced_mode_radio = QRadioButton("高级")
+        self.mode_button_group = QButtonGroup(self)
+        self.mode_button_group.setExclusive(True)
+        self.mode_button_group.addButton(self.simple_mode_radio)
+        self.mode_button_group.addButton(self.advanced_mode_radio)
+        self.simple_mode_radio.toggled.connect(
+            lambda checked: checked and self.controller.set_global_mode("simple")
+        )
+        self.advanced_mode_radio.toggled.connect(
+            lambda checked: checked and self.controller.set_global_mode("advanced")
+        )
+        search_row.addWidget(search_title)
+        search_row.addWidget(self.search_edit, 1)
+        search_row.addWidget(self.simple_mode_radio)
+        search_row.addWidget(self.advanced_mode_radio)
         self.search_results = QListWidget()
         self.search_results.setMaximumHeight(180)
         self.search_results.itemClicked.connect(self._jump_to_search_result)
         self.search_results.hide()
-        search_layout.addWidget(search_title)
-        search_layout.addWidget(self.search_edit)
+        search_layout.addLayout(search_row)
         search_layout.addWidget(self.search_results)
         top_row.addWidget(self.search_panel, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         top_row.addStretch(1)
@@ -278,15 +297,62 @@ class MainWindow(QMainWindow):
     def _apply_saved_preferences(self) -> None:
         self.simple_mode_action.setChecked(self.controller.preferences.global_mode == "simple")
         self.advanced_mode_action.setChecked(self.controller.preferences.global_mode == "advanced")
+        self.simple_mode_radio.setChecked(self.controller.preferences.global_mode == "simple")
+        self.advanced_mode_radio.setChecked(self.controller.preferences.global_mode == "advanced")
 
     def _refresh_file_list(self) -> None:
         current = Path(self.controller.document.path).name if self.controller.document.path else None
         self.file_list.clear()
+        grouped: dict[str, list[tuple[str, str]]] = {}
         for name in self.controller.file_list(self.workdir):
-            item = QListWidgetItem(name)
-            self.file_list.addItem(item)
-            if name == current:
-                item.setSelected(True)
+            version, display_name = self._read_file_display_meta(self.workdir / name)
+            grouped.setdefault(version, []).append((name, display_name))
+
+        for version in sorted(grouped.keys(), reverse=True):
+            header = QListWidgetItem(f"🗓 版本分组 | {version}")
+            header.setFlags(Qt.ItemFlag.NoItemFlags)
+            header.setData(Qt.ItemDataRole.UserRole, None)
+            header.setForeground(Qt.GlobalColor.white)
+            header.setBackground(Qt.GlobalColor.darkGray)
+            self.file_list.addItem(header)
+            for filename, display_name in sorted(grouped[version], key=lambda pair: pair[1]):
+                item = QListWidgetItem(display_name)
+                item.setData(Qt.ItemDataRole.UserRole, filename)
+                item.setToolTip(filename)
+                self.file_list.addItem(item)
+                if filename == current:
+                    item.setSelected(True)
+
+    def _read_file_display_meta(self, path: Path) -> tuple[str, str]:
+        fallback_name = path.name
+        fallback_version = "0.0.0"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return fallback_version, fallback_name
+
+        meta = payload.get("meta") if isinstance(payload, dict) else {}
+        if not isinstance(meta, dict):
+            meta = {}
+        version = str(meta.get("version") or "").strip() or fallback_version
+        char_name = str(meta.get("CharName") or "").strip()
+        if not char_name:
+            nodes = payload.get("nodes") if isinstance(payload, dict) else []
+            if isinstance(nodes, list):
+                initial = next((node for node in nodes if isinstance(node, dict) and node.get("type") == "Initial"), None)
+                if isinstance(initial, dict):
+                    char_name = str(initial.get("CharName") or "").strip()
+                    version = str(initial.get("version") or version).strip() or fallback_version
+
+        display_name = f"{char_name} ({path.name})" if char_name else path.name
+        return version, display_name
+
+    def _current_filename(self) -> str | None:
+        item = self.file_list.currentItem()
+        if not item:
+            return None
+        filename = item.data(Qt.ItemDataRole.UserRole)
+        return filename if isinstance(filename, str) and filename else None
 
     def _create_new_file(self) -> None:
         name, ok = QInputDialog.getText(self, "新建配置", "文件名")
@@ -300,16 +366,17 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "文件已存在", f"{filename} 已存在")
             return
         self.controller.new_document()
-        self.controller.save_document(str(path))
-        self._refresh_file_list()
-        self._select_file_in_list(filename)
+        self.controller.document.path = str(path)
+        self.controller.pathChanged.emit(str(path))
+        self.controller.undo_stack.setClean()
+        self._show_status("已创建草稿，请先完善 Initial 节点后保存。")
 
     def _rename_selected_file(self) -> None:
-        item = self.file_list.currentItem()
-        if not item:
+        selected_filename = self._current_filename()
+        if not selected_filename:
             return
-        old_path = self.workdir / item.text()
-        new_name, ok = QInputDialog.getText(self, "重命名配置", "新文件名", text=item.text())
+        old_path = self.workdir / selected_filename
+        new_name, ok = QInputDialog.getText(self, "重命名配置", "新文件名", text=selected_filename)
         if not ok or not new_name.strip():
             return
         filename = new_name.strip()
@@ -324,10 +391,10 @@ class MainWindow(QMainWindow):
         self._select_file_in_list(filename)
 
     def _delete_selected_file(self) -> None:
-        item = self.file_list.currentItem()
-        if not item:
+        selected_filename = self._current_filename()
+        if not selected_filename:
             return
-        path = self.workdir / item.text()
+        path = self.workdir / selected_filename
         reply = QMessageBox.question(self, "删除配置", f"确认删除 {path.name} 吗？")
         if reply != QMessageBox.StandardButton.Yes:
             return
@@ -337,7 +404,12 @@ class MainWindow(QMainWindow):
         self._refresh_file_list()
 
     def _open_selected_file(self, item: QListWidgetItem) -> None:
-        path = self.workdir / item.text()
+        filename = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(filename, str) or not filename:
+            return
+        if not self._auto_save_before_switch(filename):
+            return
+        path = self.workdir / filename
         self.controller.open_document(path)
         self._refresh_file_list()
 
@@ -345,21 +417,44 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "打开配置", str(self.workdir), "JSON Files (*.json)")
         if not path:
             return
+        if not self._auto_save_before_switch(Path(path).name):
+            return
         self.controller.open_document(path)
         self._refresh_file_list()
         self._select_file_in_list(Path(path).name)
 
-    def _save_current_file(self) -> None:
+    def _save_current_file(self, silent: bool = False) -> str | None:
+        allowed, reason = self.controller.can_create_graph_content()
+        if not allowed:
+            QMessageBox.warning(self, "无法保存", f"{reason}\n首次保存前请先完成 Initial 节点。")
+            return None
         target = self.controller.document.path
         if not target:
-            target, _ = QFileDialog.getSaveFileName(self, "保存配置", str(self.workdir / "config.json"), "JSON Files (*.json)")
+            default_name = str(self.controller.document.meta.memo or "").strip() or "config"
+            target, _ = QFileDialog.getSaveFileName(
+                self,
+                "保存配置",
+                str(self.workdir / f"{default_name}.json"),
+                "JSON Files (*.json)",
+            )
             if not target:
-                return
+                return None
         saved = self.controller.save_document(target)
         if saved:
-            self._show_status(f"已保存 {Path(saved).name}")
+            if not silent:
+                self._show_status(f"已保存 {Path(saved).name}")
             self._refresh_file_list()
             self._select_file_in_list(Path(saved).name)
+            self.controller.undo_stack.setClean()
+        return saved
+
+    def _auto_save_before_switch(self, target_filename: str | None) -> bool:
+        current = self.controller.document.path
+        if current and target_filename and Path(current).name == target_filename:
+            return True
+        if self.controller.undo_stack.isClean():
+            return True
+        return bool(self._save_current_file(silent=True))
 
     def _copy_selection(self) -> None:
         node_uuids = self.canvas.selected_node_uuids()
@@ -467,7 +562,7 @@ class MainWindow(QMainWindow):
     def _select_file_in_list(self, filename: str) -> None:
         for index in range(self.file_list.count()):
             item = self.file_list.item(index)
-            if item.text() == filename:
+            if item.data(Qt.ItemDataRole.UserRole) == filename:
                 self.file_list.setCurrentItem(item)
                 return
 
@@ -493,6 +588,8 @@ class MainWindow(QMainWindow):
         self.settings.setValue("ui/global_mode", mode)
         self.simple_mode_action.setChecked(mode == "simple")
         self.advanced_mode_action.setChecked(mode == "advanced")
+        self.simple_mode_radio.setChecked(mode == "simple")
+        self.advanced_mode_radio.setChecked(mode == "advanced")
         if self.controller.selected_node_uuid:
             node = self.controller.get_node(self.controller.selected_node_uuid)
             if node:

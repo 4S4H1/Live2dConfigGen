@@ -222,10 +222,17 @@ class NodeFormWidget(QFrame):
                 continue
             widget, setter = self._build_editor(field)
             label = QLabel()
-            label.setTextFormat(
-                Qt.TextFormat.RichText if field.label_html else Qt.TextFormat.PlainText
-            )
-            label.setText(field.label_html or field.label)
+            highlighted_keys = {"draw_able_name", "parameter", "action_trigger", "action_trigger_active"}
+            if field.key in highlighted_keys:
+                label.setTextFormat(Qt.TextFormat.RichText)
+                label.setText(
+                    f"<span style='color:#f8d66d;font-weight:700;text-decoration: underline;'>★ {field.label}</span>"
+                )
+            else:
+                label.setTextFormat(
+                    Qt.TextFormat.RichText if field.label_html else Qt.TextFormat.PlainText
+                )
+                label.setText(field.label_html or field.label)
             label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
             self._form.addRow(label, widget)
             self._bindings[field.key] = EditorBinding(widget=widget, setter=setter)

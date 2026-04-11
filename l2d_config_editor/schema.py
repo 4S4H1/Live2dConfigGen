@@ -175,7 +175,12 @@ def load_editor_schema(path: str | Path | None = None) -> EditorSchema:
 
 
 def field_visible(field: FieldSchema, node_fields: dict[str, Any], global_mode: str) -> bool:
-    if global_mode not in field.show_in_modes:
+    # 高级模式应覆盖简易模式可见字段，避免“高级模式反而看不到字段”
+    if global_mode == "advanced":
+        mode_visible = "advanced" in field.show_in_modes or "simple" in field.show_in_modes
+    else:
+        mode_visible = global_mode in field.show_in_modes
+    if not mode_visible:
         return False
     if not field.visibility:
         return True
