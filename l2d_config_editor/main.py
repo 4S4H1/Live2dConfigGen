@@ -8,7 +8,15 @@ from pathlib import Path
 from PyQt6.QtWidgets import QApplication
 
 PACKAGE_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = PACKAGE_DIR.parent
+
+
+def _project_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return PACKAGE_DIR.parent
+
+
+PROJECT_ROOT = _project_root()
 
 if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
