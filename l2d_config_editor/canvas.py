@@ -26,6 +26,8 @@ class GridScene(QGraphicsScene):
         self.setSceneRect(-6000, -6000, 12000, 12000)
         self.minor_grid = 20
         self.major_grid = 100
+        self.top_right_hint = ""
+        self.bottom_right_hint = "按住中键平移 / 滚轮缩放 / Delete 删除"
 
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
         painter.fillRect(rect, QColor("#222c3b"))
@@ -49,6 +51,28 @@ class GridScene(QGraphicsScene):
         painter.drawLines(minor_lines)
         painter.setPen(QPen(QColor("#425572"), 1))
         painter.drawLines(major_lines)
+
+    def drawForeground(self, painter: QPainter, rect: QRectF) -> None:
+        del rect
+        view = self.views()[0] if self.views() else None
+        if not view:
+            return
+        viewport_rect = view.viewport().rect()
+        painter.save()
+        painter.resetTransform()
+        painter.setPen(QColor(255, 255, 255, 62))
+        font = painter.font()
+        font.setBold(True)
+        font.setPointSize(22)
+        painter.setFont(font)
+        margin = 20
+        if self.top_right_hint:
+            top_rect = QRectF(viewport_rect.width() * 0.45, margin, viewport_rect.width() * 0.5, 42)
+            painter.drawText(top_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop, self.top_right_hint)
+        if self.bottom_right_hint:
+            bottom_rect = QRectF(viewport_rect.width() * 0.35, viewport_rect.height() - 60, viewport_rect.width() * 0.6, 42)
+            painter.drawText(bottom_rect, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom, self.bottom_right_hint)
+        painter.restore()
 
 
 class ConnectionItem(QGraphicsPathItem):
@@ -302,6 +326,8 @@ class NodeCanvasView(QGraphicsView):
         controller.connectionsChanged.connect(self._rebuild_connections)
         controller.validationChanged.connect(self._apply_validation)
         controller.globalModeChanged.connect(self._handle_mode_changed)
+        controller.documentStateChanged.connect(self._handle_document_state_changed)
+        controller.nodeUpdated.connect(self._refresh_hint_overlay)
         self.rebuild_scene()
 
     def rebuild_scene(self) -> None:
@@ -319,6 +345,7 @@ class NodeCanvasView(QGraphicsView):
         if scale != 1.0:
             self.scale(scale, scale)
         self.centerOn(self.controller.document.canvas_view.offset_x, self.controller.document.canvas_view.offset_y)
+        self._refresh_hint_overlay()
 
     def selected_node_uuids(self) -> list[str]:
         return [item.node.uuid for item in self.scene_ref.selectedItems() if isinstance(item, NodeItem)]
@@ -588,3 +615,13 @@ class NodeCanvasView(QGraphicsView):
             if selected == action:
                 self.controller.create_node_with_connection(self._connecting_from, node_type, (scene_pos.x(), scene_pos.y()))
                 break
+
+    def _handle_document_state_changed(self, state) -> None:
+        self.scene_ref.top_right_hint = "" if state.is_meta_ready else "请先完成初始节点里的内容"
+        self._refresh_hint_overlay()
+
+    def _refresh_hint_overlay(self, *_args) -> None:
+        self.scene_ref.top_right_hint = "" if self.controller.document.state.is_meta_ready else "请先完成初始节点里的内容"
+        tips = str(self.controller.document.meta.tips or "").strip()
+        self.scene_ref.bottom_right_hint = tips or "按住中键平移 / 滚轮缩放 / Delete 删除"
+        self.scene_ref.update()
