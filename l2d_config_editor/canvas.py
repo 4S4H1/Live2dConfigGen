@@ -5,12 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QLineF, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QContextMenuEvent, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen
+from PyQt6.QtGui import QColor, QContextMenuEvent, QFont, QFontMetrics, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (
     QGraphicsItem,
     QGraphicsObject,
     QGraphicsPathItem,
     QGraphicsProxyWidget,
+    QGraphicsSceneHoverEvent,
     QGraphicsScene,
     QGraphicsView,
     QMenu,
@@ -115,7 +116,7 @@ class NodeItem(QGraphicsObject):
         self._margin = 14
         self._header_height = 34
         self._content_top_gap = 14
-        self._pin_radius = 6
+        self._pin_radius = 8
         self._resizing = False
         self._resize_start = QPointF()
         self._resize_initial = (360.0, 180.0)
@@ -126,6 +127,8 @@ class NodeItem(QGraphicsObject):
             | QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
             | QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges
         )
+        self.setAcceptHoverEvents(True)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.proxy = QGraphicsProxyWidget(self)
         self.form = NodeFormWidget(schema, inline=True)
         self.form.fieldCommitted.connect(self._commit_field)
@@ -137,25 +140,28 @@ class NodeItem(QGraphicsObject):
         return self._rect
 
     def input_pin_scene_pos(self) -> QPointF:
-        return self.mapToScene(QPointF(self._pin_radius + 3, self._header_height + 18))
+        return self.mapToScene(QPointF(0, self._header_height + 18))
 
     def output_pin_scene_pos(self) -> QPointF:
-        return self.mapToScene(QPointF(self._rect.width() - self._pin_radius - 3, self._header_height + 18))
+        return self.mapToScene(QPointF(self._rect.width(), self._header_height + 18))
 
     def input_pin_rect(self) -> QRectF:
-        return QRectF(4, self._header_height + 18 - self._pin_radius, self._pin_radius * 2, self._pin_radius * 2)
+        return QRectF(-self._pin_radius, self._header_height + 18 - self._pin_radius, self._pin_radius * 2, self._pin_radius * 2)
 
     def output_pin_rect(self) -> QRectF:
-        return QRectF(self._rect.width() - 4 - self._pin_radius * 2, self._header_height + 18 - self._pin_radius, self._pin_radius * 2, self._pin_radius * 2)
+        return QRectF(self._rect.width() - self._pin_radius, self._header_height + 18 - self._pin_radius, self._pin_radius * 2, self._pin_radius * 2)
 
     def resize_handle_rect(self) -> QRectF:
-        return QRectF(self._rect.width() - 16, self._rect.height() - 16, 12, 12)
+        size = 18 if self.node.type == "Comment" else 12
+        return QRectF(self._rect.width() - size - 6, self._rect.height() - size - 6, size, size)
 
     def pin_hit(self, scene_pos: QPointF) -> str | None:
         local = self.mapFromScene(scene_pos)
-        if self.output_pin_rect().contains(local):
+        input_hit = self.input_pin_rect().adjusted(-5, -5, 5, 5)
+        output_hit = self.output_pin_rect().adjusted(-5, -5, 5, 5)
+        if output_hit.contains(local):
             return "output"
-        if self.input_pin_rect().contains(local):
+        if input_hit.contains(local):
             return "input"
         return None
 
@@ -203,6 +209,10 @@ class NodeItem(QGraphicsObject):
         body_color = QColor(definition.body_color)
         header_color = QColor(definition.header_color)
         accent = QColor(definition.accent_color)
+        if self.node.type == "Comment":
+            body_color = QColor(198, 215, 238, 95)
+            header_color = QColor(210, 226, 246, 128)
+            accent = QColor(129, 164, 204, 220)
         border = QColor("#50627f")
         if self._warnings:
             border = QColor("#d95c5c")
@@ -230,9 +240,25 @@ class NodeItem(QGraphicsObject):
             painter.setBrush(panel_fill)
             painter.setPen(QPen(panel_border, 1.0))
             painter.drawRoundedRect(content_rect, 12, 12)
+        base_title = self.schema.nodes[self.node.type].title
+        tips = str(self.node.fields.get("tips", "") or "").strip()
+        title_rect = QRectF(14, 8, self._rect.width() - 90, 18)
         painter.setPen(QColor("#e8eef8"))
         painter.setFont(self.form.font())
-        painter.drawText(QRectF(14, 8, self._rect.width() - 80, 18), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.schema.nodes[self.node.type].title)
+        if tips:
+            left_text = f"{base_title} - "
+            metrics = QFontMetrics(self.form.font())
+            left_width = metrics.horizontalAdvance(left_text)
+            painter.drawText(title_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, left_text)
+            highlight_font = QFont(self.form.font())
+            highlight_font.setBold(True)
+            highlight_font.setUnderline(True)
+            painter.setFont(highlight_font)
+            painter.setPen(QColor("#f6d365"))
+            right_rect = QRectF(title_rect.x() + left_width, title_rect.y(), max(1.0, title_rect.width() - left_width), title_rect.height())
+            painter.drawText(right_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, tips)
+        else:
+            painter.drawText(title_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, base_title)
         painter.setBrush(accent)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(self.input_pin_rect())
@@ -255,6 +281,7 @@ class NodeItem(QGraphicsObject):
             event.accept()
             return
         self._drag_start_pos = self.pos()
+        self.setCursor(Qt.CursorShape.ClosedHandCursor)
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -275,6 +302,7 @@ class NodeItem(QGraphicsObject):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
         current = self.pos()
         old_pos = (self._drag_start_pos.x(), self._drag_start_pos.y())
         new_pos = (current.x(), current.y())
@@ -284,6 +312,15 @@ class NodeItem(QGraphicsObject):
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
             self.geometryChanged.emit(self.node.uuid)
         return super().itemChange(change, value)
+
+    def hoverMoveEvent(self, event: QGraphicsSceneHoverEvent) -> None:
+        if self.schema.nodes[self.node.type].resizable and self.resize_handle_rect().contains(event.pos()):
+            self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+        elif self.pin_hit(event.scenePos()):
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        else:
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        super().hoverMoveEvent(event)
 
     def _commit_field(self, key: str, value: Any) -> None:
         self.controller.update_field(self.node.uuid, key, value, self.controller.preferences.global_mode)
@@ -477,6 +514,8 @@ class NodeCanvasView(QGraphicsView):
 
     def _create_item(self, node) -> None:
         item = NodeItem(self.schema, self.controller, node)
+        if node.type == "Comment":
+            item.setZValue(-20)
         item.geometryChanged.connect(self._on_node_geometry_changed)
         self.scene_ref.addItem(item)
         self.node_items[node.uuid] = item
