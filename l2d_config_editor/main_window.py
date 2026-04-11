@@ -235,7 +235,7 @@ class MainWindow(QMainWindow):
         self.controller.metaActionBlocked.connect(self._focus_initial_node_guidance)
         self._set_active_undo_stack(self.controller.undo_stack)
 
-        self.setWindowTitle("L2D Config Editor")
+        self.setWindowTitle("L2D交互图表编辑器")
         self.resize(1680, 980)
         self._build_ui()
         self._update_workspace_path_display()
@@ -532,9 +532,9 @@ class MainWindow(QMainWindow):
         return panel
 
     def _build_actions(self) -> None:
-        file_menu = self.menuBar().addMenu("File")
-        edit_menu = self.menuBar().addMenu("Edit")
-        view_menu = self.menuBar().addMenu("View")
+        file_menu = self.menuBar().addMenu("文件")
+        edit_menu = self.menuBar().addMenu("编辑")
+        view_menu = self.menuBar().addMenu("视图")
 
         open_action = QAction("\u6253\u5f00", self)
         open_action.setShortcut(QKeySequence.StandardKey.Open)
@@ -1192,7 +1192,7 @@ class MainWindow(QMainWindow):
             self._select_file_in_list(relative_path)
 
     def _update_window_title(self, path: str | None) -> None:
-        title = "L2D Config Editor"
+        title = "L2D交互图表编辑器"
         if path:
             title = f"{Path(path).name} - {title}"
         if self._is_dirty():

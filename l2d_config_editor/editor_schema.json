@@ -351,6 +351,7 @@
           "label": "备注",
           "editor": "text",
           "default": "",
+          "placeholder": "（非必填）",
           "show_in_modes": [
             "simple",
             "advanced"
@@ -371,6 +372,7 @@
           "label": "角色名",
           "editor": "text",
           "default": "",
+          "placeholder": "如 信浓泳装",
           "show_in_modes": [
             "simple",
             "advanced"
@@ -381,6 +383,7 @@
           "label": "角色资源名",
           "editor": "text",
           "default": "",
+          "placeholder": "如 xinnong_3",
           "show_in_modes": [
             "simple",
             "advanced"
@@ -388,7 +391,7 @@
         },
         {
           "key": "ship_skin_id",
-          "label": "角色ID",
+          "label": "角色ID（找策划要）",
           "editor": "int",
           "default": 0,
           "show_in_modes": [
@@ -400,8 +403,8 @@
           "key": "react_condition",
           "label": "允许目光拖拽的待机",
           "editor": "text",
-          "default": "",
-          "placeholder": "如 0,17",
+          "default": "0",
+          "placeholder": "一般情况下填 0 就可以",
           "show_in_modes": [
             "simple",
             "advanced"
@@ -412,6 +415,7 @@
           "label": "作者",
           "editor": "text",
           "default": "",
+          "placeholder": "君の名は。",
           "show_in_modes": [
             "simple",
             "advanced"
@@ -441,6 +445,7 @@
           "label": "备注",
           "editor": "text",
           "default": "",
+          "placeholder": "这个交互是做什么的",
           "show_in_modes": [
             "simple"
           ]
@@ -459,6 +464,7 @@
           "label": "框",
           "editor": "text",
           "default": "",
+          "placeholder": "如 TouchIdle12，注意大小写",
           "show_in_modes": [
             "simple",
             "advanced"
@@ -469,6 +475,7 @@
           "label": "参数",
           "editor": "text",
           "default": "",
+          "placeholder": "如 Paramtouch_idle12，注意大小写",
           "show_in_modes": [
             "simple",
             "advanced"
@@ -561,6 +568,7 @@
           "key": "action_trigger",
           "label": "播放的动画",
           "editor": "text",
+          "placeholder": "如 touch_idle1，注意大小写",
           "default": "",
           "show_in_modes": [
             "simple",
@@ -576,6 +584,7 @@
           "label": "目标idle",
           "editor": "int",
           "default": 1,
+          "placeholder": "要跳到哪个idle，如 1",
           "show_in_modes": [
             "simple",
             "advanced"
@@ -708,6 +717,7 @@
           "label": "数值吸附范围",
           "editor": "text",
           "default": "",
+          "placeholder": "非必填，要填的话填0,1,2这样的",
           "show_in_modes": [
             "advanced"
           ]
@@ -939,6 +949,7 @@
           "label": "备注",
           "editor": "text",
           "default": "",
+          "placeholder": "这个交互是做什么的",
           "show_in_modes": [
             "simple"
           ]
@@ -957,6 +968,7 @@
           "label": "框",
           "editor": "text",
           "default": "",
+          "placeholder": "如 TouchDrag12，注意大小写",
           "show_in_modes": [
             "simple",
             "advanced"
@@ -967,6 +979,7 @@
           "label": "参数",
           "editor": "text",
           "default": "",
+          "placeholder": "如 touch_drag1，注意大小写",
           "show_in_modes": [
             "simple",
             "advanced"
@@ -1060,6 +1073,7 @@
           "label": "播放的动画",
           "editor": "text",
           "default": "",
+          "placeholder": "如 touch_drag1，注意大小写",
           "show_in_modes": [
             "simple",
             "advanced"
@@ -1074,6 +1088,7 @@
           "label": "目标idle",
           "editor": "int",
           "default": 1,
+          "placeholder": "!!!不要填!!!",
           "show_in_modes": [
             "simple",
             "advanced"
@@ -1191,9 +1206,10 @@
         },
         {
           "key": "parts_data",
-          "label": "数值吸附",
+          "label": "数值吸附范围",
           "editor": "text",
           "default": "",
+          "placeholder": "非必填，要填的话填0,1,2这样的",
           "show_in_modes": [
             "simple",
             "advanced"

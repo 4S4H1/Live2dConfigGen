@@ -1063,13 +1063,13 @@ class NodeCanvasView(QGraphicsView):
         return candidate_y
 
     def _handle_document_state_changed(self, state) -> None:
-        self.scene_ref.top_right_hint = "" if state.is_meta_ready else "请先完成初始节点里的内容"
+        self.scene_ref.top_right_hint = "" if state.is_meta_ready else "!!请先填写初始节点里的配置!!"
         self._refresh_hint_overlay()
 
     def _refresh_hint_overlay(self, *_args) -> None:
-        self.scene_ref.top_right_hint = "" if self.controller.document.state.is_meta_ready else "请先完成初始节点里的内容"
+        self.scene_ref.top_right_hint = "" if self.controller.document.state.is_meta_ready else "!!请先填写初始节点里的配置!!"
         tips = str(self.controller.document.meta.tips or "").strip()
-        self.scene_ref.bottom_right_hint = tips or "按住中键平移 / 滚轮缩放 / Delete 删除"
+        self.scene_ref.bottom_right_hint = tips or "按住中键平移 / 滚轮缩放 / 右键创建 / DEL键删除"
         self.scene_ref.update()
 
     def _refresh_scale_sensitive_nodes(self) -> None:
