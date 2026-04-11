@@ -255,6 +255,7 @@ class ValidationIssueItem(QWidget):
         self.text_box.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.text_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.jump_button = QPushButton("<跳转>")
+        self.jump_button.setProperty("variant", "dark")
         target_uuid = issue.related_node_uuids[0] if issue.related_node_uuids else issue.node_uuid
         self.jump_button.setEnabled(bool(target_uuid))
         self.jump_button.clicked.connect(lambda: target_uuid and self.jumpRequested.emit(target_uuid))
@@ -345,11 +346,13 @@ class NodeFormWidget(QFrame):
         self.setObjectName("inlineNodeForm" if inline else "inspectorNodeForm")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._title = QLabel("未选择节点")
+        self._title.setObjectName("nodeFormTitle")
         self._title.setWordWrap(True)
         title_font = QFont("Segoe UI", 10 if inline else 11)
         title_font.setBold(True)
         self._title.setFont(title_font)
         self._subtitle = QLabel("")
+        self._subtitle.setObjectName("nodeFormSubtitle")
         self._subtitle.setWordWrap(True)
         header = QVBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
@@ -426,6 +429,7 @@ class NodeFormWidget(QFrame):
         for field in self._visible_fields(definition.fields):
             widget, setter = self._build_editor(field)
             label = QLabel()
+            label.setObjectName("nodeFieldLabel")
             highlighted_keys = {"draw_able_name", "parameter", "action_trigger", "action_trigger_active"}
             label_text = field.key if self.show_json_field_names else field.label
             if field.key in highlighted_keys:

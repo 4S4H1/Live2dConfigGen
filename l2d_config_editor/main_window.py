@@ -7,13 +7,14 @@ import re
 from pathlib import Path
 
 from PyQt6.QtCore import QSettings, Qt, QTimer, QUrl
-from PyQt6.QtGui import QAction, QActionGroup, QCloseEvent, QDesktopServices, QGuiApplication, QKeySequence, QUndoStack
+from PyQt6.QtGui import QAction, QActionGroup, QCloseEvent, QColor, QDesktopServices, QGuiApplication, QKeySequence, QUndoStack
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
     QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -31,6 +32,7 @@ from PyQt6.QtWidgets import (
     QWidget,
     QLineEdit,
     QButtonGroup,
+    QInputDialog,
     QPlainTextEdit,
 )
 
@@ -260,6 +262,7 @@ class MainWindow(QMainWindow):
 
     def _update_workspace_path_display(self) -> None:
         self.workspace_path_edit.setText(str(self.workdir))
+        self._refresh_shell_metrics()
 
     def _choose_workspace_directory(self) -> None:
         chosen = QFileDialog.getExistingDirectory(self, "选择 JSON 配置文件所在目录", str(self.workdir))
@@ -305,14 +308,113 @@ class MainWindow(QMainWindow):
             return True
         return False
 
+    @staticmethod
+    def _set_button_variant(button: QPushButton, variant: str) -> None:
+        button.setProperty("variant", variant)
+
+    @staticmethod
+    def _apply_whisper_shadow(widget: QWidget, *, blur: float = 28.0, offset_y: float = 8.0, alpha: int = 20) -> None:
+        effect = QGraphicsDropShadowEffect(widget)
+        effect.setBlurRadius(blur)
+        effect.setOffset(0, offset_y)
+        effect.setColor(QColor(20, 20, 19, alpha))
+        widget.setGraphicsEffect(effect)
+
+    @staticmethod
+    def _build_info_card(eyebrow: str) -> tuple[QFrame, QLabel, QLabel]:
+        card = QFrame()
+        card.setObjectName("heroMetricCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(4)
+        label = QLabel(eyebrow)
+        label.setObjectName("metricLabel")
+        value = QLabel("--")
+        value.setObjectName("metricValue")
+        note = QLabel("")
+        note.setObjectName("metricNote")
+        note.setWordWrap(True)
+        layout.addWidget(label)
+        layout.addWidget(value)
+        layout.addWidget(note)
+        return card, value, note
+
+    def _build_shell_header(self) -> QWidget:
+        self.hero_panel = QFrame()
+        self.hero_panel.setObjectName("heroPanel")
+        self._apply_whisper_shadow(self.hero_panel, blur=34.0, offset_y=10.0, alpha=22)
+
+        layout = QVBoxLayout(self.hero_panel)
+        layout.setContentsMargins(24, 22, 24, 22)
+        layout.setSpacing(18)
+
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(18)
+
+        copy_block = QVBoxLayout()
+        copy_block.setContentsMargins(0, 0, 0, 0)
+        copy_block.setSpacing(6)
+        eyebrow = QLabel("Live2D Config Studio")
+        eyebrow.setObjectName("heroEyebrow")
+        title = QLabel("用更温和的工作台，整理 Live2D 配置、节点图与导出。")
+        title.setObjectName("heroTitle")
+        title.setWordWrap(True)
+        description = QLabel("参考 Claude 的纸张质感与编辑部节奏，保留当前文件管理、节点编辑、校验提示与 CSV 流程。")
+        description.setObjectName("heroDescription")
+        description.setWordWrap(True)
+        copy_block.addWidget(eyebrow)
+        copy_block.addWidget(title)
+        copy_block.addWidget(description)
+        top_row.addLayout(copy_block, 1)
+
+        action_block = QVBoxLayout()
+        action_block.setContentsMargins(0, 0, 0, 0)
+        action_block.setSpacing(10)
+        action_label = QLabel("快速操作")
+        action_label.setObjectName("metricLabel")
+        action_block.addWidget(action_label, 0, Qt.AlignmentFlag.AlignRight)
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.setSpacing(10)
+        self.header_save_button = QPushButton("保存当前配置")
+        self._set_button_variant(self.header_save_button, "primary")
+        self.header_save_button.clicked.connect(self._save_current_file)
+        self.header_preview_button = QPushButton("CSV 预览")
+        self._set_button_variant(self.header_preview_button, "dark")
+        self.header_preview_button.clicked.connect(self._show_csv_preview)
+        self.header_export_button = QPushButton("导出 CSV")
+        self.header_export_button.clicked.connect(self._show_export_csv_dialog)
+        action_row.addWidget(self.header_save_button)
+        action_row.addWidget(self.header_preview_button)
+        action_row.addWidget(self.header_export_button)
+        action_block.addLayout(action_row)
+        top_row.addLayout(action_block)
+        layout.addLayout(top_row)
+
+        metric_row = QHBoxLayout()
+        metric_row.setContentsMargins(0, 0, 0, 0)
+        metric_row.setSpacing(12)
+        document_card, self.hero_document_value, self.hero_document_note = self._build_info_card("当前文档")
+        workspace_card, self.hero_workspace_value, self.hero_workspace_note = self._build_info_card("工作区")
+        mode_card, self.hero_mode_value, self.hero_mode_note = self._build_info_card("编辑模式")
+        for card in (document_card, workspace_card, mode_card):
+            metric_row.addWidget(card, 1)
+        layout.addLayout(metric_row)
+        return self.hero_panel
+
     def _build_ui(self) -> None:
         root = QWidget()
-        layout = QHBoxLayout(root)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
+        root.setObjectName("appShell")
+        layout = QVBoxLayout(root)
+        layout.setContentsMargins(20, 18, 20, 14)
+        layout.setSpacing(18)
+
+        layout.addWidget(self._build_shell_header())
 
         horizontal = QSplitter(Qt.Orientation.Horizontal)
-        layout.addWidget(horizontal)
+        horizontal.setObjectName("workspaceSplitter")
+        layout.addWidget(horizontal, 1)
 
         horizontal.addWidget(self._build_file_panel())
         horizontal.addWidget(self._build_canvas_panel())
@@ -320,26 +422,43 @@ class MainWindow(QMainWindow):
         horizontal.setStretchFactor(0, 0)
         horizontal.setStretchFactor(1, 1)
         horizontal.setStretchFactor(2, 0)
+        horizontal.setSizes([340, 1020, 420])
 
         self.setCentralWidget(root)
-        self.setStatusBar(QStatusBar(self))
+        status_bar = QStatusBar(self)
+        status_bar.setObjectName("appStatusBar")
+        status_bar.setSizeGripEnabled(False)
+        self.setStatusBar(status_bar)
 
     def _build_file_panel(self) -> QWidget:
-        panel = QWidget()
+        panel = QFrame()
+        panel.setObjectName("sidePanelCard")
+        self._apply_whisper_shadow(panel)
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
-        title = QLabel("\u914d\u7f6e\u6587\u4ef6")
-        title.setObjectName("sectionTitle")
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
+
+        eyebrow = QLabel("Workspace")
+        eyebrow.setObjectName("panelEyebrow")
+        title = QLabel("\u914d\u7f6e\u6863\u6848")
+        title.setObjectName("panelTitle")
+        description = QLabel("\u6d4f\u89c8\u5f53\u524d\u76ee\u5f55\u4e0b\u7684 JSON \u914d\u7f6e\uff0c\u4fdd\u7559\u5206\u7ec4\u6298\u53e0\u3001\u8349\u7a3f\u5207\u6362\u4e0e\u53cc\u51fb\u6253\u5f00\u3002")
+        description.setObjectName("panelCopy")
+        description.setWordWrap(True)
+        layout.addWidget(eyebrow)
         layout.addWidget(title)
+        layout.addWidget(description)
 
         workspace_row = QHBoxLayout()
+        workspace_row.setContentsMargins(0, 0, 0, 0)
+        workspace_row.setSpacing(10)
         self.workspace_path_edit = QLineEdit()
         self.workspace_path_edit.setObjectName("workspacePathField")
         self.workspace_path_edit.setReadOnly(True)
         self.workspace_path_edit.setPlaceholderText("\u672a\u9009\u62e9\u5de5\u7a0b\u76ee\u5f55")
         self.workspace_path_edit.setToolTip("\u5f53\u524d\u5217\u51fa JSON \u914d\u7f6e\u7684\u6839\u76ee\u5f55\uff0c\u53ef\u76f4\u63a5\u590d\u5236\u8def\u5f84")
         self.choose_workspace_button = QPushButton("\u9009\u62e9\u76ee\u5f55")
+        self._set_button_variant(self.choose_workspace_button, "dark")
         self.choose_workspace_button.setToolTip("\u9009\u62e9\u5b58\u653e JSON \u914d\u7f6e\u6587\u4ef6\u7684\u76ee\u5f55")
         self.choose_workspace_button.clicked.connect(self._choose_workspace_directory)
         self.open_workspace_button = QPushButton("\u6253\u5f00\u6240\u9009\u76ee\u5f55")
@@ -351,9 +470,13 @@ class MainWindow(QMainWindow):
         layout.addLayout(workspace_row)
 
         button_row = QHBoxLayout()
+        button_row.setContentsMargins(0, 0, 0, 0)
+        button_row.setSpacing(10)
         self.refresh_button = QPushButton("\u5237\u65b0")
         self.new_button = QPushButton("\u65b0\u5efa")
         self.delete_button = QPushButton("\u5220\u9664")
+        self._set_button_variant(self.new_button, "primary")
+        self._set_button_variant(self.delete_button, "danger")
         self.refresh_button.clicked.connect(self._refresh_file_list)
         self.new_button.clicked.connect(self._create_new_file)
         self.delete_button.clicked.connect(self._delete_selected_file)
@@ -371,14 +494,51 @@ class MainWindow(QMainWindow):
         self.file_list.itemClicked.connect(self._handle_file_list_item_clicked)
         self.file_list.itemDoubleClicked.connect(self._open_selected_file)
         layout.addWidget(self.file_list, 1)
-        panel.setMinimumWidth(290)
+
+        self.file_count_label = QLabel("")
+        self.file_count_label.setObjectName("panelMeta")
+        self.file_count_label.setWordWrap(True)
+        layout.addWidget(self.file_count_label)
+
+        panel.setMinimumWidth(320)
         return panel
 
     def _build_canvas_panel(self) -> QWidget:
-        panel = QWidget()
+        panel = QFrame()
+        panel.setObjectName("canvasPanelCard")
+        self._apply_whisper_shadow(panel)
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
+
+        eyebrow = QLabel("Canvas")
+        eyebrow.setObjectName("panelEyebrow")
+        title = QLabel("\u8282\u70b9\u753b\u5e03")
+        title.setObjectName("panelTitle")
+        description = QLabel("\u628a\u56fe\u8c31\u7559\u5728\u4e2d\u5fc3\uff0c\u8ba9\u641c\u7d22\u3001\u8fde\u7ebf\u4e0e\u6392\u7248\u4f18\u5316\u90fd\u56f4\u7ed5\u5f53\u524d\u6587\u6863\u5c55\u5f00\u3002")
+        description.setObjectName("panelCopy")
+        description.setWordWrap(True)
+        layout.addWidget(eyebrow)
+        layout.addWidget(title)
+        layout.addWidget(description)
+
+        context_row = QHBoxLayout()
+        context_row.setContentsMargins(0, 0, 0, 0)
+        context_row.setSpacing(12)
+        self.canvas_context_label = QLabel("")
+        self.canvas_context_label.setObjectName("canvasContext")
+        self.canvas_hint_label = QLabel("")
+        self.canvas_hint_label.setObjectName("canvasHint")
+        self.canvas_hint_label.setWordWrap(True)
+        context_row.addWidget(self.canvas_context_label, 1)
+        context_row.addWidget(self.canvas_hint_label, 1)
+        layout.addLayout(context_row)
+
+        self.canvas_shell = QFrame()
+        self.canvas_shell.setObjectName("canvasShell")
+        canvas_shell_layout = QVBoxLayout(self.canvas_shell)
+        canvas_shell_layout.setContentsMargins(14, 14, 14, 14)
+        canvas_shell_layout.setSpacing(12)
 
         canvas_top_row = QHBoxLayout()
         canvas_top_row.setContentsMargins(0, 0, 0, 0)
@@ -407,24 +567,37 @@ class MainWindow(QMainWindow):
         search_layout.addLayout(search_row)
         search_layout.addWidget(self.search_results)
         canvas_top_row.addWidget(self.search_panel, 0, Qt.AlignmentFlag.AlignRight)
-        layout.addLayout(canvas_top_row)
+        canvas_shell_layout.addLayout(canvas_top_row)
 
         self.canvas = NodeCanvasView(self.controller.schema, self.controller)
         self.canvas.selectionSummaryChanged.connect(self._handle_selection_summary)
-        layout.addWidget(self.canvas, 1)
+        canvas_shell_layout.addWidget(self.canvas, 1)
+        layout.addWidget(self.canvas_shell, 1)
         return panel
 
     def _build_inspector_panel(self) -> QWidget:
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(12)
 
         self.control_panel = QFrame()
-        self.control_panel.setObjectName("sidebarToolPanel")
+        self.control_panel.setObjectName("sidePanelCard")
+        self._apply_whisper_shadow(self.control_panel)
         control_layout = QVBoxLayout(self.control_panel)
-        control_layout.setContentsMargins(12, 12, 12, 12)
-        control_layout.setSpacing(10)
+        control_layout.setContentsMargins(18, 18, 18, 18)
+        control_layout.setSpacing(12)
+
+        eyebrow = QLabel("Controls")
+        eyebrow.setObjectName("panelEyebrow")
+        control_title = QLabel("\u7f16\u8f91\u5de5\u5177")
+        control_title.setObjectName("panelTitle")
+        control_copy = QLabel("\u5728\u4e0d\u5f71\u54cd\u8282\u70b9\u5185\u5bb9\u7684\u524d\u63d0\u4e0b\uff0c\u5207\u6362\u6a21\u5f0f\u3001\u521b\u5efa\u89c4\u5219\uff0c\u5e76\u6574\u7406\u5f53\u524d\u753b\u5e03\u3002")
+        control_copy.setObjectName("panelCopy")
+        control_copy.setWordWrap(True)
+        control_layout.addWidget(eyebrow)
+        control_layout.addWidget(control_title)
+        control_layout.addWidget(control_copy)
 
         mode_block = QVBoxLayout()
         mode_block.setContentsMargins(0, 0, 0, 0)
@@ -499,15 +672,20 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.control_panel)
 
         self.inspector_shell = QFrame()
-        self.inspector_shell.setObjectName("inspectorShell")
+        self.inspector_shell.setObjectName("sidePanelCard")
+        self._apply_whisper_shadow(self.inspector_shell)
         inspector_layout = QVBoxLayout(self.inspector_shell)
-        inspector_layout.setContentsMargins(12, 12, 12, 12)
-        inspector_layout.setSpacing(8)
+        inspector_layout.setContentsMargins(18, 18, 18, 18)
+        inspector_layout.setSpacing(10)
 
-        title = QLabel("Inspector")
-        title.setObjectName("sectionTitle")
+        inspector_eyebrow = QLabel("Inspector")
+        inspector_eyebrow.setObjectName("panelEyebrow")
+        title = QLabel("\u5f53\u524d\u8282\u70b9")
+        title.setObjectName("panelTitle")
+        inspector_layout.addWidget(inspector_eyebrow)
         inspector_layout.addWidget(title)
         self.inspector_meta = QLabel("")
+        self.inspector_meta.setObjectName("panelMeta")
         self.inspector_meta.setWordWrap(True)
         inspector_layout.addWidget(self.inspector_meta)
         self.inspector_placeholder = QLabel("\u8bf7\u9009\u62e9\u4e00\u4e2a\u8282\u70b9")
@@ -523,6 +701,7 @@ class MainWindow(QMainWindow):
         body_layout.addWidget(self.validation_summary)
         body_layout.addStretch(1)
         scroll = QScrollArea()
+        scroll.setObjectName("inspectorScrollArea")
         scroll.setWidgetResizable(True)
         scroll.setWidget(inspector_body)
         inspector_layout.addWidget(self.inspector_placeholder)
@@ -776,6 +955,43 @@ class MainWindow(QMainWindow):
         can_save = bool(self.controller.document.path) or allowed
         if hasattr(self, "save_action"):
             self.save_action.setEnabled(can_save)
+        if hasattr(self, "header_save_button"):
+            self.header_save_button.setEnabled(can_save)
+
+    def _refresh_shell_metrics(self) -> None:
+        if not hasattr(self, "hero_document_value"):
+            return
+
+        current_path = self.controller.document.path
+        document_name = Path(current_path).name if current_path else "\u672a\u4fdd\u5b58\u8349\u7a3f"
+        if self._is_dirty():
+            document_note = "\u5b58\u5728\u672a\u4fdd\u5b58\u4fee\u6539"
+        elif current_path:
+            document_note = "\u5de5\u4f5c\u533a\u4e2d\u7684\u5df2\u4fdd\u5b58\u914d\u7f6e"
+        else:
+            document_note = "\u5b8c\u6210\u521d\u59cb\u8282\u70b9\u540e\u53ef\u81ea\u52a8\u751f\u6210\u6587\u4ef6\u540d"
+        self.hero_document_value.setText(document_name)
+        self.hero_document_note.setText(document_note)
+
+        config_count = len(self.controller.file_list())
+        workspace_name = self.workdir.name or str(self.workdir)
+        self.hero_workspace_value.setText(workspace_name)
+        self.hero_workspace_note.setText(f"{config_count} \u4efd\u914d\u7f6e \u00b7 {self.workdir}")
+
+        mode_name = "\u7b80\u6613\u6a21\u5f0f" if self.controller.preferences.global_mode == "simple" else "\u9ad8\u7ea7\u6a21\u5f0f"
+        creation_rule = "\u81ea\u52a8\u5e8f\u53f7" if self.controller.document.interaction_creation_mode == "auto" else "\u624b\u52a8\u5e8f\u53f7"
+        self.hero_mode_value.setText(mode_name)
+        self.hero_mode_note.setText(creation_rule)
+
+        if hasattr(self, "canvas_context_label"):
+            readiness = "\u5df2\u5c31\u7eea" if self.controller.document.state.is_meta_ready else "\u7b49\u5f85\u521d\u59cb\u5316"
+            self.canvas_context_label.setText(f"{document_name} \u00b7 {readiness}")
+        if hasattr(self, "canvas_hint_label"):
+            if self.controller.document.state.is_meta_ready:
+                self.canvas_hint_label.setText("\u521d\u59cb\u8282\u70b9\u5df2\u5b8c\u6210\uff0c\u53ef\u4ee5\u7ee7\u7eed\u521b\u5efa\u8282\u70b9\u3001\u8fde\u7ebf\u548c\u5bfc\u51fa\u5185\u5bb9\u3002")
+            else:
+                missing = " / ".join(self.controller.document.state.meta_missing_fields)
+                self.canvas_hint_label.setText(f"\u5148\u5b8c\u6210\u521d\u59cb\u8282\u70b9\u5b57\u6bb5\u540e\u518d\u6269\u5c55\u56fe\u8c31\uff1a{missing}")
 
     def _apply_saved_preferences(self) -> None:
         mode = self.settings.value("ui/global_mode", self.controller.preferences.global_mode)
@@ -791,6 +1007,7 @@ class MainWindow(QMainWindow):
         self.advanced_mode_radio.setChecked(self.controller.preferences.global_mode == "advanced")
         self._handle_interaction_creation_mode_changed(self.controller.document.interaction_creation_mode)
         self._update_save_action_state()
+        self._refresh_shell_metrics()
 
     def _set_debug_json_field_names(self, enabled: bool) -> None:
         self.controller.preferences.debug_json_field_names = enabled
@@ -831,8 +1048,8 @@ class MainWindow(QMainWindow):
             header = QListWidgetItem(self._group_header_text(group_name, len(paths), is_collapsed))
             header.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             header.setData(Qt.ItemDataRole.UserRole, {"kind": "group", "group_dir": group_name})
-            header.setForeground(Qt.GlobalColor.white)
-            header.setBackground(Qt.GlobalColor.darkGray)
+            header.setForeground(QColor("#6a4a39"))
+            header.setBackground(QColor("#efe6d7"))
             header_font = header.font()
             header_font.setBold(True)
             header.setFont(header_font)
@@ -841,12 +1058,17 @@ class MainWindow(QMainWindow):
                 continue
             for relative_path in paths:
                 _, display_name = self._read_file_display_meta(self.workdir / relative_path)
-                item = QListWidgetItem(f"\u914d\u7f6e: {display_name}")
+                item = QListWidgetItem(display_name)
                 item.setData(Qt.ItemDataRole.UserRole, {"kind": "file", "path": relative_path})
                 item.setToolTip(relative_path)
                 self.file_list.addItem(item)
                 if relative_path == current:
                     self.file_list.setCurrentItem(item)
+        if hasattr(self, "file_count_label"):
+            total_files = sum(len(paths) for paths in grouped.values())
+            total_groups = len(grouped)
+            self.file_count_label.setText(f"{total_groups} \u4e2a\u5206\u7ec4 \u00b7 {total_files} \u4efd\u914d\u7f6e")
+        self._refresh_shell_metrics()
 
     @staticmethod
     def _group_header_text(group_name: str, count: int, collapsed: bool) -> str:
@@ -1198,6 +1420,7 @@ class MainWindow(QMainWindow):
         if self._is_dirty():
             title = f"* {title}"
         self.setWindowTitle(title)
+        self._refresh_shell_metrics()
 
     def _show_status(self, message: str) -> None:
         self.statusBar().showMessage(message, 4000)
@@ -1252,10 +1475,12 @@ class MainWindow(QMainWindow):
         else:
             self.inspector_meta.setText(f"\u9700\u5148\u5b8c\u6210\u521d\u59cb\u8282\u70b9\u5b57\u6bb5: {' / '.join(state.meta_missing_fields)}")
         self._update_save_action_state()
+        self._refresh_shell_metrics()
 
     def _handle_interaction_creation_mode_changed(self, mode: str) -> None:
         self.auto_create_rule_radio.setChecked(mode == "auto")
         self.manual_create_rule_radio.setChecked(mode == "manual")
+        self._refresh_shell_metrics()
 
     def _handle_global_mode_changed(self, mode: str) -> None:
         self.settings.setValue("ui/global_mode", mode)
@@ -1271,6 +1496,7 @@ class MainWindow(QMainWindow):
                     mode,
                     self.controller.preferences.debug_json_field_names,
                 )
+        self._refresh_shell_metrics()
 
     def _reload_schema(self) -> None:
         try:

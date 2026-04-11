@@ -34,7 +34,7 @@ class GridScene(QGraphicsScene):
         self.bottom_right_hint = "按住中键平移 / 滚轮缩放 / Delete 删除"
 
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
-        painter.fillRect(rect, QColor("#171c24"))
+        painter.fillRect(rect, QColor("#141413"))
         left = int(rect.left()) - (int(rect.left()) % self.minor_grid)
         top = int(rect.top()) - (int(rect.top()) % self.minor_grid)
 
@@ -51,9 +51,9 @@ class GridScene(QGraphicsScene):
             target.append(QLineF(rect.left(), y, rect.right(), y))
             y += self.minor_grid
 
-        painter.setPen(QPen(QColor("#252d3a"), 1))
+        painter.setPen(QPen(QColor("#252423"), 1))
         painter.drawLines(minor_lines)
-        painter.setPen(QPen(QColor("#303a48"), 1))
+        painter.setPen(QPen(QColor("#343330"), 1))
         painter.drawLines(major_lines)
 
     def drawForeground(self, painter: QPainter, rect: QRectF) -> None:
@@ -64,7 +64,7 @@ class GridScene(QGraphicsScene):
         viewport_rect = view.viewport().rect()
         painter.save()
         painter.resetTransform()
-        painter.setPen(QColor(255, 255, 255, 62))
+        painter.setPen(QColor(176, 174, 165, 120))
         font = painter.font()
         font.setBold(True)
         font.setPointSize(22)
@@ -100,7 +100,7 @@ class ConnectionItem(QGraphicsPathItem):
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        color = QColor("#4c94ff") if self.isSelected() else QColor("#7e95b8")
+        color = QColor("#d97757") if self.isSelected() else QColor("#8f8173")
         painter.setPen(QPen(color, 3.0 if self.isSelected() else 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         painter.drawPath(self.path())
 
@@ -272,11 +272,11 @@ class NodeItem(QGraphicsObject):
         accent = QColor(definition.accent_color)
         if self.node.type == "Comment":
             body_color, header_color, accent = self._comment_colors()
-        border = QColor("#50627f")
+        border = QColor("#7d6f61")
         if self._warnings:
-            border = QColor("#d95c5c")
+            border = QColor("#b53333")
         elif self._search_highlight:
-            border = QColor("#f2b84a")
+            border = QColor("#d97757")
         elif self.isSelected():
             border = accent
         border_width = 6.0 if self._warnings else 2.0
@@ -293,14 +293,14 @@ class NodeItem(QGraphicsObject):
             self.proxy.size().height() + 4,
         )
         if content_rect.width() > 0 and content_rect.height() > 0:
-            panel_fill = QColor("#111827")
+            panel_fill = QColor("#141413")
             panel_fill.setAlpha(72)
-            panel_border = QColor("#dbe7ff")
-            panel_border.setAlpha(26)
+            panel_border = QColor("#f0eee6")
+            panel_border.setAlpha(34)
             painter.setBrush(panel_fill)
             painter.setPen(QPen(panel_border, 1.0))
             painter.drawRoundedRect(content_rect, 12, 12)
-        title_color = QColor("#ff7d7d") if self._warnings else QColor("#f6d365" if self.node.fields.get("tips") else "#e8eef8")
+        title_color = QColor("#f5d5cd") if self._warnings else QColor("#f3d9b2" if self.node.fields.get("tips") else "#faf9f5")
         if self.node.type == "Comment":
             title_color = QColor(str(self.node.fields.get("note_text_color") or "#fff5d6"))
             if not title_color.isValid():
@@ -328,12 +328,12 @@ class NodeItem(QGraphicsObject):
         painter.drawEllipse(self.input_pin_rect())
         painter.drawEllipse(self.output_pin_rect())
         if self._warnings:
-            painter.setBrush(QColor("#d95c5c"))
+            painter.setBrush(QColor("#b53333"))
             painter.drawRoundedRect(QRectF(self._rect.width() - 44, 8, 30, 18), 8, 8)
             painter.setPen(QColor("#ffffff"))
             painter.drawText(QRectF(self._rect.width() - 44, 8, 30, 18), Qt.AlignmentFlag.AlignCenter, str(len(self._warnings)))
         if self.schema.nodes[self.node.type].resizable:
-            painter.setBrush(QColor("#d8c48e"))
+            painter.setBrush(QColor("#d0b48c"))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawRect(self.resize_handle_rect())
 
@@ -398,7 +398,7 @@ class NodeItem(QGraphicsObject):
         self.update_node(self.node)
 
     def _title_font(self) -> QFont:
-        title_font = QFont(self.form.font())
+        title_font = QFont("Georgia")
         title_font.setBold(True)
         title_font.setPointSizeF(max(7.5, 11.0 / self._view_scale()))
         return title_font
