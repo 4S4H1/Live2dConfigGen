@@ -346,7 +346,7 @@ class NodeFormWidget(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._title = QLabel("未选择节点")
         self._title.setWordWrap(True)
-        title_font = QFont("Segoe UI", 10 if inline else 11)
+        title_font = QFont("Segoe UI Variable Text", 10 if inline else 12)
         title_font.setBold(True)
         self._title.setFont(title_font)
         self._subtitle = QLabel("")
@@ -438,6 +438,9 @@ class NodeFormWidget(QFrame):
                     Qt.TextFormat.RichText if (field.label_html and not self.show_json_field_names) else Qt.TextFormat.PlainText
                 )
                 label.setText(field.key if self.show_json_field_names else (field.label_html or field.label))
+            role = self._field_role(field)
+            label.setProperty("fieldRole", role)
+            widget.setProperty("fieldRole", role)
             label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
             self._form.addRow(label, widget)
             self._bindings[field.key] = EditorBinding(widget=widget, setter=setter)
@@ -459,8 +462,17 @@ class NodeFormWidget(QFrame):
 
     def _add_comment_appearance_row(self) -> None:
         button = QPushButton("外观设置")
+        button.setProperty("accentButton", True)
         button.clicked.connect(self._show_comment_appearance_dialog)
         self._form.addRow(QLabel("外观"), button)
+
+    @staticmethod
+    def _field_role(field: FieldSchema) -> str:
+        if field.key in {"draw_able_name", "parameter", "action_trigger", "action_trigger_active"}:
+            return "generated"
+        if field.key.endswith("_kind_ui") or field.key.endswith("_reserved_ui"):
+            return "diagnostic"
+        return "standard"
 
     def _show_comment_appearance_dialog(self) -> None:
         if not self.node or self.node.type != "Comment":

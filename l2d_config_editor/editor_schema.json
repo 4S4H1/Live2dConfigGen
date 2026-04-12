@@ -1084,21 +1084,6 @@
           }
         },
         {
-          "key": "action_trigger_active",
-          "label": "目标idle",
-          "editor": "int",
-          "default": 1,
-          "placeholder": "!!!不要填!!!",
-          "show_in_modes": [
-            "simple",
-            "advanced"
-          ],
-          "visibility": {
-            "field": "result_type",
-            "equals": "action"
-          }
-        },
-        {
           "key": "action_trigger_kind_ui",
           "label": "触发器类型",
           "editor": "combo",

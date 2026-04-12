@@ -84,13 +84,13 @@
       "tips": "",
       "desc": "",
       "draw_able_name": "TouchDrag1",
-      "parameter": "touch_drag1",
+      "parameter": "touch_drag0",
       "range": "{0,1}",
       "control_type": "click",
       "drag_ui_direction": "",
       "result_type": "action",
-      "action_trigger": "{type = 2 ,action = 'touch_idle1'}",
-      "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 1}",
+      "action_trigger": "{type = 2 ,action = 'touch_idle0'}",
+      "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 0}",
       "target_value": 1.0,
       "revert_enabled": 0,
       "parts_data": "",
@@ -184,7 +184,7 @@
   "trash_bin": [],
   "canvas_view": {
     "scale": 1.115702479338844,
-    "offset_x": 319.0814814814812,
-    "offset_y": 323.5629629629627
+    "offset_x": 1230.6148148148136,
+    "offset_y": 404.22962962962924
   }
 }

@@ -28,6 +28,7 @@ from .schema import EditorSchema, FieldSchema, NodeSchema, load_editor_schema
 RANGE_PATTERN = re.compile(r"^\{\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\}$")
 ACTION_NAME_PATTERN = re.compile(r"action\s*=\s*'([^']*)'")
 TARGET_IDLE_PATTERN = re.compile(r"idle\s*=\s*(-?\d+)")
+TRAILING_INT_PATTERN = re.compile(r"(-?\d+)\s*$")
 PARTS_DATA_PATTERN = re.compile(r"^\{\s*parts\s*=\s*\{(?P<values>.*)\}\s*\}$", re.IGNORECASE)
 REACT_CONDITION_PATTERN = re.compile(r"^\{\s*idle_on\s*=\s*\{(?P<values>.*)\}\s*\}$", re.IGNORECASE)
 HIDDEN_NODE_FIELDS = {
@@ -187,6 +188,16 @@ def _target_idle_from_raw(value: Any) -> int | None:
     return _coerce_int(match.group(1), 0)
 
 
+def _suffix_int(value: Any) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    match = TRAILING_INT_PATTERN.search(text)
+    if not match:
+        return None
+    return _coerce_int(match.group(1), 0)
+
+
 def _classify_action_trigger(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
@@ -220,6 +231,16 @@ def normalized_target_idle(node: NodeRecord) -> int:
     raw_target_idle = _target_idle_from_raw(node.fields.get("action_trigger_active"))
     if raw_target_idle is not None:
         return raw_target_idle
+    if node.type == "TouchDrag":
+        action_target_idle = _suffix_int(_action_name_from_raw(node.fields.get("action_trigger")))
+        if action_target_idle is not None:
+            return action_target_idle
+        parameter_target_idle = _suffix_int(node.fields.get("parameter"))
+        if parameter_target_idle is not None:
+            return parameter_target_idle
+        slot_target_idle = _coerce_int(node.type_slot or node.sequence_no, 0)
+        if slot_target_idle > 0:
+            return slot_target_idle
     return _coerce_int(node.fields.get("target_idle"), 0)
 
 
@@ -646,7 +667,10 @@ def make_trash_entry(schema: EditorSchema, node: NodeRecord) -> TrashEntry:
 
 
 def _export_node_fields(node: NodeRecord) -> dict[str, Any]:
-    return {key: value for key, value in node.fields.items() if key not in HIDDEN_NODE_FIELDS}
+    hidden_fields = set(HIDDEN_NODE_FIELDS)
+    if node.type == "TouchDrag":
+        hidden_fields.add("action_trigger_active")
+    return {key: value for key, value in node.fields.items() if key not in hidden_fields}
 
 
 def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[str, Any]:
@@ -847,17 +871,26 @@ def _draw_conflict_issues(schema: EditorSchema, group: list[NodeRecord]) -> list
     issues: list[ValidationIssue] = []
     for node in group:
         related = [other for other in group if other.uuid != node.uuid]
-        message = (
-            "同名框体的触发配置不一致："
-            f"框={_display_field_value(schema, node, 'draw_able_name') or '空'}，"
-            f"播放动画={_display_field_value(schema, node, 'action_trigger') or '空'}，"
-            f"目标idle={_display_field_value(schema, node, 'action_trigger_active') or '空'}"
-        )
+        if node.type == "TouchDrag":
+            message = (
+                "同名框体的触发配置不一致："
+                f"框={_display_field_value(schema, node, 'draw_able_name') or '空'}，"
+                f"播放动画={_display_field_value(schema, node, 'action_trigger') or '空'}"
+            )
+            field_keys = ["draw_able_name", "action_trigger"]
+        else:
+            message = (
+                "同名框体的触发配置不一致："
+                f"框={_display_field_value(schema, node, 'draw_able_name') or '空'}，"
+                f"播放动画={_display_field_value(schema, node, 'action_trigger') or '空'}，"
+                f"目标idle={_display_field_value(schema, node, 'action_trigger_active') or '空'}"
+            )
+            field_keys = ["draw_able_name", "action_trigger", "action_trigger_active"]
         issues.append(
             ValidationIssue(
                 node_uuid=node.uuid,
                 message=message,
-                field_keys=["draw_able_name", "action_trigger", "action_trigger_active"],
+                field_keys=field_keys,
                 related_node_uuids=[item.uuid for item in related],
                 related_titles=[node_title(schema, item) for item in related],
             )
@@ -935,7 +968,7 @@ def search_document(
     hits: list[SearchHit] = []
     for node in document.nodes:
         for key, value in node.fields.items():
-            if key in HIDDEN_NODE_FIELDS:
+            if key in HIDDEN_NODE_FIELDS or (node.type == "TouchDrag" and key == "action_trigger_active"):
                 continue
             display_value = display_value_for_field(schema, node, key, value)
             haystacks = [str(display_value)]

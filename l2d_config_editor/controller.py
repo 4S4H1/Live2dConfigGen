@@ -385,6 +385,8 @@ class EditorController(QObject):
         for key, value in node.fields.items():
             if key == "target_idle":
                 continue
+            if node.type == "TouchDrag" and key == "action_trigger_active":
+                continue
             if node.type != "Comment" and key == "tips":
                 continue
             payload[key] = value
@@ -452,8 +454,14 @@ class EditorController(QObject):
         if not node:
             return
         node.fields[key] = value
+        if node.type == "TouchDrag" and key in {"action_trigger", "parameter"}:
+            node.fields["action_trigger_active"] = ""
+            if source_mode == "simple":
+                node.manual_fields.discard("parameter")
         if key in {"action_trigger_active", "action_trigger"} or (source_mode == "advanced" and key == "parameter"):
             infer_manual_fields(self.schema, node)
+        if node.type == "TouchDrag" and key == "action_trigger" and source_mode == "simple":
+            node.manual_fields.discard("parameter")
         apply_auto_rules(self.schema, self.document, node, source_mode=source_mode, changed_key=key)
         reassign_function_ids(self.schema, self.document)
         self.nodeUpdated.emit(node_uuid)

@@ -206,6 +206,16 @@ class LogicTests(unittest.TestCase):
         hits = search_document(self.schema, document, "13")
         self.assertTrue(any(hit.field_name == "action_trigger_active" and hit.preview == "13" for hit in hits))
 
+    def test_search_hides_touchdrag_internal_target_idle(self) -> None:
+        document = self.make_ready_document()
+        node = create_node(self.schema, document, "TouchDrag")
+        node.fields["action_trigger"] = "{type = 2 ,action = 'touch_idle13'}"
+        node.fields["action_trigger_active"] = "{enable = {},ignore = {'main_1'},idle = 13}"
+        apply_auto_rules(self.schema, document, node, source_mode="advanced", changed_key="action_trigger")
+        document.nodes.append(node)
+        hits = search_document(self.schema, document, "13")
+        self.assertFalse(any(hit.field_name == "action_trigger_active" for hit in hits if hit.node_uuid == node.uuid))
+
     def test_search_can_use_json_field_names(self) -> None:
         document = self.make_ready_document()
         node = create_node(self.schema, document, "TouchIdle")
@@ -223,6 +233,7 @@ class LogicTests(unittest.TestCase):
 
     def test_export_payload_contains_meta_and_nodes(self) -> None:
         document = self.make_ready_document()
+        document.nodes.append(create_node(self.schema, document, "TouchDrag"))
         document.nodes.append(create_node(self.schema, document, "Comment"))
         payload = export_document_dict(self.schema, document)
         self.assertEqual("simple", payload["global_mode"])
@@ -230,6 +241,8 @@ class LogicTests(unittest.TestCase):
         self.assertIn("nodes", payload)
         self.assertIn("canvas_view", payload)
         self.assertNotIn("target_idle", payload["nodes"][0])
+        touchdrag_payload = next(node for node in payload["nodes"] if node["type"] == "TouchDrag")
+        self.assertNotIn("action_trigger_active", touchdrag_payload)
 
     def test_document_mode_roundtrip(self) -> None:
         document = self.make_ready_document()
@@ -268,6 +281,44 @@ class LogicTests(unittest.TestCase):
         self.assertEqual("{type = 2 ,action = 'touch_idle7'}", node.fields["action_trigger"])
         self.assertIn("idle = 7", node.fields["action_trigger_active"])
         self.assertEqual("Paramtouch_idle7", node.fields["parameter"])
+
+    def test_touchdrag_action_trigger_edit_updates_internal_target_idle(self) -> None:
+        controller = EditorController()
+        initial = next(node for node in controller.document.nodes if node.type == "Initial")
+        controller.update_field(initial.uuid, "author", "asahi", "simple")
+        controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+        controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+        controller.update_field(initial.uuid, "CharName", "??", "simple")
+        node_uuid = controller.create_node("TouchDrag", (100, 100))
+        self.assertIsNotNone(node_uuid)
+        node = controller.get_node(node_uuid)
+        controller.update_field(node.uuid, "action_trigger", "touch_idle7", "simple")
+        node = controller.get_node(node.uuid)
+        self.assertEqual("{type = 2 ,action = 'touch_idle7'}", node.fields["action_trigger"])
+        self.assertEqual("touch_drag7", node.fields["parameter"])
+        self.assertEqual(7, node.fields["target_idle"])
+        self.assertIn("idle = 7", node.fields["action_trigger_active"])
+
+    def test_touchdrag_roundtrip_without_action_trigger_active(self) -> None:
+        controller = EditorController()
+        initial = next(node for node in controller.document.nodes if node.type == "Initial")
+        controller.update_field(initial.uuid, "author", "asahi", "simple")
+        controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+        controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+        controller.update_field(initial.uuid, "CharName", "??", "simple")
+        node_uuid = controller.create_node("TouchDrag", (100, 100))
+        node = controller.get_node(node_uuid)
+        controller.update_field(node.uuid, "action_trigger", "touch_idle9", "simple")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "touchdrag_roundtrip.json"
+            controller.save_document(str(path))
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            loaded = load_document(self.schema, path)
+        saved_node = next(item for item in payload["nodes"] if item["type"] == "TouchDrag")
+        loaded_node = next(item for item in loaded.nodes if item.type == "TouchDrag")
+        self.assertNotIn("action_trigger_active", saved_node)
+        self.assertEqual(9, loaded_node.fields["target_idle"])
+        self.assertIn("idle = 9", loaded_node.fields["action_trigger_active"])
 
     def test_schema_supports_label_html(self) -> None:
         schema_payload = json.loads(Path("l2d_config_editor/editor_schema.json").read_text(encoding="utf-8"))
@@ -506,7 +557,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
 
         self.assertNotIn("target_idle", item.form._bindings)
         self.assertIn("action_trigger", item.form._bindings)
-        self.assertIn("action_trigger_active", item.form._bindings)
+        self.assertNotIn("action_trigger_active", item.form._bindings)
         window._mark_saved_checkpoint(saved=True)
         window.close()
 
@@ -624,6 +675,26 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
+    def test_zooming_in_pushes_node_title_below_accent_bar(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("TouchDrag", (200, 120))
+            item = window.canvas.node_items[created]
+            window.controller.update_field(created, "tips", "大方向深V的鬼斧神工都是方法是大哥", "simple")
+            baseline_title_y = item._title_rect.y()
+            window.canvas.scale(1.8, 1.8)
+            window.canvas._refresh_scale_sensitive_nodes()
+            self.app.processEvents()
+            self.assertGreater(item._title_rect.y(), baseline_title_y)
+            self.assertGreaterEqual(item._title_rect.y(), 14.0)
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
     def test_new_file_starts_as_unsaved_draft_without_filename_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
@@ -688,6 +759,35 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertTrue(changed)
             self.assertEqual(isolated_before, window.controller.get_node(isolated).ui_position)
             self.assertEqual(1, len(window.controller.document.connections))
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_optimize_layout_moves_attached_comment_with_component(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+
+            first = window.controller.create_node("TouchIdle", (420, 280))
+            second = window.controller.create_node("TouchDrag", (80, 120))
+            comment_uuid = window.controller.create_node("Comment", (450, 110))
+            window.controller.add_connection(first, second)
+
+            comment_node = window.controller.get_node(comment_uuid)
+            comment_node.ui_size = {"width": 420.0, "height": 220.0}
+            window.controller.nodeUpdated.emit(comment_uuid)
+            comment_before = dict(comment_node.ui_position)
+            size_before = dict(comment_node.ui_size)
+
+            changed = window.canvas.optimize_connection_layout()
+
+            self.assertTrue(changed)
+            comment_after = window.controller.get_node(comment_uuid)
+            self.assertNotEqual(comment_before, comment_after.ui_position)
+            self.assertEqual(size_before, comment_after.ui_size)
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
