@@ -107,6 +107,7 @@ class ConnectionItem(QGraphicsPathItem):
 
 class NodeItem(QGraphicsObject):
     geometryChanged = pyqtSignal(str)
+    PIN_HIT_PADDING = 9.0
 
     def __init__(self, schema: EditorSchema, controller, node, inline_width: int = 340) -> None:
         super().__init__()
@@ -149,7 +150,8 @@ class NodeItem(QGraphicsObject):
         self.setPos(node.ui_position["x"], node.ui_position["y"])
 
     def boundingRect(self) -> QRectF:
-        return self._rect
+        hit_padding = self._pin_radius + self.PIN_HIT_PADDING
+        return self._rect.adjusted(-hit_padding, -2.0, hit_padding, 2.0)
 
     def _pin_center(self, side: str) -> QPointF:
         x = 0.0 if side == "input" else self._rect.width()
@@ -177,8 +179,8 @@ class NodeItem(QGraphicsObject):
 
     def pin_hit(self, scene_pos: QPointF) -> str | None:
         local = self.mapFromScene(scene_pos)
-        input_hit = self._pin_rect("input", self._pin_radius + 7.0)
-        output_hit = self._pin_rect("output", self._pin_radius + 7.0)
+        input_hit = self._pin_rect("input", self._pin_radius + self.PIN_HIT_PADDING)
+        output_hit = self._pin_rect("output", self._pin_radius + self.PIN_HIT_PADDING)
         if output_hit.contains(local):
             return "output"
         if input_hit.contains(local):

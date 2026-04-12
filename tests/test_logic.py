@@ -8,7 +8,7 @@ from pathlib import Path
 if sys.platform != "win32":
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QPointF, Qt
 from PyQt6.QtWidgets import QApplication
 
 from l2d_config_editor.controller import EditorController
@@ -558,6 +558,28 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         self.assertNotIn("target_idle", item.form._bindings)
         self.assertIn("action_trigger", item.form._bindings)
         self.assertNotIn("action_trigger_active", item.form._bindings)
+        window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_node_bounding_rect_covers_full_pin_hit_area(self) -> None:
+        window = MainWindow("/Users/asahi/Live2dConfigGen", prefer_saved_workspace=False)
+        window.controller.set_global_mode("simple")
+        initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+        window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+        window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+        window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+        window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+        created = window.controller.create_node("TouchDrag", (200, 120))
+        item = window.canvas.node_items[created]
+
+        self.assertTrue(item.boundingRect().contains(item.input_pin_rect()))
+        self.assertTrue(item.boundingRect().contains(item.output_pin_rect()))
+
+        output_center = item.output_pin_scene_pos()
+        right_half_scene = output_center + QPointF(item._pin_radius * 0.75, 0.0)
+        left_half_scene = output_center + QPointF(-item._pin_radius * 0.75, 0.0)
+        self.assertEqual("output", item.pin_hit(right_half_scene))
+        self.assertEqual("output", item.pin_hit(left_half_scene))
         window._mark_saved_checkpoint(saved=True)
         window.close()
 

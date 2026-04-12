@@ -143,8 +143,8 @@
       "uuid": "0a1fc9d55b954638975c128813b02e4a",
       "type": "TouchDrag",
       "ui_position": {
-        "x": 603.5081530346454,
-        "y": 759.4996671664816
+        "x": 636.2,
+        "y": 636.0
       },
       "type_slot": 2,
       "export_slot": 3,
@@ -191,8 +191,8 @@
       "uuid": "4f070b2d75e748a89b41a31cd1cbeb42",
       "type": "TouchDrag",
       "ui_position": {
-        "x": 580.493011605358,
-        "y": 1462.7400997280388
+        "x": 636.2,
+        "y": 1200.0
       },
       "type_slot": 3,
       "export_slot": 4,
@@ -239,8 +239,8 @@
       "uuid": "f80b1f1a1d8340b4ae98bd4c86779d3d",
       "type": "TouchDrag",
       "ui_position": {
-        "x": 1480.640765284151,
-        "y": 1204.4590681327031
+        "x": 1200.4,
+        "y": 816.0
       },
       "type_slot": 4,
       "export_slot": 5,
@@ -287,8 +287,8 @@
       "uuid": "cbeb4d3f662749b0b6047bfa919c94f4",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 1439.7249582987513,
-        "y": 856.6747087568059
+        "x": 1200.4,
+        "y": 1380.0
       },
       "type_slot": 2,
       "export_slot": 6,
@@ -361,8 +361,8 @@
   ],
   "trash_bin": [],
   "canvas_view": {
-    "scale": 1.1157024793388453,
-    "offset_x": 1133.8148148148125,
-    "offset_y": 213.3185185185181
+    "scale": 1.0,
+    "offset_x": 1085.0,
+    "offset_y": 943.0
   }
 }
