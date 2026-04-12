@@ -508,6 +508,25 @@ class NodeFormWidget(QFrame):
             total += self._form.spacing() * (len(row_heights) - 1)
         return total
 
+    def commit_pending_edits(self) -> None:
+        for binding in self._bindings.values():
+            widget = binding.widget
+            if isinstance(widget, NumericLineEdit):
+                widget._emit_commit()
+                continue
+            if isinstance(widget, CommitLineEdit):
+                widget._emit_commit()
+                continue
+            if isinstance(widget, CommitPlainTextEdit):
+                widget.committed.emit(widget.toPlainText())
+                continue
+            if isinstance(widget, CommitComboBox):
+                widget.committed.emit(widget.currentData())
+                continue
+            if isinstance(widget, ColorFieldWidget):
+                widget.committed.emit(widget.edit.text().strip())
+                continue
+
     def _build_editor(self, field: FieldSchema) -> tuple[QWidget, Callable[[Any], None]]:
         if field.editor == "text":
             if field.multiline:

@@ -4,12 +4,13 @@ import tempfile
 import unittest
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 if sys.platform != "win32":
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import QPointF, Qt
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from l2d_config_editor.controller import EditorController
 from l2d_config_editor.logic import (
@@ -632,6 +633,71 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertTrue(window.controller.undo_stack.canUndo())
             window.controller.undo_stack.undo()
             self.assertIsNone(window.controller.get_node(created))
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_save_commits_pending_line_edit_without_enter(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            node = window.controller.get_node(created)
+            window.controller.document.path = str(Path(temp_dir) / "pending_input_save.json")
+            window.controller.pathChanged.emit(window.controller.document.path)
+            draw_name_edit = window.inspector_form._bindings["draw_able_name"].widget
+            draw_name_edit.setText("TouchIdlePendingSave")
+
+            saved = window._save_current_file(silent=True)
+
+            self.assertIsNotNone(saved)
+            loaded = load_document(window.controller.schema, saved)
+            loaded_node = next(item for item in loaded.nodes if item.uuid == node.uuid)
+            self.assertEqual("TouchIdlePendingSave", loaded_node.fields["draw_able_name"])
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_close_prompts_to_save_dirty_document(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            window.controller.document.path = str(Path(temp_dir) / "close_prompt.json")
+            window.controller.pathChanged.emit(window.controller.document.path)
+            window._mark_saved_checkpoint(saved=True)
+            window.controller.update_field(initial.uuid, "memo", "changed_before_close", "simple")
+
+            def choose_save(box):
+                for button in box.buttons():
+                    if button.text() == "保存":
+                        box._forced_clicked_button = button
+                        break
+
+            with patch.object(QMessageBox, "exec", choose_save), patch.object(
+                QMessageBox, "clickedButton", lambda box: getattr(box, "_forced_clicked_button", None)
+            ), patch.object(window, "_save_current_file", wraps=window._save_current_file) as save_mock:
+                self.assertTrue(window._confirm_safe_to_close())
+                self.assertTrue(save_mock.called)
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_close_does_not_prompt_when_initial_meta_is_incomplete(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "tips", "draft only", "simple")
+
+            with patch.object(QMessageBox, "exec", side_effect=AssertionError("should not prompt")), patch.object(
+                window, "_save_current_file", wraps=window._save_current_file
+            ) as save_mock:
+                self.assertTrue(window._confirm_safe_to_close())
+                self.assertFalse(save_mock.called)
             window._mark_saved_checkpoint(saved=True)
         window.close()
 

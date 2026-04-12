@@ -1019,6 +1019,7 @@ class MainWindow(QMainWindow):
             self._select_file_in_list(relative_path)
 
     def _save_current_file(self, silent: bool = False, *, allow_incomplete: bool = False) -> str | None:
+        self._commit_pending_editor_changes()
         allowed, reason = self.controller.can_create_graph_content()
         if not allow_incomplete and not allowed:
             self._focus_initial_node_guidance(reason)
@@ -1051,6 +1052,13 @@ class MainWindow(QMainWindow):
             if relative_path:
                 self._select_file_in_list(relative_path)
         return saved
+
+    def _commit_pending_editor_changes(self) -> None:
+        if hasattr(self, "inspector_form"):
+            self.inspector_form.commit_pending_edits()
+        if hasattr(self, "canvas"):
+            for item in self.canvas.node_items.values():
+                item.form.commit_pending_edits()
 
     def _handle_file_list_item_clicked(self, item: QListWidgetItem) -> None:
         payload = item.data(Qt.ItemDataRole.UserRole)
@@ -1427,7 +1435,28 @@ class MainWindow(QMainWindow):
         return min_x + offset * self._paste_repeat_count, min_y
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        if self._ensure_safe_to_leave_document(None):
+        if self._confirm_safe_to_close():
             event.accept()
         else:
             event.ignore()
+
+    def _confirm_safe_to_close(self) -> bool:
+        self._auto_save_timer.stop()
+        self._commit_pending_editor_changes()
+        if not self._is_dirty():
+            return True
+        if not self.controller.document.state.is_meta_ready:
+            return True
+        box = QMessageBox(self)
+        box.setWindowTitle("保存当前更改")
+        box.setText("当前文档尚未保存，退出前是否先保存？")
+        save_button = box.addButton("保存", QMessageBox.ButtonRole.AcceptRole)
+        discard_button = box.addButton("不保存", QMessageBox.ButtonRole.DestructiveRole)
+        cancel_button = box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked == save_button:
+            return bool(self._save_current_file(silent=False, allow_incomplete=True))
+        if clicked == discard_button:
+            return True
+        return clicked != cancel_button
