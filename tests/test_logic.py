@@ -106,7 +106,7 @@ class LogicTests(unittest.TestCase):
         self.assertEqual(0, node.fields["offset_y"])
         self.assertEqual(1, node.fields["drag_direct"])
 
-    def test_validation_catches_duplicate_parameter_with_related_titles(self) -> None:
+    def test_validation_allows_duplicate_parameter_values(self) -> None:
         document = self.make_ready_document()
         first = create_node(self.schema, document, "TouchIdle")
         document.nodes.append(first)
@@ -116,8 +116,7 @@ class LogicTests(unittest.TestCase):
         document.nodes.append(second)
         issues = validate_document(self.schema, document)
         duplicate_issues = [issue for issue in issues if issue.field_keys == ["parameter"] and "重复" in issue.message]
-        self.assertTrue(duplicate_issues)
-        self.assertTrue(any(issue.related_titles for issue in duplicate_issues))
+        self.assertFalse(duplicate_issues)
 
     def test_validation_messages_no_longer_contain_question_marks(self) -> None:
         document = self.make_ready_document()
@@ -128,8 +127,52 @@ class LogicTests(unittest.TestCase):
         second.fields["action_trigger_active"] = "{enable = {},ignore = {'main_1'},idle = 99}"
         document.nodes.extend([first, second])
         issues = validate_document(self.schema, document)
-        self.assertTrue(issues)
-        self.assertTrue(all("?" not in issue.message for issue in issues))
+        self.assertFalse(issues)
+
+    def test_numeric_linkage_disabled_skips_generated_defaults(self) -> None:
+        document = self.make_ready_document()
+        document.editor_settings.numeric_linkage_enabled = False
+        node = create_node(self.schema, document, "TouchIdle")
+        self.assertEqual("", node.fields["draw_able_name"])
+        self.assertEqual("", node.fields["parameter"])
+        self.assertEqual("", node.fields["action_trigger"])
+        self.assertEqual("", node.fields["action_trigger_active"])
+
+    def test_numeric_linkage_disabled_does_not_sync_simple_fields(self) -> None:
+        document = self.make_ready_document()
+        node = create_node(self.schema, document, "TouchDrag")
+        document.editor_settings.numeric_linkage_enabled = False
+        node.fields["parameter"] = "manual_parameter"
+        node.fields["action_trigger"] = "{type = 2 ,action = 'manual_action'}"
+        node.fields["action_trigger_active"] = "{enable = {},idle = 1}"
+        node.fields["target_idle"] = 9
+        apply_auto_rules(self.schema, document, node, source_mode="simple", changed_key="target_idle")
+        self.assertEqual("manual_parameter", node.fields["parameter"])
+        self.assertEqual("{type = 2 ,action = 'manual_action'}", node.fields["action_trigger"])
+        self.assertEqual("{enable = {},idle = 1}", node.fields["action_trigger_active"])
+
+    def test_parameter_trigger_defaults_to_value_mode(self) -> None:
+        document = self.make_ready_document()
+        node = create_node(self.schema, document, "ParameterTrigger")
+        self.assertEqual("value", node.fields["result_type"])
+        self.assertEqual("", node.fields["action_trigger"])
+        self.assertEqual("", node.fields["action_trigger_active"])
+
+    def test_save_roundtrip_preserves_editor_settings_and_locked_nodes(self) -> None:
+        document = self.make_ready_document()
+        document.editor_settings.numeric_linkage_enabled = False
+        document.editor_settings.trash_enabled = False
+        node = create_node(self.schema, document, "TouchIdle")
+        node.locked = True
+        document.nodes.append(node)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "settings_roundtrip.json"
+            save_document(self.schema, document, path)
+            loaded = load_document(self.schema, path)
+        loaded_node = next(item for item in loaded.nodes if item.uuid == node.uuid)
+        self.assertFalse(loaded.editor_settings.numeric_linkage_enabled)
+        self.assertFalse(loaded.editor_settings.trash_enabled)
+        self.assertTrue(loaded_node.locked)
 
     def test_validation_catches_invalid_parts_data(self) -> None:
         document = self.make_ready_document()
@@ -391,6 +434,39 @@ class LogicTests(unittest.TestCase):
         self.assertEqual(1, len(loaded.trash_bin))
         self.assertEqual("TouchIdle", loaded.trash_bin[0].node_type)
 
+    def test_disabling_trash_clears_bin_and_reuses_slots(self) -> None:
+        controller = EditorController()
+        initial = next(node for node in controller.document.nodes if node.type == "Initial")
+        controller.update_field(initial.uuid, "author", "asahi", "simple")
+        controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+        controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+        controller.update_field(initial.uuid, "CharName", "??", "simple")
+        first_uuid = controller.create_node("TouchIdle", (100, 100))
+        controller.remove_nodes([first_uuid])
+        self.assertEqual(1, len(controller.document.trash_bin))
+        controller.set_trash_enabled(False)
+        self.assertFalse(controller.document.editor_settings.trash_enabled)
+        self.assertEqual([], controller.document.trash_bin)
+        second_uuid = controller.create_node("TouchIdle", (120, 120))
+        second = controller.get_node(second_uuid)
+        self.assertEqual(1, second.type_slot)
+
+    def test_locked_node_rejects_field_updates_and_moves(self) -> None:
+        controller = EditorController()
+        initial = next(node for node in controller.document.nodes if node.type == "Initial")
+        controller.update_field(initial.uuid, "author", "asahi", "simple")
+        controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+        controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+        controller.update_field(initial.uuid, "CharName", "??", "simple")
+        node_uuid = controller.create_node("TouchIdle", (100, 100))
+        node = controller.get_node(node_uuid)
+        controller.set_node_locked(node_uuid, True)
+        controller.update_field(node_uuid, "tips", "should_not_change", "simple")
+        controller.move_node(node_uuid, (100.0, 100.0), (220.0, 220.0))
+        self.assertTrue(node.locked)
+        self.assertNotEqual("should_not_change", node.fields.get("tips"))
+        self.assertEqual({"x": 100.0, "y": 100.0}, node.ui_position)
+
     def test_manual_mode_paste_preserves_explicit_sequence_values(self) -> None:
         controller = EditorController()
         initial = next(node for node in controller.document.nodes if node.type == "Initial")
@@ -633,6 +709,27 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertTrue(window.controller.undo_stack.canUndo())
             window.controller.undo_stack.undo()
             self.assertIsNone(window.controller.get_node(created))
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_auto_save_waits_until_canvas_not_busy(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            window.controller.document.path = str(Path(temp_dir) / "busy_autosave.json")
+            window.controller.pathChanged.emit(window.controller.document.path)
+            window._mark_saved_checkpoint(saved=True)
+            window.controller.update_field(initial.uuid, "memo", "changed", "simple")
+            window.canvas._set_interaction_busy("drag", True)
+            window._run_auto_save()
+            self.assertFalse(Path(window.controller.document.path).exists())
+            window.canvas._set_interaction_busy("drag", False)
+            window._run_auto_save()
+            self.assertTrue(Path(window.controller.document.path).exists())
             window._mark_saved_checkpoint(saved=True)
         window.close()
 

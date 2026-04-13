@@ -177,6 +177,17 @@ class NodeItem(QGraphicsObject):
         size = 18 if self.node.type == "Comment" else 12
         return QRectF(self._rect.width() - size - 6, self._rect.height() - size - 6, size, size)
 
+    def lock_rect(self) -> QRectF:
+        return QRectF(self._rect.width() - 34.0, 10.0, 18.0, 18.0)
+
+    def _canvas_view(self) -> "NodeCanvasView | None":
+        if not self.scene():
+            return None
+        for view in self.scene().views():
+            if isinstance(view, NodeCanvasView):
+                return view
+        return None
+
     def pin_hit(self, scene_pos: QPointF) -> str | None:
         local = self.mapFromScene(scene_pos)
         input_hit = self._pin_rect("input", self._pin_radius + self.PIN_HIT_PADDING)
@@ -191,6 +202,7 @@ class NodeItem(QGraphicsObject):
         self.prepareGeometryChange()
         self.node = node
         definition = self.schema.nodes[node.type]
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, not node.locked)
         self.form.set_node(
             node,
             self.controller.preferences.global_mode,
@@ -317,6 +329,16 @@ class NodeItem(QGraphicsObject):
         painter.setBrush(accent_bar)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawRoundedRect(QRectF(12, 8, max(52.0, self._rect.width() - 24), 4), 2, 2)
+        lock_fill = QColor("#20242c" if self.node.locked else "#14181f")
+        painter.setBrush(lock_fill)
+        painter.setPen(QPen(QColor("#d4d9e6" if self.node.locked else "#758098"), 1.0))
+        painter.drawRoundedRect(self.lock_rect(), 4, 4)
+        shackle = QPainterPath()
+        shackle.moveTo(self.lock_rect().left() + 5.5, self.lock_rect().top() + 8.0)
+        shackle.arcTo(self.lock_rect().left() + 4.0, self.lock_rect().top() + 3.0, 10.0, 10.0, 180.0, -180.0)
+        painter.drawPath(shackle)
+        body_rect = QRectF(self.lock_rect().left() + 4.5, self.lock_rect().top() + 8.5, 9.0, 6.5)
+        painter.drawRoundedRect(body_rect, 2, 2)
         content_rect = QRectF(
             self.proxy.pos().x() - 2,
             self.proxy.pos().y() - 2,
@@ -371,14 +393,28 @@ class NodeItem(QGraphicsObject):
             painter.drawRect(self.resize_handle_rect())
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        if self.lock_rect().contains(event.pos()):
+            self.controller.set_node_locked(self.node.uuid, not self.node.locked)
+            event.accept()
+            return
         if self.schema.nodes[self.node.type].resizable and self.resize_handle_rect().contains(event.pos()):
+            if self.node.locked:
+                event.accept()
+                return
             self._resizing = True
             self._resize_start = event.scenePos()
             self._resize_initial = (self._rect.width(), self._rect.height())
+            view = self._canvas_view()
+            if view:
+                view._set_interaction_busy("resize", True)
             event.accept()
             return
         self._drag_start_pos = self.pos()
-        self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        if not self.node.locked:
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            view = self._canvas_view()
+            if view:
+                view._set_interaction_busy("drag", True)
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -395,11 +431,18 @@ class NodeItem(QGraphicsObject):
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if self._resizing:
             self._resizing = False
+            view = self._canvas_view()
+            if view:
+                view._set_interaction_busy("resize", False)
             self.controller.nodeUpdated.emit(self.node.uuid)
             event.accept()
             return
         super().mouseReleaseEvent(event)
-        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        if not self.node.locked:
+            view = self._canvas_view()
+            if view:
+                view._set_interaction_busy("drag", False)
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
         current = self.pos()
         old_pos = (self._drag_start_pos.x(), self._drag_start_pos.y())
         new_pos = (current.x(), current.y())
@@ -411,10 +454,14 @@ class NodeItem(QGraphicsObject):
         return super().itemChange(change, value)
 
     def hoverMoveEvent(self, event: QGraphicsSceneHoverEvent) -> None:
-        if self.schema.nodes[self.node.type].resizable and self.resize_handle_rect().contains(event.pos()):
+        if self.lock_rect().contains(event.pos()):
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+        elif self.schema.nodes[self.node.type].resizable and self.resize_handle_rect().contains(event.pos()):
             self.setCursor(Qt.CursorShape.SizeFDiagCursor)
         elif self.pin_hit(event.scenePos()):
             self.setCursor(Qt.CursorShape.CrossCursor)
+        elif self.node.locked:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
         else:
             self.setCursor(Qt.CursorShape.OpenHandCursor)
         super().hoverMoveEvent(event)
@@ -472,6 +519,7 @@ class NodeItem(QGraphicsObject):
 
 class NodeCanvasView(QGraphicsView):
     selectionSummaryChanged = pyqtSignal(object, object)
+    interactionBusyChanged = pyqtSignal(bool)
 
     def __init__(self, schema: EditorSchema, controller, parent=None) -> None:
         super().__init__(parent)
@@ -488,6 +536,8 @@ class NodeCanvasView(QGraphicsView):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.node_items: dict[str, NodeItem] = {}
         self.connection_items: dict[tuple[str, str], ConnectionItem] = {}
+        self.zoom_wheel_modifier = "ctrl"
+        self.horizontal_wheel_modifier = "alt_shift"
         self._warnings_by_node: dict[str, list[str]] = {}
         self._connecting_from: str | None = None
         self._connecting_moved = False
@@ -511,6 +561,10 @@ class NodeCanvasView(QGraphicsView):
         self._focus_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
         self._focus_animation.valueChanged.connect(self._advance_focus_animation)
         self._focus_animation.finished.connect(self._finish_focus_animation)
+        self._interaction_flags: set[str] = set()
+        self._wheel_busy_timer = QTimer(self)
+        self._wheel_busy_timer.setSingleShot(True)
+        self._wheel_busy_timer.timeout.connect(lambda: self._set_interaction_busy("wheel", False))
         self.scene_ref.selectionChanged.connect(self._on_scene_selection_changed)
         controller.documentLoaded.connect(self.rebuild_scene)
         controller.nodeAdded.connect(self._add_or_update_node_item)
@@ -541,6 +595,33 @@ class NodeCanvasView(QGraphicsView):
         self.centerOn(self.controller.document.canvas_view.offset_x, self.controller.document.canvas_view.offset_y)
         self._refresh_hint_overlay()
 
+    def _set_interaction_busy(self, flag: str, busy: bool) -> None:
+        before = bool(self._interaction_flags)
+        if busy:
+            self._interaction_flags.add(flag)
+        else:
+            self._interaction_flags.discard(flag)
+        after = bool(self._interaction_flags)
+        if before != after:
+            self.interactionBusyChanged.emit(after)
+
+    def is_busy(self) -> bool:
+        return bool(self._interaction_flags)
+
+    @staticmethod
+    def _matches_wheel_modifier(config: str, modifiers: Qt.KeyboardModifier) -> bool:
+        if config == "none":
+            return modifiers == Qt.KeyboardModifier.NoModifier
+        if config == "ctrl":
+            return bool(modifiers & Qt.KeyboardModifier.ControlModifier)
+        if config == "alt":
+            return bool(modifiers & Qt.KeyboardModifier.AltModifier)
+        if config == "shift":
+            return bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+        if config == "alt_shift":
+            return bool(modifiers & (Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.ShiftModifier))
+        return False
+
     def selected_node_uuids(self) -> list[str]:
         return [item.node.uuid for item in self.scene_ref.selectedItems() if isinstance(item, NodeItem)]
 
@@ -567,6 +648,7 @@ class NodeCanvasView(QGraphicsView):
         if not item:
             return
         self._focus_animation.stop()
+        self._set_interaction_busy("focus", True)
         current_scale = max(0.001, float(self.transform().m11()))
         self._focus_start_scale = current_scale
         self._focus_end_scale = max(current_scale, float(target_scale)) if target_scale is not None else current_scale
@@ -582,12 +664,15 @@ class NodeCanvasView(QGraphicsView):
         return point.x(), point.y()
 
     def reset_view_layout(self) -> None:
+        self._focus_animation.stop()
+        self._set_interaction_busy("focus", False)
         self.resetTransform()
         target_rect: QRectF | None = None
         for item in self.node_items.values():
             item_rect = item.mapRectToScene(item.boundingRect())
             target_rect = item_rect if target_rect is None else target_rect.united(item_rect)
         if target_rect is not None and target_rect.isValid():
+            self.scale(1.0, 1.0)
             self.centerOn(target_rect.center())
         else:
             self.centerOn(0.0, 0.0)
@@ -595,21 +680,35 @@ class NodeCanvasView(QGraphicsView):
         self._store_canvas_view()
 
     def wheelEvent(self, event: QMouseEvent) -> None:
-        factor = 1.1 if event.angleDelta().y() > 0 else 1 / 1.1
-        current_scale = max(0.001, float(self.transform().m11()))
-        target_scale = current_scale * factor
-        if target_scale < 0.03 or target_scale > 8.0:
+        delta = event.angleDelta().y()
+        if not delta:
             event.accept()
             return
-        self.scale(factor, factor)
-        self._refresh_scale_sensitive_nodes()
-        self._store_canvas_view()
+        self._set_interaction_busy("wheel", True)
+        self._wheel_busy_timer.start(180)
+        modifiers = event.modifiers()
+        if self._matches_wheel_modifier(self.zoom_wheel_modifier, modifiers):
+            factor = 1.1 if delta > 0 else 1 / 1.1
+            current_scale = max(0.001, float(self.transform().m11()))
+            target_scale = current_scale * factor
+            if 0.03 <= target_scale <= 8.0:
+                self.scale(factor, factor)
+                self._refresh_scale_sensitive_nodes()
+                self._store_canvas_view()
+        else:
+            step = 60 if delta > 0 else -60
+            if self._matches_wheel_modifier(self.horizontal_wheel_modifier, modifiers):
+                self.horizontalScrollBar().setValue(int(self.horizontalScrollBar().value() - step))
+            else:
+                self.verticalScrollBar().setValue(int(self.verticalScrollBar().value() - step))
+            self._store_canvas_view()
         event.accept()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.MiddleButton:
             self._panning = True
             self._pan_start = event.position()
+            self._set_interaction_busy("pan", True)
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
             return
@@ -647,6 +746,7 @@ class NodeCanvasView(QGraphicsView):
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.MiddleButton and self._panning:
             self._panning = False
+            self._set_interaction_busy("pan", False)
             self.setCursor(Qt.CursorShape.ArrowCursor)
             event.accept()
             return
@@ -811,6 +911,7 @@ class NodeCanvasView(QGraphicsView):
 
     def _finish_focus_animation(self) -> None:
         self._apply_view_state(self._focus_end_scale, self._focus_end_center)
+        self._set_interaction_busy("focus", False)
         self._store_canvas_view()
         if self._focus_target_uuid:
             self.flash_node(self._focus_target_uuid, emphasize=self._focus_emphasize)
@@ -829,9 +930,12 @@ class NodeCanvasView(QGraphicsView):
         if not allowed:
             self.controller._emit_meta_blocked(reason)
             return
+        self._focus_animation.stop()
+        self._set_interaction_busy("focus", False)
         self._connecting_from = node_item.node.uuid
         self._connecting_moved = False
         self._connecting_start_scene = node_item.output_pin_scene_pos()
+        self._set_interaction_busy("connect", True)
         self._update_temp_connection(self._connecting_start_scene)
         self._temp_path.show()
 
@@ -850,6 +954,7 @@ class NodeCanvasView(QGraphicsView):
     def cancel_connection_preview(self) -> None:
         self._connecting_from = None
         self._connecting_moved = False
+        self._set_interaction_busy("connect", False)
         self._temp_path.hide()
         self._temp_path.setPath(QPainterPath())
 

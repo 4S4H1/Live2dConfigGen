@@ -17,6 +17,7 @@ from .models import (
     ConnectionRecord,
     CsvPreviewRow,
     DocumentModel,
+    EditorSettings,
     MetaRecord,
     NodeRecord,
     SearchHit,
@@ -215,7 +216,7 @@ def _classify_action_trigger_active(value: Any) -> str:
 
 
 def _refresh_trigger_interface_fields(node: NodeRecord) -> None:
-    if node.type not in {"TouchIdle", "TouchDrag"}:
+    if node.type not in {"TouchIdle", "TouchDrag", "ParameterTrigger"}:
         return
     action_raw = str(node.fields.get("action_trigger", "") or "").strip()
     active_raw = str(node.fields.get("action_trigger_active", "") or "").strip()
@@ -231,7 +232,7 @@ def normalized_target_idle(node: NodeRecord) -> int:
     raw_target_idle = _target_idle_from_raw(node.fields.get("action_trigger_active"))
     if raw_target_idle is not None:
         return raw_target_idle
-    if node.type == "TouchDrag":
+    if node.type in {"TouchDrag", "ParameterTrigger"}:
         action_target_idle = _suffix_int(_action_name_from_raw(node.fields.get("action_trigger")))
         if action_target_idle is not None:
             return action_target_idle
@@ -266,11 +267,12 @@ def _occupied_type_slots(document: DocumentModel, node_type: str, *, exclude_uui
         for node in document.nodes
         if node.uuid != exclude_uuid and node.type == node_type and isinstance(node.type_slot, int) and node.type_slot > 0
     }
-    occupied.update(
-        int(entry.type_slot)
-        for entry in document.trash_bin
-        if entry.node_type == node_type and isinstance(entry.type_slot, int) and entry.type_slot > 0
-    )
+    if document.editor_settings.trash_enabled:
+        occupied.update(
+            int(entry.type_slot)
+            for entry in document.trash_bin
+            if entry.node_type == node_type and isinstance(entry.type_slot, int) and entry.type_slot > 0
+        )
     return occupied
 
 
@@ -280,11 +282,12 @@ def _occupied_export_slots(document: DocumentModel, *, exclude_uuid: str | None 
         for node in document.nodes
         if node.uuid != exclude_uuid and isinstance(node.export_slot, int) and node.export_slot > 0
     }
-    occupied.update(
-        int(entry.export_slot)
-        for entry in document.trash_bin
-        if isinstance(entry.export_slot, int) and entry.export_slot > 0
-    )
+    if document.editor_settings.trash_enabled:
+        occupied.update(
+            int(entry.export_slot)
+            for entry in document.trash_bin
+            if isinstance(entry.export_slot, int) and entry.export_slot > 0
+        )
     return occupied
 
 
@@ -354,6 +357,14 @@ def build_csv_export_filename(prefix: str = "ship_l2d_export") -> str:
     return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
 
+def numeric_linkage_enabled(document: DocumentModel) -> bool:
+    return bool(document.editor_settings.numeric_linkage_enabled)
+
+
+def _is_touchdrag_value_like(node: NodeRecord) -> bool:
+    return node.type == "ParameterTrigger" or (node.type == "TouchDrag" and node.fields.get("result_type") == "value")
+
+
 def display_value_for_field(schema: EditorSchema, node: NodeRecord, key: str, raw_value: Any | None = None) -> Any:
     del schema
     value = node.fields.get(key) if raw_value is None else raw_value
@@ -408,7 +419,16 @@ def _infer_expected_actions(schema: EditorSchema, node: NodeRecord) -> tuple[str
     return _animated_action(schema, node_schema, target_idle)
 
 
-def infer_manual_fields(schema: EditorSchema, node: NodeRecord) -> None:
+def _unlinked_sequence_defaults(node: NodeRecord) -> None:
+    node.fields["draw_able_name"] = ""
+    node.fields["target_idle"] = 0
+    node.fields["parameter"] = ""
+    node.fields["action_trigger"] = ""
+    node.fields["action_trigger_active"] = ""
+    _refresh_trigger_interface_fields(node)
+
+
+def infer_manual_fields(schema: EditorSchema, node: NodeRecord, document: DocumentModel | None = None) -> None:
     if node.type not in function_node_types(schema):
         return
     node_schema = _node_schema(schema, node.type)
@@ -419,8 +439,12 @@ def infer_manual_fields(schema: EditorSchema, node: NodeRecord) -> None:
         node.manual_fields.add("parameter")
     else:
         node.manual_fields.discard("parameter")
-    if node.type == "TouchDrag" and node.fields.get("result_type") == "value":
+    if _is_touchdrag_value_like(node):
         node.manual_fields.discard("action_trigger")
+        if document is not None and numeric_linkage_enabled(document):
+            node.fields["action_trigger"] = ""
+            node.fields["action_trigger_active"] = ""
+            node.fields["target_idle"] = 0
         _refresh_trigger_interface_fields(node)
         return
     expected_action, expected_active = _infer_expected_actions(schema, node)
@@ -428,12 +452,16 @@ def infer_manual_fields(schema: EditorSchema, node: NodeRecord) -> None:
         node.manual_fields.add("action_trigger")
     else:
         node.manual_fields.discard("action_trigger")
-    node.fields["action_trigger_active"] = expected_active
+    if document is not None and numeric_linkage_enabled(document):
+        node.fields["action_trigger_active"] = expected_active
     _refresh_trigger_interface_fields(node)
 
 
-def apply_sequence_defaults(schema: EditorSchema, node: NodeRecord) -> None:
+def apply_sequence_defaults(schema: EditorSchema, document: DocumentModel, node: NodeRecord) -> None:
     if node.type not in function_node_types(schema):
+        return
+    if not numeric_linkage_enabled(document):
+        _unlinked_sequence_defaults(node)
         return
     node_schema = _node_schema(schema, node.type)
     sequence = node.type_slot or node.sequence_no or 1
@@ -450,7 +478,7 @@ def apply_sequence_defaults(schema: EditorSchema, node: NodeRecord) -> None:
 
 def _preserve_function_fields_from_base(schema: EditorSchema, document: DocumentModel, node: NodeRecord, base_node: NodeRecord) -> None:
     node.manual_fields = set(base_node.manual_fields)
-    infer_manual_fields(schema, node)
+    infer_manual_fields(schema, node, document)
     apply_auto_rules(schema, document, node, source_mode="advanced", force_generated=False)
 
 
@@ -495,7 +523,6 @@ def apply_auto_rules(
     changed_key: str | None = None,
     force_generated: bool = False,
 ) -> None:
-    del document
     if node.type == "Initial":
         return
     if changed_key in {"target_idle", "action_trigger_active"} and source_mode == "simple":
@@ -508,10 +535,7 @@ def apply_auto_rules(
         return
     target_idle = _coerce_int(node.fields.get("target_idle"), normalized_target_idle(node))
     node.fields["target_idle"] = target_idle
-    node_schema = _node_schema(schema, node.type)
-    if force_generated or "parameter" not in node.manual_fields:
-        node.fields["parameter"] = _expected_parameter(node_schema, target_idle)
-    if node.type == "TouchDrag" and node.fields.get("result_type") == "value":
+    if _is_touchdrag_value_like(node):
         if force_generated or source_mode == "simple":
             node.fields["action_trigger"] = ""
             node.fields["action_trigger_active"] = ""
@@ -519,6 +543,12 @@ def apply_auto_rules(
         node.manual_fields.discard("action_trigger")
         _refresh_trigger_interface_fields(node)
         return
+    if not numeric_linkage_enabled(document):
+        _refresh_trigger_interface_fields(node)
+        return
+    node_schema = _node_schema(schema, node.type)
+    if force_generated or "parameter" not in node.manual_fields:
+        node.fields["parameter"] = _expected_parameter(node_schema, target_idle)
     expected_action, expected_active = _infer_expected_actions(schema, node)
     if force_generated or "action_trigger" not in node.manual_fields:
         node.fields["action_trigger"] = expected_action
@@ -555,9 +585,18 @@ def create_node(
         elif base_node is None and document.interaction_creation_mode == "manual":
             _manual_sequence_defaults(schema, node)
         else:
-            apply_sequence_defaults(schema, node)
+            apply_sequence_defaults(schema, document, node)
+        if not numeric_linkage_enabled(document) and base_node is None:
+            _unlinked_sequence_defaults(node)
     else:
         apply_auto_rules(schema, document, node, force_generated=False)
+    if node.type == "ParameterTrigger":
+        node.fields["result_type"] = "value"
+        node.fields["action_trigger"] = ""
+        node.fields["action_trigger_active"] = ""
+        node.fields["target_idle"] = 0
+        node.manual_fields.discard("action_trigger")
+        _refresh_trigger_interface_fields(node)
     return node
 
 
@@ -668,7 +707,7 @@ def make_trash_entry(schema: EditorSchema, node: NodeRecord) -> TrashEntry:
 
 def _export_node_fields(node: NodeRecord) -> dict[str, Any]:
     hidden_fields = set(HIDDEN_NODE_FIELDS)
-    if node.type == "TouchDrag":
+    if node.type in {"TouchDrag", "ParameterTrigger"}:
         hidden_fields.add("action_trigger_active")
     return {key: value for key, value in node.fields.items() if key not in hidden_fields}
 
@@ -687,6 +726,7 @@ def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[
             payload["type_slot"] = node.type_slot
         if node.export_slot is not None:
             payload["export_slot"] = node.export_slot
+        payload["locked"] = node.locked
         if node.ui_size:
             payload["ui_size"] = node.ui_size
         payload.update(_export_node_fields(node))
@@ -695,6 +735,7 @@ def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[
         "editor_signature": EDITOR_DOCUMENT_SIGNATURE,
         "global_mode": document.global_mode,
         "interaction_creation_mode": document.interaction_creation_mode,
+        "editor_settings": asdict(document.editor_settings),
         "meta": asdict(document.meta),
         "nodes": serialized_nodes,
         "connections": [asdict(connection) for connection in document.connections],
@@ -716,10 +757,17 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
     meta_payload = payload.get("meta", {})
     if not isinstance(meta_payload, dict):
         meta_payload = {}
+    settings_payload = payload.get("editor_settings", {})
+    if not isinstance(settings_payload, dict):
+        settings_payload = {}
     meta_keys = set(MetaRecord.__dataclass_fields__.keys())
     document = DocumentModel(
         global_mode=str(payload.get("global_mode", "simple")),
         interaction_creation_mode=str(payload.get("interaction_creation_mode", "auto") or "auto"),
+        editor_settings=EditorSettings(
+            numeric_linkage_enabled=bool(settings_payload.get("numeric_linkage_enabled", True)),
+            trash_enabled=bool(settings_payload.get("trash_enabled", True)),
+        ),
         meta=MetaRecord(**{key: value for key, value in meta_payload.items() if key in meta_keys}),
         connections=[ConnectionRecord(**item) for item in payload.get("connections", [])],
         trash_bin=[TrashEntry(**item) for item in payload.get("trash_bin", [])],
@@ -728,7 +776,11 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
     )
     sequence_map: dict[str, int] = {}
     for raw in payload.get("nodes", []):
-        fields = {key: value for key, value in raw.items() if key not in {"uuid", "type", "ui_position", "ui_size", "mode_variant"}}
+        fields = {
+            key: value
+            for key, value in raw.items()
+            if key not in {"uuid", "type", "ui_position", "ui_size", "mode_variant", "locked"}
+        }
         node_type = raw["type"]
         if node_type == "Initial":
             fields.pop("defaultState", None)
@@ -746,8 +798,9 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
             sequence_no=sequence_map[node_type],
             type_slot=raw.get("type_slot"),
             export_slot=raw.get("export_slot"),
+            locked=bool(raw.get("locked", False)),
         )
-        infer_manual_fields(schema, node)
+        infer_manual_fields(schema, node, document)
         apply_auto_rules(schema, document, node, source_mode="advanced", force_generated=False)
         document.nodes.append(node)
     sync_initial_from_meta(schema, document)
@@ -904,13 +957,8 @@ def validate_document(schema: EditorSchema, document: DocumentModel) -> list[Val
     if len(initial_nodes) > 1:
         issues.extend(_issue_for_group(schema, "存在多个初始节点", [], initial_nodes))
 
-    parameter_map: dict[str, list[NodeRecord]] = {}
-    draw_map: dict[str, list[NodeRecord]] = {}
     for node in document.nodes:
         if node.type in function_node_types(schema):
-            parameter = str(node.fields.get("parameter", "")).strip()
-            if parameter:
-                parameter_map.setdefault(parameter, []).append(node)
             parts = normalize_parts_data(node.fields.get("parts_data", ""))
             if parts is None:
                 issues.append(
@@ -929,21 +977,6 @@ def validate_document(schema: EditorSchema, document: DocumentModel) -> list[Val
                         field_keys=["parts_data", "range"],
                     )
                 )
-        if node.type == "TouchIdle":
-            draw_name = str(node.fields.get("draw_able_name", "")).strip()
-            if draw_name:
-                draw_map.setdefault(draw_name, []).append(node)
-
-    for group in parameter_map.values():
-        if len(group) > 1:
-            issues.extend(_duplicate_field_issues(schema, group, "parameter"))
-
-    for group in draw_map.values():
-        if len(group) <= 1:
-            continue
-        baseline = (group[0].fields.get("action_trigger", ""), group[0].fields.get("action_trigger_active", ""))
-        if any((node.fields.get("action_trigger", ""), node.fields.get("action_trigger_active", "")) != baseline for node in group[1:]):
-            issues.extend(_draw_conflict_issues(schema, group))
     return issues
 
 
@@ -968,7 +1001,7 @@ def search_document(
     hits: list[SearchHit] = []
     for node in document.nodes:
         for key, value in node.fields.items():
-            if key in HIDDEN_NODE_FIELDS or (node.type == "TouchDrag" and key == "action_trigger_active"):
+            if key in HIDDEN_NODE_FIELDS or (node.type in {"TouchDrag", "ParameterTrigger"} and key == "action_trigger_active"):
                 continue
             display_value = display_value_for_field(schema, node, key, value)
             haystacks = [str(display_value)]

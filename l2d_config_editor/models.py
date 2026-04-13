@@ -38,6 +38,12 @@ class EditorPreferences:
 
 
 @dataclass
+class EditorSettings:
+    numeric_linkage_enabled: bool = True
+    trash_enabled: bool = True
+
+
+@dataclass
 class DocumentState:
     is_meta_ready: bool = False
     meta_missing_fields: list[str] = field(default_factory=list)
@@ -53,6 +59,7 @@ class NodeRecord:
     sequence_no: int | None = None
     type_slot: int | None = None
     export_slot: int | None = None
+    locked: bool = False
     manual_fields: set[str] = field(default_factory=set)
 
     def clone(self) -> "NodeRecord":
@@ -65,6 +72,7 @@ class NodeRecord:
             sequence_no=self.sequence_no,
             type_slot=self.type_slot,
             export_slot=self.export_slot,
+            locked=self.locked,
             manual_fields=set(self.manual_fields),
         )
 
@@ -83,6 +91,7 @@ class TrashEntry:
 @dataclass
 class DocumentModel:
     meta: MetaRecord = field(default_factory=MetaRecord)
+    editor_settings: EditorSettings = field(default_factory=EditorSettings)
     nodes: list[NodeRecord] = field(default_factory=list)
     connections: list[ConnectionRecord] = field(default_factory=list)
     trash_bin: list[TrashEntry] = field(default_factory=list)

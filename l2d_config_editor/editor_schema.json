@@ -1493,6 +1493,442 @@
         }
       ]
     },
+    "ParameterTrigger": {
+      "title": "参数专用节点",
+      "category": "function",
+      "copyable": true,
+      "quick_create": true,
+      "resizable": false,
+      "header_color": "#8e4db6",
+      "body_color": "#352345",
+      "accent_color": "#c792ea",
+      "auto_rules": {
+        "draw_template": "ParameterTrigger{sequence}",
+        "parameter_template": "touch_drag{target_idle}",
+        "action_name_template": "touch_idle{target_idle}",
+        "use_sequence_for_target_idle": true,
+        "supports_quick_create": true
+      },
+      "fields": [
+        {
+          "key": "tips",
+          "label": "备注",
+          "editor": "text",
+          "default": "",
+          "placeholder": "这个参数触发是做什么的",
+          "show_in_modes": [
+            "simple"
+          ]
+        },
+        {
+          "key": "desc",
+          "label": "说明",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "draw_able_name",
+          "label": "框",
+          "editor": "text",
+          "default": "",
+          "placeholder": "如 ParameterTrigger12，注意大小写",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "parameter",
+          "label": "参数",
+          "editor": "text",
+          "default": "",
+          "placeholder": "如 touch_drag1，注意大小写",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "range",
+          "label": "参数范围",
+          "editor": "range",
+          "default": "{0,1}",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "control_type",
+          "label": "交互类型",
+          "editor": "combo",
+          "default": "click",
+          "show_in_modes": [
+            "simple"
+          ],
+          "options": [
+            {
+              "label": "点击",
+              "value": "click"
+            },
+            {
+              "label": "拖拽",
+              "value": "drag"
+            }
+          ]
+        },
+        {
+          "key": "drag_ui_direction",
+          "label": "拖拽方向",
+          "editor": "combo",
+          "default": "",
+          "show_in_modes": [
+            "simple"
+          ],
+          "visibility": {
+            "field": "control_type",
+            "equals": "drag"
+          },
+          "options": [
+            {
+              "label": "无",
+              "value": ""
+            },
+            {
+              "label": "上",
+              "value": "up"
+            },
+            {
+              "label": "下",
+              "value": "down"
+            },
+            {
+              "label": "左",
+              "value": "left"
+            },
+            {
+              "label": "右",
+              "value": "right"
+            }
+          ]
+        },
+        {
+          "key": "target_value",
+          "label": "数值变化到",
+          "editor": "float",
+          "default": 1.0,
+          "show_in_modes": [
+            "simple"
+          ]
+        },
+        {
+          "key": "revert_enabled",
+          "label": "数值是否回弹",
+          "editor": "bool",
+          "default": 0,
+          "show_in_modes": [
+            "simple"
+          ]
+        },
+        {
+          "key": "parts_data",
+          "label": "数值吸附范围",
+          "editor": "text",
+          "default": "",
+          "placeholder": "非必填，如 0,1,2",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "id",
+          "label": "ID",
+          "editor": "int",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ],
+          "read_only": true
+        },
+        {
+          "key": "mode",
+          "label": "数值模式",
+          "editor": "combo",
+          "default": 1,
+          "show_in_modes": [
+            "advanced"
+          ],
+          "options": [
+            {
+              "label": "覆盖",
+              "value": 1
+            },
+            {
+              "label": "加法",
+              "value": 2
+            },
+            {
+              "label": "乘法",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "key": "start_value",
+          "label": "初始值",
+          "editor": "int",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "ignore_react",
+          "label": "屏蔽目光跟随",
+          "editor": "bool",
+          "default": 1,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "ignore_action",
+          "label": "非待机状态不可拖动",
+          "editor": "bool",
+          "default": 1,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "range_abs",
+          "label": "使用绝对值",
+          "editor": "bool",
+          "default": 1,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "drag_direct",
+          "label": "方向响应",
+          "editor": "combo",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ],
+          "options": [
+            {
+              "label": "0 不适用",
+              "value": 0
+            },
+            {
+              "label": "1 正向",
+              "value": 1
+            },
+            {
+              "label": "2 负向",
+              "value": 2
+            }
+          ]
+        },
+        {
+          "key": "react_pos_x",
+          "label": "眼神跟随X",
+          "editor": "nullable_int",
+          "default": null,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "react_pos_y",
+          "label": "眼神跟随Y",
+          "editor": "nullable_int",
+          "default": null,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "offset_circle",
+          "label": "圆形偏移",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "offset_x",
+          "label": "左右移动影响拖拽",
+          "editor": "int",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "offset_y",
+          "label": "上下移动影响拖拽",
+          "editor": "int",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "smooth",
+          "label": "开始拖拽响应系数",
+          "editor": "int",
+          "default": 100,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "revert_smooth",
+          "label": "回弹拖拽响应系数",
+          "editor": "int",
+          "default": 100,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "revert",
+          "label": "回弹延迟",
+          "editor": "int",
+          "default": -1,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "revert_action_index",
+          "label": "播放动作时数值归零",
+          "editor": "combo",
+          "default": "",
+          "show_in_modes": [
+            "advanced"
+          ],
+          "options": [
+            {
+              "label": "否",
+              "value": ""
+            },
+            {
+              "label": "是",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "key": "revert_idle_index",
+          "label": "切换待机时数值归零",
+          "editor": "combo",
+          "default": "",
+          "show_in_modes": [
+            "advanced"
+          ],
+          "options": [
+            {
+              "label": "否",
+              "value": ""
+            },
+            {
+              "label": "是",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "key": "save_parameter",
+          "label": "保存参数",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "gyro",
+          "label": "陀螺仪启用",
+          "editor": "bool",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "gyro_x",
+          "label": "陀螺仪X轴",
+          "editor": "int",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "gyro_y",
+          "label": "陀螺仪Y轴",
+          "editor": "int",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "gyro_z",
+          "label": "陀螺仪Z轴",
+          "editor": "int",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "limit_time",
+          "label": "触发间隔",
+          "editor": "float",
+          "default": 1.0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "listener_data",
+          "label": "监听配置",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "shop_action",
+          "label": "商店动作",
+          "editor": "bool",
+          "default": 0,
+          "show_in_modes": [
+            "advanced"
+          ]
+        },
+        {
+          "key": "relation_parameter",
+          "label": "参数联动",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "advanced"
+          ]
+        }
+      ]
+    },
     "Comment": {
       "title": "备注节点",
       "category": "comment",

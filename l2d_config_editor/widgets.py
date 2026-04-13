@@ -234,6 +234,7 @@ class CommentAppearanceDialog(QDialog):
 class EditorBinding:
     widget: QWidget
     setter: Callable[[Any], None]
+    read_only_setter: Callable[[bool], None]
 
 
 class ValidationIssueItem(QWidget):
@@ -396,6 +397,7 @@ class NodeFormWidget(QFrame):
         self._sync_header()
         for key, binding in self._bindings.items():
             binding.setter(self.node.fields.get(key))
+            binding.read_only_setter(bool(self.node.locked))
 
     def _clear_form(self) -> None:
         while self._form.rowCount():
@@ -409,12 +411,13 @@ class NodeFormWidget(QFrame):
             return
         definition = self.schema.nodes[self.node.type]
         self._title.setText(definition.title)
-        if self.node.type in ("TouchIdle", "TouchDrag"):
-            self._subtitle.setText(
-                f"ID {self.node.fields.get('id', '-')} | {self.node.fields.get('draw_able_name', '')}"
-            )
+        if self.node.type in ("TouchIdle", "TouchDrag", "ParameterTrigger"):
+            subtitle = f"ID {self.node.fields.get('id', '-')} | {self.node.fields.get('draw_able_name', '')}"
+            if self.node.locked:
+                subtitle = f"{subtitle} | 已锁定"
+            self._subtitle.setText(subtitle)
         else:
-            self._subtitle.setText("")
+            self._subtitle.setText("已锁定" if self.node.locked else "")
 
     def _rebuild(self) -> None:
         self._clear_form()
@@ -424,7 +427,7 @@ class NodeFormWidget(QFrame):
         definition = self.schema.nodes[self.node.type]
         self._sync_header()
         for field in self._visible_fields(definition.fields):
-            widget, setter = self._build_editor(field)
+            widget, setter, read_only_setter = self._build_editor(field)
             label = QLabel()
             highlighted_keys = {"draw_able_name", "parameter", "action_trigger", "action_trigger_active"}
             label_text = field.key if self.show_json_field_names else field.label
@@ -443,8 +446,9 @@ class NodeFormWidget(QFrame):
             widget.setProperty("fieldRole", role)
             label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
             self._form.addRow(label, widget)
-            self._bindings[field.key] = EditorBinding(widget=widget, setter=setter)
+            self._bindings[field.key] = EditorBinding(widget=widget, setter=setter, read_only_setter=read_only_setter)
             setter(self.node.fields.get(field.key, field.default))
+            read_only_setter(bool(self.node.locked))
         if self.node.type == "Comment":
             self._add_comment_appearance_row()
         self.adjustSize()
@@ -464,6 +468,7 @@ class NodeFormWidget(QFrame):
         button = QPushButton("外观设置")
         button.setProperty("accentButton", True)
         button.clicked.connect(self._show_comment_appearance_dialog)
+        button.setEnabled(not bool(self.node and self.node.locked))
         self._form.addRow(QLabel("外观"), button)
 
     @staticmethod
@@ -527,23 +532,30 @@ class NodeFormWidget(QFrame):
                 widget.committed.emit(widget.edit.text().strip())
                 continue
 
-    def _build_editor(self, field: FieldSchema) -> tuple[QWidget, Callable[[Any], None]]:
+    def _build_editor(self, field: FieldSchema) -> tuple[QWidget, Callable[[Any], None], Callable[[bool], None]]:
         if field.editor == "text":
             if field.multiline:
                 widget = CommitPlainTextEdit()
                 widget.setMinimumHeight(92 if not self.inline else 72)
                 widget.committed.connect(lambda value, key=field.key: self.fieldCommitted.emit(key, value))
-                if field.read_only:
-                    widget.setReadOnly(True)
-                return widget, lambda value, target=widget, key=field.key: self._set_plain_text(
-                    target, "" if value is None else str(self._display_value(key, value))
+                widget.setReadOnly(field.read_only)
+                return (
+                    widget,
+                    lambda value, target=widget, key=field.key: self._set_plain_text(
+                        target, "" if value is None else str(self._display_value(key, value))
+                    ),
+                    lambda locked, target=widget, base=field.read_only: target.setReadOnly(base or locked),
                 )
             widget = CommitLineEdit()
             widget.setPlaceholderText(field.placeholder)
             widget.committed.connect(lambda value, key=field.key: self.fieldCommitted.emit(key, value))
             widget.setReadOnly(field.read_only)
-            return widget, lambda value, target=widget, key=field.key: self._set_line_text(
-                target, "" if value is None else str(self._display_value(key, value))
+            return (
+                widget,
+                lambda value, target=widget, key=field.key: self._set_line_text(
+                    target, "" if value is None else str(self._display_value(key, value))
+                ),
+                lambda locked, target=widget, base=field.read_only: target.setReadOnly(base or locked),
             )
 
         if field.editor in {"int", "float", "nullable_int"}:
@@ -551,8 +563,12 @@ class NodeFormWidget(QFrame):
             widget.setPlaceholderText(field.placeholder)
             widget.setReadOnly(field.read_only)
             widget.committed.connect(lambda value, key=field.key: self.fieldCommitted.emit(key, value))
-            return widget, lambda value, target=widget, key=field.key: self._set_line_text(
-                target, "" if value is None else str(self._display_value(key, value))
+            return (
+                widget,
+                lambda value, target=widget, key=field.key: self._set_line_text(
+                    target, "" if value is None else str(self._display_value(key, value))
+                ),
+                lambda locked, target=widget, base=field.read_only: target.setReadOnly(base or locked),
             )
 
         if field.editor == "date":
@@ -563,13 +579,21 @@ class NodeFormWidget(QFrame):
             widget.dateChanged.connect(
                 lambda _, key=field.key, target=widget: self.fieldCommitted.emit(key, target.date().toString("yyyy-MM-dd"))
             )
-            return widget, lambda value, target=widget: self._set_date(target, value)
+            return (
+                widget,
+                lambda value, target=widget: self._set_date(target, value),
+                lambda locked, target=widget, base=field.read_only: target.setEnabled(not (base or locked)),
+            )
 
         if field.editor == "bool":
             widget = QCheckBox()
             widget.setEnabled(not field.read_only)
             widget.stateChanged.connect(lambda state, key=field.key: self.fieldCommitted.emit(key, 1 if state else 0))
-            return widget, lambda value, target=widget: self._set_checked(target, bool(int(value or 0)))
+            return (
+                widget,
+                lambda value, target=widget: self._set_checked(target, bool(int(value or 0))),
+                lambda locked, target=widget, base=field.read_only: target.setEnabled(not (base or locked)),
+            )
 
         if field.editor == "combo":
             widget = CommitComboBox()
@@ -577,21 +601,33 @@ class NodeFormWidget(QFrame):
                 widget.addItem(option.label, option.value)
             widget.setEnabled(not field.read_only)
             widget.committed.connect(lambda value, key=field.key: self.fieldCommitted.emit(key, value))
-            return widget, lambda value, target=widget: self._set_combo_value(target, value)
+            return (
+                widget,
+                lambda value, target=widget: self._set_combo_value(target, value),
+                lambda locked, target=widget, base=field.read_only: target.setEnabled(not (base or locked)),
+            )
 
         if field.editor == "range":
             widget = CommitLineEdit()
             widget.setPlaceholderText(field.placeholder or "{0,1}")
             widget.setReadOnly(field.read_only)
             widget.committed.connect(lambda value, key=field.key: self.fieldCommitted.emit(key, value))
-            return widget, lambda value, target=widget: self._set_line_text(target, "" if value is None else str(value))
+            return (
+                widget,
+                lambda value, target=widget: self._set_line_text(target, "" if value is None else str(value)),
+                lambda locked, target=widget, base=field.read_only: target.setReadOnly(base or locked),
+            )
 
         if field.editor == "color":
             widget = ColorFieldWidget()
             widget.set_placeholder_text(field.placeholder or "#ffffff")
             widget.set_read_only(field.read_only)
             widget.committed.connect(lambda value, key=field.key: self.fieldCommitted.emit(key, value))
-            return widget, lambda value, target=widget: self._set_line_text(target.edit, "" if value is None else str(value))
+            return (
+                widget,
+                lambda value, target=widget: self._set_line_text(target.edit, "" if value is None else str(value)),
+                lambda locked, target=widget, base=field.read_only: target.set_read_only(base or locked),
+            )
 
         raise ValueError(f"Unsupported editor type: {field.editor}")
 

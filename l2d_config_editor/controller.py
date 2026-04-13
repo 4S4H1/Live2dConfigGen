@@ -16,7 +16,9 @@ from .commands import (
     MoveNodesCommand,
     RemoveConnectionCommand,
     RemoveNodesCommand,
+    UpdateEditorSettingsCommand,
     UpdateFieldCommand,
+    UpdateNodeLockCommand,
 )
 from .constants import CLIPBOARD_MIME
 from .logic import (
@@ -36,6 +38,7 @@ from .logic import (
     search_document,
     validate_document,
     document_to_csv_rows,
+    numeric_linkage_enabled,
 )
 from .models import ConnectionRecord, DocumentModel, EditorPreferences, NodeRecord
 from .schema import load_editor_schema
@@ -59,6 +62,7 @@ class EditorController(QObject):
     schemaChanged = pyqtSignal()
     trashBinChanged = pyqtSignal(object)
     metaActionBlocked = pyqtSignal(str)
+    editorSettingsChanged = pyqtSignal(object)
 
     def __init__(self, parent: QObject | None = None, schema_path: str | None = None) -> None:
         super().__init__(parent)
@@ -96,6 +100,49 @@ class EditorController(QObject):
             return
         self.document.interaction_creation_mode = normalized
         self.interactionCreationModeChanged.emit(normalized)
+
+    def set_numeric_linkage_enabled(self, enabled: bool) -> None:
+        current = bool(self.document.editor_settings.numeric_linkage_enabled)
+        enabled = bool(enabled)
+        if current == enabled:
+            return
+        old_settings = {
+            "numeric_linkage_enabled": self.document.editor_settings.numeric_linkage_enabled,
+            "trash_enabled": self.document.editor_settings.trash_enabled,
+        }
+        new_settings = dict(old_settings)
+        new_settings["numeric_linkage_enabled"] = enabled
+        self.undo_stack.push(UpdateEditorSettingsCommand(self, old_settings, new_settings, label="切换数值联动"))
+
+    def set_trash_enabled(self, enabled: bool) -> None:
+        current = bool(self.document.editor_settings.trash_enabled)
+        enabled = bool(enabled)
+        if current == enabled:
+            return
+        old_settings = {
+            "numeric_linkage_enabled": self.document.editor_settings.numeric_linkage_enabled,
+            "trash_enabled": self.document.editor_settings.trash_enabled,
+        }
+        new_settings = dict(old_settings)
+        new_settings["trash_enabled"] = enabled
+        old_trash_bin = [entry for entry in self.document.trash_bin]
+        new_trash_bin = old_trash_bin if enabled else []
+        self.undo_stack.push(
+            UpdateEditorSettingsCommand(
+                self,
+                old_settings,
+                new_settings,
+                old_trash_bin=old_trash_bin,
+                new_trash_bin=new_trash_bin,
+                label="切换回收站",
+            )
+        )
+
+    def set_node_locked(self, node_uuid: str, locked: bool) -> None:
+        node = self.get_node(node_uuid)
+        if not node or node.locked == bool(locked):
+            return
+        self.undo_stack.push(UpdateNodeLockCommand(self, node_uuid, node.locked, bool(locked)))
 
     def new_document(self) -> None:
         self.undo_stack.clear()
@@ -136,6 +183,7 @@ class EditorController(QObject):
         self.csvPreviewChanged.emit(document_to_csv_rows(self.schema, self.document))
         self.documentStateChanged.emit(self.document.state)
         self.trashBinChanged.emit(list(self.document.trash_bin))
+        self.editorSettingsChanged.emit(self.document.editor_settings)
 
     def get_node(self, node_uuid: str) -> NodeRecord | None:
         return next((node for node in self.document.nodes if node.uuid == node_uuid), None)
@@ -149,6 +197,10 @@ class EditorController(QObject):
         if not node:
             return False
         return self.schema.nodes[node.type].copyable
+
+    def can_edit_node(self, node_uuid: str) -> bool:
+        node = self.get_node(node_uuid)
+        return bool(node and not node.locked)
 
     def can_create_graph_content(self) -> tuple[bool, str]:
         if self.document.state.is_meta_ready:
@@ -192,12 +244,15 @@ class EditorController(QObject):
             for connection in self.document.connections
             if connection.from_uuid in node_uuid_set or connection.to_uuid in node_uuid_set
         ]
-        trash_entries = [make_trash_entry(self.schema, node) for node in nodes]
+        trash_entries = [make_trash_entry(self.schema, node) for node in nodes] if self.document.editor_settings.trash_enabled else []
         self.undo_stack.push(RemoveNodesCommand(self, nodes, connections, trash_entries))
 
     def update_field(self, node_uuid: str, key: str, value: Any, source_mode: str | None = None) -> None:
         node = self.get_node(node_uuid)
         if not node:
+            return
+        if node.locked:
+            self.statusMessage.emit("当前节点已锁定")
             return
         normalized_value = normalize_field_input(self.schema, node, key, value)
         old = node.fields.get(key)
@@ -210,6 +265,9 @@ class EditorController(QObject):
     def move_node(self, node_uuid: str, old_pos: tuple[float, float], new_pos: tuple[float, float]) -> None:
         if old_pos == new_pos:
             return
+        node = self.get_node(node_uuid)
+        if not node or node.locked:
+            return
         self.undo_stack.push(MoveNodeCommand(self, node_uuid, old_pos, new_pos))
 
     def move_nodes(self, positions: dict[str, tuple[float, float]], label: str = "整理节点布局") -> None:
@@ -217,7 +275,7 @@ class EditorController(QObject):
         new_positions: dict[str, tuple[float, float]] = {}
         for node_uuid, new_pos in positions.items():
             node = self.get_node(node_uuid)
-            if not node:
+            if not node or node.locked:
                 continue
             old_pos = (float(node.ui_position["x"]), float(node.ui_position["y"]))
             normalized_new = (float(new_pos[0]), float(new_pos[1]))
@@ -308,13 +366,14 @@ class EditorController(QObject):
             template = NodeRecord(
                 uuid=new_uuid(),
                 type=item["type"],
-                fields={key: value for key, value in item.items() if key not in {"uuid", "type", "ui_position", "ui_size"}},
+                fields={key: value for key, value in item.items() if key not in {"uuid", "type", "ui_position", "ui_size", "locked"}},
                 ui_position={"x": 0.0, "y": 0.0},
                 ui_size=item.get("ui_size"),
+                locked=bool(item.get("locked", False)),
                 manual_fields=set(item.get("manual_fields", [])),
             )
             if not template.manual_fields:
-                infer_manual_fields(self.schema, template)
+                infer_manual_fields(self.schema, template, self.document)
             new_node = create_node(
                 self.schema,
                 self.document,
@@ -377,6 +436,7 @@ class EditorController(QObject):
             "uuid": node.uuid,
             "type": node.type,
             "ui_position": dict(node.ui_position),
+            "locked": node.locked,
         }
         if node.ui_size:
             payload["ui_size"] = dict(node.ui_size)
@@ -385,7 +445,7 @@ class EditorController(QObject):
         for key, value in node.fields.items():
             if key == "target_idle":
                 continue
-            if node.type == "TouchDrag" and key == "action_trigger_active":
+            if node.type in {"TouchDrag", "ParameterTrigger"} and key == "action_trigger_active":
                 continue
             if node.type != "Comment" and key == "tips":
                 continue
@@ -454,17 +514,38 @@ class EditorController(QObject):
         if not node:
             return
         node.fields[key] = value
-        if node.type == "TouchDrag" and key in {"action_trigger", "parameter"}:
+        if node.type in {"TouchDrag", "ParameterTrigger"} and key in {"action_trigger", "parameter"}:
             node.fields["action_trigger_active"] = ""
             if source_mode == "simple":
                 node.manual_fields.discard("parameter")
         if key in {"action_trigger_active", "action_trigger"} or (source_mode == "advanced" and key == "parameter"):
-            infer_manual_fields(self.schema, node)
-        if node.type == "TouchDrag" and key == "action_trigger" and source_mode == "simple":
+            infer_manual_fields(self.schema, node, self.document)
+        if node.type in {"TouchDrag", "ParameterTrigger"} and key == "action_trigger" and source_mode == "simple":
             node.manual_fields.discard("parameter")
         apply_auto_rules(self.schema, self.document, node, source_mode=source_mode, changed_key=key)
         reassign_function_ids(self.schema, self.document)
         self.nodeUpdated.emit(node_uuid)
+        self.refresh_derived()
+
+    def _set_node_locked(self, node_uuid: str, locked: bool) -> None:
+        node = self.get_node(node_uuid)
+        if not node:
+            return
+        node.locked = bool(locked)
+        self.nodeUpdated.emit(node_uuid)
+        self.refresh_derived()
+
+    def _set_editor_settings(self, settings: dict[str, Any], trash_bin) -> None:
+        previous_linkage = bool(self.document.editor_settings.numeric_linkage_enabled)
+        self.document.editor_settings.numeric_linkage_enabled = bool(settings.get("numeric_linkage_enabled", True))
+        self.document.editor_settings.trash_enabled = bool(settings.get("trash_enabled", True))
+        self.document.trash_bin = list(trash_bin)
+        for node in self.document.nodes:
+            if not previous_linkage and self.document.editor_settings.numeric_linkage_enabled:
+                node.manual_fields.discard("parameter")
+                node.manual_fields.discard("action_trigger")
+            infer_manual_fields(self.schema, node, self.document)
+            apply_auto_rules(self.schema, self.document, node, source_mode="advanced", force_generated=False)
         self.refresh_derived()
 
     def _move_node(self, node_uuid: str, position: tuple[float, float]) -> None:

@@ -10,11 +10,16 @@ from PyQt6.QtCore import QSettings, Qt, QTimer, QUrl
 from PyQt6.QtGui import QAction, QActionGroup, QCloseEvent, QDesktopServices, QGuiApplication, QKeySequence, QUndoStack
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
     QFrame,
+    QHeaderView,
     QHBoxLayout,
+    QInputDialog,
+    QKeySequenceEdit,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -38,7 +43,17 @@ from .canvas import NodeCanvasView
 from .constants import CLIPBOARD_MIME
 from .controller import EditorController
 from .logic import build_csv_export_filename, create_document, export_documents_to_csv, load_document
-from .widgets import NodeFormWidget, ValidationSummaryWidget
+from .widgets import (
+    ColorFieldWidget,
+    CommitComboBox,
+    CommitLineEdit,
+    CommitPlainTextEdit,
+    NodeFormWidget,
+    NumericLineEdit,
+    ValidationSummaryWidget,
+)
+
+HELP_PAGE_URL = "https://ooia5293gn.feishu.cn/wiki/YvmxwxAKSitp3WkfFz3cY74Jnvg"
 
 
 class CsvPreviewDialog(QDialog):
@@ -187,6 +202,160 @@ class ExportCsvDialog(QDialog):
             item.setHidden(bool(needle) and needle not in haystack)
 
 
+class NodeDirectoryDialog(QDialog):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("节点目录")
+        self.resize(560, 620)
+        layout = QVBoxLayout(self)
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("搜索节点")
+        self.search_edit.textChanged.connect(self._filter_items)
+        layout.addWidget(self.search_edit)
+
+        self.list_widget = QListWidget()
+        self.list_widget.itemClicked.connect(self.accept)
+        self.list_widget.itemActivated.connect(self.accept)
+        layout.addWidget(self.list_widget, 1)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        button_box.rejected.connect(self.reject)
+        button_box.accepted.connect(self.accept)
+        layout.addWidget(button_box)
+
+    def set_nodes(self, rows: list[tuple[str, str]]) -> None:
+        self.list_widget.clear()
+        for node_uuid, label in rows:
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, node_uuid)
+            self.list_widget.addItem(item)
+        self._filter_items()
+
+    def selected_node_uuid(self) -> str | None:
+        item = self.list_widget.currentItem()
+        value = item.data(Qt.ItemDataRole.UserRole) if item else None
+        return value if isinstance(value, str) and value else None
+
+    def _filter_items(self) -> None:
+        needle = self.search_edit.text().strip().lower()
+        for index in range(self.list_widget.count()):
+            item = self.list_widget.item(index)
+            item.setHidden(bool(needle) and needle not in item.text().lower())
+
+
+class ShortcutConfigDialog(QDialog):
+    WHEEL_OPTIONS = (
+        ("Ctrl", "ctrl"),
+        ("Alt", "alt"),
+        ("Shift", "shift"),
+        ("无修饰键", "none"),
+    )
+    HORIZONTAL_WHEEL_OPTIONS = (
+        ("Alt 或 Shift", "alt_shift"),
+        ("Alt", "alt"),
+        ("Shift", "shift"),
+        ("Ctrl", "ctrl"),
+        ("无修饰键", "none"),
+    )
+
+    def __init__(
+        self,
+        shortcuts: dict[str, tuple[str, QKeySequence]],
+        default_shortcuts: dict[str, QKeySequence],
+        wheel_settings: dict[str, str],
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("快捷键设置")
+        self.resize(760, 700)
+        self._shortcut_rows = shortcuts
+        self._default_shortcuts = default_shortcuts
+        layout = QVBoxLayout(self)
+
+        wheel_row = QHBoxLayout()
+        wheel_row.addWidget(QLabel("缩放滚轮"))
+        self.zoom_modifier_combo = QComboBox()
+        for label, value in self.WHEEL_OPTIONS:
+            self.zoom_modifier_combo.addItem(label, value)
+        wheel_row.addWidget(self.zoom_modifier_combo)
+        wheel_row.addWidget(QLabel("横向平移滚轮"))
+        self.horizontal_modifier_combo = QComboBox()
+        for label, value in self.HORIZONTAL_WHEEL_OPTIONS:
+            self.horizontal_modifier_combo.addItem(label, value)
+        wheel_row.addWidget(self.horizontal_modifier_combo)
+        wheel_row.addStretch(1)
+        layout.addLayout(wheel_row)
+
+        self.table = QTableWidget(len(shortcuts), 2)
+        self.table.setHorizontalHeaderLabels(["动作", "快捷键"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        layout.addWidget(self.table, 1)
+
+        self._editors: dict[str, QKeySequenceEdit] = {}
+        for row, (action_id, (label, sequence)) in enumerate(shortcuts.items()):
+            self.table.setItem(row, 0, QTableWidgetItem(label))
+            editor = QKeySequenceEdit(sequence)
+            self.table.setCellWidget(row, 1, editor)
+            self._editors[action_id] = editor
+
+        defaults_button = QPushButton("恢复默认")
+        defaults_button.clicked.connect(self.restore_defaults)
+        self.button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.button_box.accepted.connect(self._accept_with_validation)
+        self.button_box.rejected.connect(self.reject)
+        button_row = QHBoxLayout()
+        button_row.addWidget(defaults_button)
+        button_row.addStretch(1)
+        button_row.addWidget(self.button_box)
+        layout.addLayout(button_row)
+
+        self._set_combo_value(self.zoom_modifier_combo, wheel_settings.get("zoom_modifier", "ctrl"))
+        self._set_combo_value(self.horizontal_modifier_combo, wheel_settings.get("horizontal_modifier", "alt_shift"))
+
+    def restore_defaults(self) -> None:
+        for action_id, sequence in self._default_shortcuts.items():
+            self._editors[action_id].setKeySequence(sequence)
+        self._set_combo_value(self.zoom_modifier_combo, "ctrl")
+        self._set_combo_value(self.horizontal_modifier_combo, "alt_shift")
+
+    def configuration(self) -> tuple[dict[str, str], dict[str, str]]:
+        shortcuts = {
+            action_id: editor.keySequence().toString(QKeySequence.SequenceFormat.PortableText)
+            for action_id, editor in self._editors.items()
+        }
+        wheel = {
+            "zoom_modifier": str(self.zoom_modifier_combo.currentData()),
+            "horizontal_modifier": str(self.horizontal_modifier_combo.currentData()),
+        }
+        return shortcuts, wheel
+
+    def _accept_with_validation(self) -> None:
+        seen: dict[str, str] = {}
+        duplicates: list[str] = []
+        for action_id, editor in self._editors.items():
+            sequence = editor.keySequence().toString(QKeySequence.SequenceFormat.PortableText)
+            if not sequence:
+                continue
+            if sequence in seen:
+                duplicates.append(sequence)
+            else:
+                seen[sequence] = action_id
+        if duplicates:
+            QMessageBox.warning(self, "快捷键冲突", f"存在重复快捷键：{', '.join(sorted(set(duplicates)))}")
+            return
+        self.accept()
+
+    @staticmethod
+    def _set_combo_value(combo: QComboBox, value: str) -> None:
+        index = combo.findData(value)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+
+
 class MainWindow(QMainWindow):
     AUTOSAVE_DELAY_MS = 1800
     PASTE_GAP = 96.0
@@ -206,6 +375,7 @@ class MainWindow(QMainWindow):
         self.csv_dialog = CsvPreviewDialog(self.controller.schema, self)
         self.export_csv_dialog = ExportCsvDialog(self)
         self.trash_dialog: TrashDialog | None = None
+        self.node_directory_dialog: NodeDirectoryDialog | None = None
         self._auto_save_timer = QTimer(self)
         self._auto_save_timer.setSingleShot(True)
         self._auto_save_timer.timeout.connect(self._run_auto_save)
@@ -218,6 +388,7 @@ class MainWindow(QMainWindow):
         self._document_sessions: dict[str, dict[str, object]] = {}
         self._current_session_key: str | None = None
         self._connected_undo_stack: QUndoStack | None = None
+        self._refresh_file_list_after_save = False
 
         self.controller.pathChanged.connect(self._update_window_title)
         self.controller.selectionChanged.connect(self._update_inspector)
@@ -233,7 +404,10 @@ class MainWindow(QMainWindow):
         self.controller.schemaChanged.connect(self._handle_schema_changed)
         self.controller.trashBinChanged.connect(self._refresh_trash_dialog)
         self.controller.metaActionBlocked.connect(self._focus_initial_node_guidance)
+        self.controller.editorSettingsChanged.connect(self._handle_editor_settings_changed)
         self._set_active_undo_stack(self.controller.undo_stack)
+        self._shortcut_actions: dict[str, QAction] = {}
+        self._shortcut_defaults: dict[str, QKeySequence] = {}
 
         self.setWindowTitle("L2D交互图表编辑器")
         self.resize(1680, 980)
@@ -439,6 +613,7 @@ class MainWindow(QMainWindow):
 
         self.canvas = NodeCanvasView(self.controller.schema, self.controller)
         self.canvas.selectionSummaryChanged.connect(self._handle_selection_summary)
+        self.canvas.interactionBusyChanged.connect(self._handle_canvas_busy_changed)
         layout.addWidget(self.canvas, 1)
         return panel
 
@@ -499,6 +674,12 @@ class MainWindow(QMainWindow):
         sequence_rule_row.addWidget(self.manual_create_rule_radio)
         sequence_rule_row.addStretch(1)
         mode_block.addLayout(sequence_rule_row)
+        self.numeric_linkage_checkbox = QCheckBox("数值联动")
+        self.numeric_linkage_checkbox.toggled.connect(self._toggle_numeric_linkage)
+        self.trash_enabled_checkbox = QCheckBox("启用回收站")
+        self.trash_enabled_checkbox.toggled.connect(self._toggle_trash_enabled)
+        mode_block.addWidget(self.numeric_linkage_checkbox)
+        mode_block.addWidget(self.trash_enabled_checkbox)
         control_layout.addLayout(mode_block)
 
         actions_block = QVBoxLayout()
@@ -517,15 +698,26 @@ class MainWindow(QMainWindow):
         self.optimize_layout_button.clicked.connect(self._optimize_connection_layout)
         self.trash_button = QPushButton("\u5df2\u5220\u9664\u8282\u70b9")
         self.trash_button.clicked.connect(self._show_trash_dialog)
+        self.node_directory_button = QPushButton("节点目录")
+        self.node_directory_button.clicked.connect(self._show_node_directory_dialog)
         action_row.addWidget(self.restore_layout_button)
         action_row.addWidget(self.optimize_layout_button)
         action_row.addWidget(self.trash_button)
+        action_row.addWidget(self.node_directory_button)
         actions_block.addLayout(action_row)
 
         action_hint = QLabel("\u4f18\u5316\u8fde\u7ebf\u53ea\u4f1a\u6574\u7406\u5df2\u8fde\u7ebf\u8282\u70b9\u7684\u4f4d\u7f6e\uff0c\u4e0d\u4f1a\u6539\u52a8\u8282\u70b9\u5b57\u6bb5\u548c\u8fde\u7ebf\u5173\u7cfb\u3002")
         action_hint.setObjectName("sidebarHint")
         action_hint.setWordWrap(True)
         actions_block.addWidget(action_hint)
+        help_row = QHBoxLayout()
+        self.help_doc_button = QPushButton("使用说明")
+        self.help_doc_button.clicked.connect(self._open_help_page)
+        self.changelog_button = QPushButton("更新日志")
+        self.changelog_button.clicked.connect(self._open_changelog_page)
+        help_row.addWidget(self.help_doc_button)
+        help_row.addWidget(self.changelog_button)
+        actions_block.addLayout(help_row)
         control_layout.addLayout(actions_block)
 
         layout.addWidget(self.control_panel)
@@ -572,90 +764,102 @@ class MainWindow(QMainWindow):
         file_menu = self.menuBar().addMenu("文件")
         edit_menu = self.menuBar().addMenu("编辑")
         view_menu = self.menuBar().addMenu("视图")
+        help_menu = self.menuBar().addMenu("帮助")
 
         open_action = QAction("\u6253\u5f00", self)
-        open_action.setShortcut(QKeySequence.StandardKey.Open)
         open_action.triggered.connect(self._open_dialog)
         file_menu.addAction(open_action)
-        self.addAction(open_action)
+        self._register_shortcut_action("open", open_action, QKeySequence(QKeySequence.StandardKey.Open))
 
         self.save_action = QAction("\u4fdd\u5b58", self)
-        self.save_action.setShortcut(QKeySequence.StandardKey.Save)
         self.save_action.triggered.connect(self._save_current_file)
         file_menu.addAction(self.save_action)
-        self.addAction(self.save_action)
+        self._register_shortcut_action("save", self.save_action, QKeySequence(QKeySequence.StandardKey.Save))
 
         self.export_csv_action = QAction("\u5bfc\u51fa\u5230 CSV", self)
         self.export_csv_action.triggered.connect(self._show_export_csv_dialog)
         self.menuBar().addAction(self.export_csv_action)
+        self._register_shortcut_action("export_csv", self.export_csv_action, QKeySequence())
 
         reload_schema_action = QAction("\u91cd\u8f7d\u5b57\u6bb5\u914d\u7f6e", self)
         reload_schema_action.triggered.connect(self._reload_schema)
         file_menu.addAction(reload_schema_action)
+        self._register_shortcut_action("reload_schema", reload_schema_action, QKeySequence())
 
         self.undo_action = QAction("\u64a4\u9500", self)
-        self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
         self.undo_action.triggered.connect(self._trigger_undo)
         edit_menu.addAction(self.undo_action)
-        self.addAction(self.undo_action)
+        self._register_shortcut_action("undo", self.undo_action, QKeySequence(QKeySequence.StandardKey.Undo))
 
         self.redo_action = QAction("\u91cd\u505a", self)
-        self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
         self.redo_action.triggered.connect(self._trigger_redo)
         edit_menu.addAction(self.redo_action)
-        self.addAction(self.redo_action)
+        self._register_shortcut_action("redo", self.redo_action, QKeySequence(QKeySequence.StandardKey.Redo))
 
         copy_action = QAction("\u590d\u5236", self)
-        copy_action.setShortcut(QKeySequence.StandardKey.Copy)
         copy_action.triggered.connect(self._copy_selection)
         edit_menu.addAction(copy_action)
-        self.addAction(copy_action)
+        self._register_shortcut_action("copy", copy_action, QKeySequence(QKeySequence.StandardKey.Copy))
 
         paste_action = QAction("\u7c98\u8d34", self)
-        paste_action.setShortcut(QKeySequence.StandardKey.Paste)
         paste_action.triggered.connect(self._paste_selection)
         edit_menu.addAction(paste_action)
-        self.addAction(paste_action)
+        self._register_shortcut_action("paste", paste_action, QKeySequence(QKeySequence.StandardKey.Paste))
 
         duplicate_action = QAction("\u590d\u5236\u8282\u70b9", self)
-        duplicate_action.setShortcut(QKeySequence("Ctrl+D"))
         duplicate_action.triggered.connect(self._duplicate_selection)
         edit_menu.addAction(duplicate_action)
-        self.addAction(duplicate_action)
+        self._register_shortcut_action("duplicate", duplicate_action, QKeySequence("Ctrl+D"))
 
         delete_action = QAction("\u5220\u9664", self)
-        delete_action.setShortcut(QKeySequence.StandardKey.Delete)
         delete_action.triggered.connect(self._delete_selection)
         edit_menu.addAction(delete_action)
-        self.addAction(delete_action)
+        self._register_shortcut_action("delete", delete_action, QKeySequence(QKeySequence.StandardKey.Delete))
 
         search_action = QAction("\u641c\u7d22\u8282\u70b9", self)
-        search_action.setShortcut(QKeySequence.StandardKey.Find)
         search_action.triggered.connect(self._focus_search)
         view_menu.addAction(search_action)
-        self.addAction(search_action)
+        self._register_shortcut_action("search_nodes", search_action, QKeySequence(QKeySequence.StandardKey.Find))
 
         file_search_action = QAction("\u641c\u7d22\u914d\u7f6e\u6587\u4ef6", self)
-        file_search_action.setShortcut(QKeySequence("Ctrl+Shift+F"))
         file_search_action.triggered.connect(self._focus_file_search)
         view_menu.addAction(file_search_action)
-        self.addAction(file_search_action)
+        self._register_shortcut_action("search_files", file_search_action, QKeySequence("Ctrl+Shift+F"))
 
         layout_action = QAction("\u4f18\u5316\u8fde\u7ebf", self)
         layout_action.triggered.connect(self._optimize_connection_layout)
         view_menu.addAction(layout_action)
+        self._register_shortcut_action("optimize_layout", layout_action, QKeySequence("Ctrl+L"))
 
         restore_action = QAction("\u8fd8\u539f\u89c6\u89d2", self)
         restore_action.triggered.connect(self._restore_canvas_layout)
         view_menu.addAction(restore_action)
+        self._register_shortcut_action("restore_view", restore_action, QKeySequence("Shift+R"))
 
-        trash_action = QAction("\u5df2\u5220\u9664\u8282\u70b9", self)
-        trash_action.triggered.connect(self._show_trash_dialog)
-        view_menu.addAction(trash_action)
+        self.trash_action = QAction("\u5df2\u5220\u9664\u8282\u70b9", self)
+        self.trash_action.triggered.connect(self._show_trash_dialog)
+        view_menu.addAction(self.trash_action)
+        self._register_shortcut_action("trash_dialog", self.trash_action, QKeySequence())
 
         csv_action = QAction("CSV \u9884\u89c8", self)
         csv_action.triggered.connect(self._show_csv_preview)
         view_menu.addAction(csv_action)
+        self._register_shortcut_action("csv_preview", csv_action, QKeySequence())
+
+        node_directory_action = QAction("节点目录", self)
+        node_directory_action.triggered.connect(self._show_node_directory_dialog)
+        view_menu.addAction(node_directory_action)
+        self._register_shortcut_action("node_directory", node_directory_action, QKeySequence("Ctrl+G"))
+
+        focus_selected_action = QAction("定位当前节点", self)
+        focus_selected_action.triggered.connect(self._focus_selected_node)
+        view_menu.addAction(focus_selected_action)
+        self._register_shortcut_action("focus_selected", focus_selected_action, QKeySequence("F"))
+
+        shortcut_settings_action = QAction("快捷键设置", self)
+        shortcut_settings_action.triggered.connect(self._show_shortcut_settings_dialog)
+        edit_menu.addAction(shortcut_settings_action)
+        self._register_shortcut_action("shortcut_settings", shortcut_settings_action, QKeySequence())
 
         self.debug_json_fields_action = QAction("\u8c03\u8bd5\u6a21\u5f0f\uff1a\u663e\u793a JSON \u5b57\u6bb5\u540d", self, checkable=True)
         self.debug_json_fields_action.toggled.connect(self._set_debug_json_field_names)
@@ -672,6 +876,58 @@ class MainWindow(QMainWindow):
         mode_group.addAction(self.advanced_mode_action)
         mode_menu.addAction(self.simple_mode_action)
         mode_menu.addAction(self.advanced_mode_action)
+
+        help_doc_action = QAction("使用说明", self)
+        help_doc_action.triggered.connect(self._open_help_page)
+        help_menu.addAction(help_doc_action)
+        self._register_shortcut_action("help_docs", help_doc_action, QKeySequence("F1"))
+
+        changelog_action = QAction("更新日志", self)
+        changelog_action.triggered.connect(self._open_changelog_page)
+        help_menu.addAction(changelog_action)
+        self._register_shortcut_action("help_changelog", changelog_action, QKeySequence("Ctrl+F1"))
+
+    def _register_shortcut_action(self, action_id: str, action: QAction, default_sequence: QKeySequence) -> None:
+        self._shortcut_actions[action_id] = action
+        self._shortcut_defaults[action_id] = QKeySequence(default_sequence)
+        self.addAction(action)
+        setting_key = f"shortcuts/{action_id}"
+        stored = self.settings.value(setting_key)
+        if isinstance(stored, str):
+            action.setShortcut(QKeySequence(stored))
+        else:
+            action.setShortcut(default_sequence)
+
+    def _wheel_shortcut_settings(self) -> dict[str, str]:
+        return {
+            "zoom_modifier": str(self.settings.value("wheel/zoom_modifier", "ctrl")),
+            "horizontal_modifier": str(self.settings.value("wheel/horizontal_modifier", "alt_shift")),
+        }
+
+    def _apply_wheel_settings(self, settings: dict[str, str]) -> None:
+        self.canvas.zoom_wheel_modifier = settings.get("zoom_modifier", "ctrl")
+        self.canvas.horizontal_wheel_modifier = settings.get("horizontal_modifier", "alt_shift")
+
+    def _show_shortcut_settings_dialog(self) -> None:
+        shortcuts = {
+            action_id: (
+                action.text(),
+                action.shortcut(),
+            )
+            for action_id, action in self._shortcut_actions.items()
+        }
+        dialog = ShortcutConfigDialog(shortcuts, self._shortcut_defaults, self._wheel_shortcut_settings(), self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        shortcut_values, wheel_values = dialog.configuration()
+        for action_id, value in shortcut_values.items():
+            self.settings.setValue(f"shortcuts/{action_id}", value)
+            if action_id in self._shortcut_actions:
+                self._shortcut_actions[action_id].setShortcut(QKeySequence(value))
+        self.settings.setValue("wheel/zoom_modifier", wheel_values["zoom_modifier"])
+        self.settings.setValue("wheel/horizontal_modifier", wheel_values["horizontal_modifier"])
+        self._apply_wheel_settings(wheel_values)
+        self.settings.sync()
 
     def _trigger_undo(self) -> None:
         if self.controller.undo_stack.canUndo():
@@ -827,6 +1083,8 @@ class MainWindow(QMainWindow):
         self.simple_mode_radio.setChecked(self.controller.preferences.global_mode == "simple")
         self.advanced_mode_radio.setChecked(self.controller.preferences.global_mode == "advanced")
         self._handle_interaction_creation_mode_changed(self.controller.document.interaction_creation_mode)
+        self._apply_wheel_settings(self._wheel_shortcut_settings())
+        self._handle_editor_settings_changed(self.controller.document.editor_settings)
         self._update_save_action_state()
 
     def _set_debug_json_field_names(self, enabled: bool) -> None:
@@ -1019,16 +1277,19 @@ class MainWindow(QMainWindow):
             self._select_file_in_list(relative_path)
 
     def _save_current_file(self, silent: bool = False, *, allow_incomplete: bool = False) -> str | None:
-        self._commit_pending_editor_changes()
+        self._commit_active_editor_change()
         allowed, reason = self.controller.can_create_graph_content()
         if not allow_incomplete and not allowed:
             self._focus_initial_node_guidance(reason)
             QMessageBox.warning(self, "\u65e0\u6cd5\u4fdd\u5b58", f"{reason}\n\u9996\u6b21\u4fdd\u5b58\u524d\u8bf7\u5148\u5b8c\u6210\u521d\u59cb\u8282\u70b9\u3002")
             return None
         target = self.controller.document.path
+        path_changed = not bool(target)
+        self._refresh_file_list_after_save = path_changed
         if not target:
             generated = self._generated_save_path()
             if not generated:
+                self._refresh_file_list_after_save = False
                 self._focus_initial_node_guidance(reason)
                 if not silent:
                     QMessageBox.warning(self, "\u65e0\u6cd5\u4fdd\u5b58", "\u8bf7\u5148\u5b8c\u6210\u521d\u59cb\u8282\u70b9\u5185\u5bb9\uff0c\u518d\u751f\u6210\u914d\u7f6e\u6587\u4ef6\u3002")
@@ -1047,11 +1308,31 @@ class MainWindow(QMainWindow):
             self._stash_current_document_session()
             if not silent:
                 self._show_status(f"\u5df2\u4fdd\u5b58 {Path(saved).name}")
-            self._refresh_file_list()
-            relative_path = self._relative_path_for_document(saved)
-            if relative_path:
-                self._select_file_in_list(relative_path)
+        else:
+            self._refresh_file_list_after_save = False
         return saved
+
+    def _commit_active_editor_change(self) -> None:
+        focus_widget = self.focusWidget()
+        if isinstance(focus_widget, NumericLineEdit):
+            focus_widget._emit_commit()
+            return
+        if isinstance(focus_widget, CommitLineEdit):
+            focus_widget._emit_commit()
+            return
+        if isinstance(focus_widget, CommitPlainTextEdit):
+            focus_widget.committed.emit(focus_widget.toPlainText())
+            return
+        if isinstance(focus_widget, CommitComboBox):
+            focus_widget.committed.emit(focus_widget.currentData())
+            return
+        if isinstance(focus_widget, QLineEdit):
+            parent = focus_widget.parent()
+            if isinstance(parent, ColorFieldWidget):
+                parent.committed.emit(focus_widget.text().strip())
+                return
+        if hasattr(self, "inspector_form"):
+            self.inspector_form.commit_pending_edits()
 
     def _commit_pending_editor_changes(self) -> None:
         if hasattr(self, "inspector_form"):
@@ -1231,10 +1512,12 @@ class MainWindow(QMainWindow):
 
     def _handle_document_saved(self, saved_path: str) -> None:
         self._mark_saved_checkpoint(saved=True)
-        relative_path = self._relative_path_for_document(saved_path)
-        self._refresh_file_list()
-        if relative_path:
-            self._select_file_in_list(relative_path)
+        if self._refresh_file_list_after_save:
+            relative_path = self._relative_path_for_document(saved_path)
+            self._refresh_file_list()
+            if relative_path:
+                self._select_file_in_list(relative_path)
+        self._refresh_file_list_after_save = False
 
     def _update_window_title(self, path: str | None) -> None:
         title = "L2D交互图表编辑器"
@@ -1246,6 +1529,73 @@ class MainWindow(QMainWindow):
 
     def _show_status(self, message: str) -> None:
         self.statusBar().showMessage(message, 4000)
+
+    def _handle_canvas_busy_changed(self, busy: bool) -> None:
+        if not busy and self._has_saved_snapshot and self.controller.document.path and self._is_dirty():
+            self._auto_save_timer.start(450)
+
+    def _handle_editor_settings_changed(self, settings) -> None:
+        if hasattr(self, "numeric_linkage_checkbox"):
+            blocked = self.numeric_linkage_checkbox.blockSignals(True)
+            self.numeric_linkage_checkbox.setChecked(bool(settings.numeric_linkage_enabled))
+            self.numeric_linkage_checkbox.blockSignals(blocked)
+        if hasattr(self, "trash_enabled_checkbox"):
+            blocked = self.trash_enabled_checkbox.blockSignals(True)
+            self.trash_enabled_checkbox.setChecked(bool(settings.trash_enabled))
+            self.trash_enabled_checkbox.blockSignals(blocked)
+        if hasattr(self, "trash_button"):
+            self.trash_button.setEnabled(bool(settings.trash_enabled))
+        if hasattr(self, "trash_action"):
+            self.trash_action.setEnabled(bool(settings.trash_enabled))
+
+    def _toggle_numeric_linkage(self, checked: bool) -> None:
+        if bool(self.controller.document.editor_settings.numeric_linkage_enabled) == bool(checked):
+            return
+        self.controller.set_numeric_linkage_enabled(bool(checked))
+
+    def _toggle_trash_enabled(self, checked: bool) -> None:
+        checked = bool(checked)
+        if bool(self.controller.document.editor_settings.trash_enabled) == checked:
+            return
+        if not checked:
+            reply = QMessageBox.question(self, "关闭回收站", "关闭后会清空当前回收站并立即释放编号槽位，是否继续？")
+            if reply != QMessageBox.StandardButton.Yes:
+                self._handle_editor_settings_changed(self.controller.document.editor_settings)
+                return
+        self.controller.set_trash_enabled(checked)
+
+    def _open_help_page(self) -> None:
+        QDesktopServices.openUrl(QUrl.fromUserInput(HELP_PAGE_URL))
+
+    def _open_changelog_page(self) -> None:
+        QDesktopServices.openUrl(QUrl.fromUserInput(HELP_PAGE_URL))
+
+    def _show_node_directory_dialog(self) -> None:
+        if self.node_directory_dialog is None:
+            self.node_directory_dialog = NodeDirectoryDialog(self)
+        rows: list[tuple[str, str]] = []
+        for node in self.controller.document.nodes:
+            marker = " [锁定]" if getattr(node, "locked", False) else ""
+            rows.append((node.uuid, f"{node.type} | {self.controller.node_summary(node.uuid)}{marker}"))
+        self.node_directory_dialog.set_nodes(rows)
+        if self.node_directory_dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        node_uuid = self.node_directory_dialog.selected_node_uuid()
+        if node_uuid:
+            self.canvas.focus_on_node(node_uuid, target_scale=1.15, emphasize=True)
+            if node_uuid in self.canvas.node_items:
+                self.canvas.node_items[node_uuid].setSelected(True)
+
+    def _focus_selected_node(self) -> None:
+        node_uuid = self.controller.selected_node_uuid
+        if not node_uuid:
+            selected = self.canvas.selected_node_uuids()
+            node_uuid = selected[0] if selected else None
+        if not node_uuid:
+            return
+        self.canvas.focus_on_node(node_uuid, target_scale=1.15, emphasize=True)
+        if node_uuid in self.canvas.node_items:
+            self.canvas.node_items[node_uuid].setSelected(True)
 
     def _handle_selection_summary(self, node_uuids, connection_pairs) -> None:
         del connection_pairs
@@ -1336,6 +1686,8 @@ class MainWindow(QMainWindow):
         self.canvas.optimize_connection_layout()
 
     def _show_trash_dialog(self) -> None:
+        if not self.controller.document.editor_settings.trash_enabled:
+            return
         if self.trash_dialog is None:
             self.trash_dialog = TrashDialog(self)
             self.trash_dialog.remove_selected_button.clicked.connect(self._clear_selected_trash_entries)
@@ -1393,6 +1745,9 @@ class MainWindow(QMainWindow):
 
     def _run_auto_save(self) -> None:
         if self._has_saved_snapshot and self.controller.document.path and self._is_dirty():
+            if hasattr(self, "canvas") and self.canvas.is_busy():
+                self._auto_save_timer.start(500)
+                return
             saved = self._save_current_file(silent=True, allow_incomplete=True)
             if saved:
                 self.statusBar().showMessage(f"已自动保存 {Path(saved).name}", 2500)

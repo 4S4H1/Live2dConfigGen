@@ -57,6 +57,37 @@ class UpdateFieldCommand(QUndoCommand):
         self.controller._set_field(self.node_uuid, self.key, self.old_value, self.source_mode)
 
 
+class UpdateNodeLockCommand(QUndoCommand):
+    def __init__(self, controller, node_uuid, old_locked, new_locked) -> None:
+        super().__init__("切换节点锁定")
+        self.controller = controller
+        self.node_uuid = node_uuid
+        self.old_locked = bool(old_locked)
+        self.new_locked = bool(new_locked)
+
+    def redo(self) -> None:
+        self.controller._set_node_locked(self.node_uuid, self.new_locked)
+
+    def undo(self) -> None:
+        self.controller._set_node_locked(self.node_uuid, self.old_locked)
+
+
+class UpdateEditorSettingsCommand(QUndoCommand):
+    def __init__(self, controller, old_settings, new_settings, old_trash_bin=None, new_trash_bin=None, label: str = "修改文档设置") -> None:
+        super().__init__(label)
+        self.controller = controller
+        self.old_settings = dict(old_settings)
+        self.new_settings = dict(new_settings)
+        self.old_trash_bin = list(old_trash_bin or [])
+        self.new_trash_bin = list(new_trash_bin or [])
+
+    def redo(self) -> None:
+        self.controller._set_editor_settings(self.new_settings, self.new_trash_bin)
+
+    def undo(self) -> None:
+        self.controller._set_editor_settings(self.old_settings, self.old_trash_bin)
+
+
 class MoveNodeCommand(QUndoCommand):
     def __init__(self, controller, node_uuid, old_pos, new_pos) -> None:
         super().__init__("移动节点")
