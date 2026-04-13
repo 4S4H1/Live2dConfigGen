@@ -6,7 +6,7 @@ import json
 import re
 from pathlib import Path
 
-from PyQt6.QtCore import QSettings, Qt, QTimer, QUrl
+from PyQt6.QtCore import QSettings, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup, QCloseEvent, QDesktopServices, QGuiApplication, QKeySequence, QUndoStack
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -42,7 +42,16 @@ from PyQt6.QtWidgets import (
 from .canvas import NodeCanvasView
 from .constants import CLIPBOARD_MIME
 from .controller import EditorController
-from .logic import build_csv_export_filename, create_document, export_documents_to_csv, load_document
+from .logic import (
+    build_csv_export_filename,
+    build_template_version_folder_name,
+    create_document,
+    create_template_document,
+    export_documents_to_csv,
+    load_document,
+    load_template_csv_rows,
+    save_document,
+)
 from .widgets import (
     ColorFieldWidget,
     CommitComboBox,
@@ -203,6 +212,8 @@ class ExportCsvDialog(QDialog):
 
 
 class NodeDirectoryDialog(QDialog):
+    nodeRequested = pyqtSignal(str)
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("节点目录")
@@ -214,27 +225,35 @@ class NodeDirectoryDialog(QDialog):
         layout.addWidget(self.search_edit)
 
         self.list_widget = QListWidget()
-        self.list_widget.itemClicked.connect(self.accept)
-        self.list_widget.itemActivated.connect(self.accept)
+        self.list_widget.itemClicked.connect(self._emit_current_node)
+        self.list_widget.itemActivated.connect(self._emit_current_node)
         layout.addWidget(self.list_widget, 1)
 
         button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        button_box.rejected.connect(self.reject)
-        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.close)
+        button_box.accepted.connect(self.close)
         layout.addWidget(button_box)
 
     def set_nodes(self, rows: list[tuple[str, str]]) -> None:
+        current = self.selected_node_uuid()
         self.list_widget.clear()
         for node_uuid, label in rows:
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, node_uuid)
             self.list_widget.addItem(item)
+            if current and current == node_uuid:
+                self.list_widget.setCurrentItem(item)
         self._filter_items()
 
     def selected_node_uuid(self) -> str | None:
         item = self.list_widget.currentItem()
         value = item.data(Qt.ItemDataRole.UserRole) if item else None
         return value if isinstance(value, str) and value else None
+
+    def _emit_current_node(self, item: QListWidgetItem) -> None:
+        value = item.data(Qt.ItemDataRole.UserRole) if item else None
+        if isinstance(value, str) and value:
+            self.nodeRequested.emit(value)
 
     def _filter_items(self) -> None:
         needle = self.search_edit.text().strip().lower()
@@ -397,6 +416,7 @@ class MainWindow(QMainWindow):
         self.controller.documentSaved.connect(self._handle_document_saved)
         self.controller.nodeUpdated.connect(self._handle_node_updated)
         self.controller.documentLoaded.connect(self._refresh_search_results)
+        self.controller.documentLoaded.connect(self._refresh_node_directory_dialog)
         self.controller.validationChanged.connect(self._store_validation)
         self.controller.documentStateChanged.connect(self._update_document_state)
         self.controller.globalModeChanged.connect(self._handle_global_mode_changed)
@@ -522,7 +542,7 @@ class MainWindow(QMainWindow):
         title = QLabel("\u914d\u7f6e\u6587\u4ef6")
         title.setObjectName("sectionTitle")
         workspace_layout.addWidget(title)
-        workspace_hint = QLabel("\u4fdd\u6301 JSON \u914d\u7f6e\u7ba1\u7406\u3001\u65b0\u5efa\u4e0e\u5220\u9664\u5728\u540c\u4e00\u4e2a\u5de6\u4fa7\u5de5\u5177\u533a\u5b8c\u6210\u3002")
+        workspace_hint = QLabel("\u5de5\u4f5c\u533a\u7528\u4e8e\u67e5\u770b\u4e0e\u6253\u5f00\u5df2\u751f\u6210\u7684 JSON \u914d\u7f6e\uff0c\u6a21\u677f\u6279\u91cf\u521b\u5efa\u8bf7\u4ece\u83dc\u5355\u680f\u8fdb\u5165\u3002")
         workspace_hint.setObjectName("panelHint")
         workspace_hint.setWordWrap(True)
         workspace_layout.addWidget(workspace_hint)
@@ -552,7 +572,9 @@ class MainWindow(QMainWindow):
         self.refresh_button.clicked.connect(self._refresh_file_list)
         self.new_button.clicked.connect(self._create_new_file)
         self.delete_button.clicked.connect(self._delete_selected_file)
-        for button in (self.refresh_button, self.new_button, self.delete_button):
+        self.new_button.hide()
+        self.delete_button.hide()
+        for button in (self.refresh_button,):
             button_row.addWidget(button)
         workspace_layout.addLayout(button_row)
         layout.addWidget(workspace_card)
@@ -764,6 +786,7 @@ class MainWindow(QMainWindow):
         file_menu = self.menuBar().addMenu("文件")
         edit_menu = self.menuBar().addMenu("编辑")
         view_menu = self.menuBar().addMenu("视图")
+        tools_menu = self.menuBar().addMenu("工具")
         help_menu = self.menuBar().addMenu("帮助")
 
         open_action = QAction("\u6253\u5f00", self)
@@ -780,6 +803,11 @@ class MainWindow(QMainWindow):
         self.export_csv_action.triggered.connect(self._show_export_csv_dialog)
         self.menuBar().addAction(self.export_csv_action)
         self._register_shortcut_action("export_csv", self.export_csv_action, QKeySequence())
+
+        template_create_action = QAction("模板创建", self)
+        template_create_action.triggered.connect(self._create_templates_from_csv_dialog)
+        tools_menu.addAction(template_create_action)
+        self._register_shortcut_action("template_create", template_create_action, QKeySequence())
 
         reload_schema_action = QAction("\u91cd\u8f7d\u5b57\u6bb5\u914d\u7f6e", self)
         reload_schema_action.triggered.connect(self._reload_schema)
@@ -1136,7 +1164,7 @@ class MainWindow(QMainWindow):
                 continue
             for relative_path in paths:
                 _, display_name = self._read_file_display_meta(self.workdir / relative_path)
-                item = QListWidgetItem(f"\u914d\u7f6e: {display_name}")
+                item = QListWidgetItem(display_name)
                 item.setData(Qt.ItemDataRole.UserRole, {"kind": "file", "path": relative_path})
                 item.setToolTip(relative_path)
                 self.file_list.addItem(item)
@@ -1166,7 +1194,7 @@ class MainWindow(QMainWindow):
                 initial = next((node for node in nodes if isinstance(node, dict) and node.get("type") == "Initial"), None)
                 if isinstance(initial, dict):
                     char_name = str(initial.get("CharName") or "").strip()
-        display_name = f"{char_name} ({path.name})" if char_name else path.name
+        display_name = char_name or path.stem
         return char_name, display_name
 
     def _current_file_relative_path(self) -> str | None:
@@ -1443,6 +1471,8 @@ class MainWindow(QMainWindow):
                     self.controller.preferences.debug_json_field_names,
                 )
                 self.validation_summary.set_issues(self.validation_cache.get(node.uuid, []))
+        if self.node_directory_dialog and self.node_directory_dialog.isVisible():
+            self._refresh_node_directory_dialog()
         if self.search_edit.text().strip():
             self._refresh_search_results()
 
@@ -1573,18 +1603,75 @@ class MainWindow(QMainWindow):
     def _show_node_directory_dialog(self) -> None:
         if self.node_directory_dialog is None:
             self.node_directory_dialog = NodeDirectoryDialog(self)
-        rows: list[tuple[str, str]] = []
-        for node in self.controller.document.nodes:
-            marker = " [锁定]" if getattr(node, "locked", False) else ""
-            rows.append((node.uuid, f"{node.type} | {self.controller.node_summary(node.uuid)}{marker}"))
-        self.node_directory_dialog.set_nodes(rows)
-        if self.node_directory_dialog.exec() != QDialog.DialogCode.Accepted:
+            self.node_directory_dialog.nodeRequested.connect(self._focus_node_from_directory)
+        self._refresh_node_directory_dialog()
+        self.node_directory_dialog.show()
+        self.node_directory_dialog.raise_()
+        self.node_directory_dialog.activateWindow()
+
+    def _refresh_node_directory_dialog(self) -> None:
+        if self.node_directory_dialog is None:
             return
-        node_uuid = self.node_directory_dialog.selected_node_uuid()
+        rows = [(node.uuid, self.controller.node_summary(node.uuid)) for node in self.controller.document.nodes]
+        self.node_directory_dialog.set_nodes(rows)
+
+    def _focus_node_from_directory(self, node_uuid: str) -> None:
         if node_uuid:
             self.canvas.focus_on_node(node_uuid, target_scale=1.15, emphasize=True)
             if node_uuid in self.canvas.node_items:
                 self.canvas.node_items[node_uuid].setSelected(True)
+
+    def _create_templates_from_csv_dialog(self) -> None:
+        csv_path, _ = QFileDialog.getOpenFileName(self, "选择模板 CSV", str(self.workdir), "CSV Files (*.csv)")
+        if not csv_path:
+            return
+        try:
+            created_files, created_folders = self._create_templates_from_csv(Path(csv_path))
+        except Exception as exc:
+            QMessageBox.warning(self, "模板创建失败", str(exc))
+            return
+        self._refresh_file_list()
+        QMessageBox.information(
+            self,
+            "模板创建完成",
+            f"已创建 {created_files} 个 JSON，输出到 {created_folders} 个版本目录。\n当前工作区：{self.workdir}",
+        )
+
+    def _create_templates_from_csv(self, csv_path: Path) -> tuple[int, int]:
+        rows = load_template_csv_rows(csv_path)
+        if not rows:
+            raise ValueError("CSV 中没有可用数据行。")
+        created_files = 0
+        created_folders: set[str] = set()
+        for row in rows:
+            version = str(row.get("version") or "").strip()
+            folder_name = build_template_version_folder_name(version)
+            target_dir = self.workdir / folder_name
+            target_dir.mkdir(parents=True, exist_ok=True)
+            document = create_template_document(
+                self.controller.schema,
+                version=version,
+                char_name=str(row.get("CharName") or "").strip(),
+                memo=str(row.get("memo") or "").strip(),
+                ship_skin_id=int(row.get("ship_skin_id") or 0),
+            )
+            output_path = self._available_template_output_path(target_dir, str(row.get("CharName") or "").strip())
+            save_document(self.controller.schema, document, output_path)
+            created_files += 1
+            created_folders.add(folder_name)
+        return created_files, len(created_folders)
+
+    def _available_template_output_path(self, directory: Path, char_name: str) -> Path:
+        base_name = self._sanitize_filename_stem(char_name or "config")
+        candidate = directory / f"{base_name}.json"
+        if not candidate.exists():
+            return candidate
+        index = 2
+        while True:
+            numbered = directory / f"{base_name}_{index}.json"
+            if not numbered.exists():
+                return numbered
+            index += 1
 
     def _focus_selected_node(self) -> None:
         node_uuid = self.controller.selected_node_uuid

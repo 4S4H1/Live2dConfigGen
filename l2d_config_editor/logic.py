@@ -49,6 +49,12 @@ RESERVED_FIELD_KEYS = (
     "id",
 )
 CSV_TEMPLATE_FILES = ("(full)ship_l2d.csv", "ship_l2d.csv")
+TEMPLATE_CSV_COLUMN_ALIASES = {
+    "version": ("版本", "version"),
+    "char_name": ("角色名", "charname", "char_name"),
+    "memo": ("角色资源名", "资源名", "memo"),
+    "ship_skin_id": ("角色id", "角色ID", "ship_skin_id", "shipskinid"),
+}
 
 
 @lru_cache(maxsize=2)
@@ -357,6 +363,97 @@ def build_csv_export_filename(prefix: str = "ship_l2d_export") -> str:
     return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
 
+def _normalized_template_header(value: Any) -> str:
+    return str(value or "").strip().replace(" ", "").replace("_", "").lower()
+
+
+def build_template_version_folder_name(version: Any) -> str:
+    text = str(version or "").strip()
+    if not text:
+        return "unknown_version"
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"):
+        try:
+            parsed = datetime.strptime(text, fmt)
+            return f"{parsed.year}-{parsed.month}-{parsed.day}"
+        except ValueError:
+            continue
+    sanitized = re.sub(r'[<>:"/\\|?*]+', "_", text).strip(" ._")
+    return sanitized or "unknown_version"
+
+
+def load_template_csv_rows(path: str | Path) -> list[dict[str, Any]]:
+    last_error: Exception | None = None
+    rows: list[list[str]] | None = None
+    for encoding in ("utf-8-sig", "utf-8", "gb18030"):
+        try:
+            with Path(path).open("r", encoding=encoding, newline="") as handle:
+                rows = list(csv.reader(handle))
+            break
+        except UnicodeDecodeError as exc:
+            last_error = exc
+    if rows is None:
+        raise ValueError(f"无法读取 CSV：{last_error}") from last_error
+    if not rows:
+        return []
+    header_map = {_normalized_template_header(value): index for index, value in enumerate(rows[0])}
+    resolved_indexes: dict[str, int] = {}
+    missing_columns: list[str] = []
+    for key, aliases in TEMPLATE_CSV_COLUMN_ALIASES.items():
+        index = next((header_map[alias] for alias in (_normalized_template_header(item) for item in aliases) if alias in header_map), None)
+        if index is None:
+            missing_columns.append(aliases[0])
+            continue
+        resolved_indexes[key] = index
+    if missing_columns:
+        raise ValueError(f"CSV 缺少必要列：{'、'.join(missing_columns)}")
+    result: list[dict[str, Any]] = []
+    for row in rows[1:]:
+        if not any(str(cell or "").strip() for cell in row):
+            continue
+        version = str(row[resolved_indexes["version"]] if resolved_indexes["version"] < len(row) else "").strip()
+        char_name = str(row[resolved_indexes["char_name"]] if resolved_indexes["char_name"] < len(row) else "").strip()
+        memo = str(row[resolved_indexes["memo"]] if resolved_indexes["memo"] < len(row) else "").strip()
+        ship_skin_id_text = str(row[resolved_indexes["ship_skin_id"]] if resolved_indexes["ship_skin_id"] < len(row) else "").strip()
+        if not version and not char_name and not memo and not ship_skin_id_text:
+            continue
+        try:
+            ship_skin_id = int(ship_skin_id_text or "0")
+        except ValueError as exc:
+            raise ValueError(f"角色 ID 不是有效整数：{ship_skin_id_text}") from exc
+        result.append(
+            {
+                "version": version,
+                "CharName": char_name,
+                "memo": memo,
+                "ship_skin_id": ship_skin_id,
+            }
+        )
+    return result
+
+
+def create_template_document(
+    schema: EditorSchema,
+    *,
+    version: str,
+    char_name: str,
+    memo: str,
+    ship_skin_id: int,
+) -> DocumentModel:
+    document = create_document(schema)
+    initial = next(node for node in document.nodes if node.type == "Initial")
+    initial.fields["version"] = str(version or "").strip()
+    initial.fields["author"] = ""
+    initial.fields["ship_skin_id"] = int(ship_skin_id or 0)
+    initial.fields["memo"] = str(memo or "").strip()
+    initial.fields["react_condition"] = ""
+    initial.fields["tips"] = ""
+    initial.fields["CharName"] = str(char_name or "").strip()
+    sync_meta_from_initial(document)
+    reassign_function_ids(schema, document)
+    recompute_document_state(schema, document)
+    return document
+
+
 def numeric_linkage_enabled(document: DocumentModel) -> bool:
     return bool(document.editor_settings.numeric_linkage_enabled)
 
@@ -369,8 +466,12 @@ def display_value_for_field(schema: EditorSchema, node: NodeRecord, key: str, ra
     del schema
     value = node.fields.get(key) if raw_value is None else raw_value
     if key == "action_trigger":
+        if not str(value or "").strip():
+            return ""
         return _action_name_from_raw(value)
     if key == "action_trigger_active":
+        if not str(value or "").strip():
+            return ""
         return normalized_target_idle(node)
     if key == "parts_data":
         return canonicalize_parts_data(value)
@@ -381,12 +482,16 @@ def display_value_for_field(schema: EditorSchema, node: NodeRecord, key: str, ra
 
 def normalize_field_input(schema: EditorSchema, node: NodeRecord, key: str, display_value: Any) -> Any:
     if key == "action_trigger":
+        if not str(display_value or "").strip():
+            return ""
         target_idle = normalized_target_idle(node)
         action_name = str(display_value or "").strip()
         if node.type == "TouchIdle" and node.fields.get("transition_type") == "hard":
             return _hard_cut_action(schema, target_idle)[0]
         return _animated_action(schema, _node_schema(schema, node.type), target_idle, action_name=action_name)[0]
     if key == "action_trigger_active":
+        if str(display_value or "").strip() == "":
+            return ""
         target_idle = _coerce_int(display_value, 0)
         if node.type == "TouchIdle" and node.fields.get("transition_type") == "hard":
             return _hard_cut_action(schema, target_idle)[1]
@@ -765,7 +870,7 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
         global_mode=str(payload.get("global_mode", "simple")),
         interaction_creation_mode=str(payload.get("interaction_creation_mode", "auto") or "auto"),
         editor_settings=EditorSettings(
-            numeric_linkage_enabled=bool(settings_payload.get("numeric_linkage_enabled", True)),
+            numeric_linkage_enabled=bool(settings_payload.get("numeric_linkage_enabled", False)),
             trash_enabled=bool(settings_payload.get("trash_enabled", True)),
         ),
         meta=MetaRecord(**{key: value for key, value in meta_payload.items() if key in meta_keys}),

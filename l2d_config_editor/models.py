@@ -39,7 +39,7 @@ class EditorPreferences:
 
 @dataclass
 class EditorSettings:
-    numeric_linkage_enabled: bool = True
+    numeric_linkage_enabled: bool = False
     trash_enabled: bool = True
 
 

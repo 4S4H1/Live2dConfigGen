@@ -15,12 +15,17 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 from l2d_config_editor.controller import EditorController
 from l2d_config_editor.logic import (
     apply_auto_rules,
+    build_template_version_folder_name,
     create_document,
     create_node,
+    create_template_document,
+    display_value_for_field,
     document_to_csv_rows,
     export_document_dict,
     get_default_schema,
     load_document,
+    load_template_csv_rows,
+    normalize_field_input,
     node_title,
     reassign_function_ids,
     save_document,
@@ -41,6 +46,7 @@ class LogicTests(unittest.TestCase):
 
     def make_ready_document(self):
         document = create_document(self.schema)
+        document.editor_settings.numeric_linkage_enabled = True
         initial = next(node for node in document.nodes if node.type == "Initial")
         initial.fields["author"] = "asahi"
         initial.fields["ship_skin_id"] = 302291
@@ -57,6 +63,7 @@ class LogicTests(unittest.TestCase):
         document = create_document(self.schema)
         self.assertEqual(1, len([node for node in document.nodes if node.type == "Initial"]))
         self.assertEqual("simple", document.global_mode)
+        self.assertFalse(document.editor_settings.numeric_linkage_enabled)
         self.assertFalse(document.state.is_meta_ready)
         self.assertIn("作者", document.state.meta_missing_fields)
 
@@ -173,6 +180,76 @@ class LogicTests(unittest.TestCase):
         self.assertFalse(loaded.editor_settings.numeric_linkage_enabled)
         self.assertFalse(loaded.editor_settings.trash_enabled)
         self.assertTrue(loaded_node.locked)
+
+    def test_load_document_without_editor_settings_defaults_linkage_to_disabled(self) -> None:
+        payload = {
+            "editor_signature": "l2d_config_editor/v1",
+            "global_mode": "simple",
+            "interaction_creation_mode": "auto",
+            "meta": {
+                "version": "2099-09-09",
+                "author": "",
+                "ship_skin_id": 0,
+                "memo": "",
+                "react_condition": "",
+                "tips": "",
+                "CharName": "",
+            },
+            "nodes": [],
+            "connections": [],
+            "trash_bin": [],
+            "canvas_view": {"scale": 1.0, "offset_x": 0.0, "offset_y": 0.0},
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "legacy.json"
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            loaded = load_document(self.schema, path)
+        self.assertFalse(loaded.editor_settings.numeric_linkage_enabled)
+
+    def test_empty_action_fields_stay_empty_after_display_roundtrip(self) -> None:
+        document = create_document(self.schema)
+        node = create_node(self.schema, document, "TouchIdle")
+        document.editor_settings.numeric_linkage_enabled = False
+        node.fields["action_trigger"] = ""
+        node.fields["action_trigger_active"] = ""
+        self.assertEqual("", node.fields["action_trigger"])
+        self.assertEqual("", node.fields["action_trigger_active"])
+        self.assertEqual("", display_value_for_field(self.schema, node, "action_trigger"))
+        self.assertEqual("", display_value_for_field(self.schema, node, "action_trigger_active"))
+        self.assertEqual("", normalize_field_input(self.schema, node, "action_trigger", ""))
+        self.assertEqual("", normalize_field_input(self.schema, node, "action_trigger_active", ""))
+
+    def test_template_version_folder_name_normalizes_date(self) -> None:
+        self.assertEqual("2026-5-20", build_template_version_folder_name("2026-05-20"))
+        self.assertEqual("2026-5-28", build_template_version_folder_name("2026-05-28"))
+
+    def test_load_template_csv_rows_reads_required_columns(self) -> None:
+        csv_text = "版本,角色名,角色资源名,角色id\n2026-05-20,测试角色,test_role,123456\n"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            csv_path = Path(temp_dir) / "template.csv"
+            csv_path.write_text(csv_text, encoding="utf-8-sig")
+            rows = load_template_csv_rows(csv_path)
+        self.assertEqual(
+            [{"version": "2026-05-20", "CharName": "测试角色", "memo": "test_role", "ship_skin_id": 123456}],
+            rows,
+        )
+
+    def test_create_template_document_prefills_initial_node_only(self) -> None:
+        document = create_template_document(
+            self.schema,
+            version="2026-05-20",
+            char_name="测试角色",
+            memo="test_role",
+            ship_skin_id=123456,
+        )
+        self.assertFalse(document.editor_settings.numeric_linkage_enabled)
+        self.assertEqual(1, len(document.nodes))
+        initial = next(node for node in document.nodes if node.type == "Initial")
+        self.assertEqual("2026-05-20", initial.fields["version"])
+        self.assertEqual("测试角色", initial.fields["CharName"])
+        self.assertEqual("test_role", initial.fields["memo"])
+        self.assertEqual(123456, initial.fields["ship_skin_id"])
+        self.assertEqual("", initial.fields["author"])
 
     def test_validation_catches_invalid_parts_data(self) -> None:
         document = self.make_ready_document()
@@ -311,6 +388,7 @@ class LogicTests(unittest.TestCase):
 
     def test_controller_translates_display_action_fields_to_raw(self) -> None:
         controller = EditorController()
+        controller.document.editor_settings.numeric_linkage_enabled = True
         initial = next(node for node in controller.document.nodes if node.type == "Initial")
         controller.update_field(initial.uuid, "author", "asahi", "simple")
         controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
@@ -328,6 +406,7 @@ class LogicTests(unittest.TestCase):
 
     def test_touchdrag_action_trigger_edit_updates_internal_target_idle(self) -> None:
         controller = EditorController()
+        controller.document.editor_settings.numeric_linkage_enabled = True
         initial = next(node for node in controller.document.nodes if node.type == "Initial")
         controller.update_field(initial.uuid, "author", "asahi", "simple")
         controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
@@ -345,6 +424,7 @@ class LogicTests(unittest.TestCase):
 
     def test_touchdrag_roundtrip_without_action_trigger_active(self) -> None:
         controller = EditorController()
+        controller.document.editor_settings.numeric_linkage_enabled = True
         initial = next(node for node in controller.document.nodes if node.type == "Initial")
         controller.update_field(initial.uuid, "author", "asahi", "simple")
         controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
@@ -469,6 +549,7 @@ class LogicTests(unittest.TestCase):
 
     def test_manual_mode_paste_preserves_explicit_sequence_values(self) -> None:
         controller = EditorController()
+        controller.document.editor_settings.numeric_linkage_enabled = True
         initial = next(node for node in controller.document.nodes if node.type == "Initial")
         controller.update_field(initial.uuid, "author", "asahi", "simple")
         controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
@@ -637,6 +718,48 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         self.assertNotIn("action_trigger_active", item.form._bindings)
         window._mark_saved_checkpoint(saved=True)
         window.close()
+
+    def test_template_creation_groups_json_by_version_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            csv_path = Path(temp_dir) / "template.csv"
+            csv_path.write_text(
+                "版本,角色名,角色资源名,角色id\n"
+                "2026-05-20,角色A,res_a,1001\n"
+                "2026-05-20,角色B,res_b,1002\n"
+                "2026-05-28,角色C,res_c,1003\n",
+                encoding="utf-8-sig",
+            )
+            created_files, created_folders = window._create_templates_from_csv(csv_path)
+            self.assertEqual(3, created_files)
+            self.assertEqual(2, created_folders)
+            self.assertTrue((Path(temp_dir) / "2026-5-20" / "角色A.json").exists())
+            self.assertTrue((Path(temp_dir) / "2026-5-20" / "角色B.json").exists())
+            self.assertTrue((Path(temp_dir) / "2026-5-28" / "角色C.json").exists())
+            window.close()
+
+    def test_node_directory_click_keeps_dialog_open(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "测试角色", "simple")
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            self.assertIsNotNone(created)
+            window._show_node_directory_dialog()
+            self.assertIsNotNone(window.node_directory_dialog)
+            dialog = window.node_directory_dialog
+            self.assertTrue(dialog.isVisible())
+            target_item = next(
+                dialog.list_widget.item(index)
+                for index in range(dialog.list_widget.count())
+                if dialog.list_widget.item(index).data(Qt.ItemDataRole.UserRole) == created
+            )
+            dialog._emit_current_node(target_item)
+            self.assertTrue(dialog.isVisible())
+            window.close()
 
     def test_node_bounding_rect_covers_full_pin_hit_area(self) -> None:
         window = MainWindow("/Users/asahi/Live2dConfigGen", prefer_saved_workspace=False)

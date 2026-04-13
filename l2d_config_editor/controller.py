@@ -537,7 +537,7 @@ class EditorController(QObject):
 
     def _set_editor_settings(self, settings: dict[str, Any], trash_bin) -> None:
         previous_linkage = bool(self.document.editor_settings.numeric_linkage_enabled)
-        self.document.editor_settings.numeric_linkage_enabled = bool(settings.get("numeric_linkage_enabled", True))
+        self.document.editor_settings.numeric_linkage_enabled = bool(settings.get("numeric_linkage_enabled", False))
         self.document.editor_settings.trash_enabled = bool(settings.get("trash_enabled", True))
         self.document.trash_bin = list(trash_bin)
         for node in self.document.nodes:
