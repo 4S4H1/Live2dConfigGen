@@ -9,7 +9,7 @@ from unittest.mock import patch
 if sys.platform != "win32":
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import QPointF, Qt
+from PyQt6.QtCore import QPointF, QSettings, Qt
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from l2d_config_editor.controller import EditorController
@@ -64,6 +64,7 @@ class LogicTests(unittest.TestCase):
         self.assertEqual(1, len([node for node in document.nodes if node.type == "Initial"]))
         self.assertEqual("simple", document.global_mode)
         self.assertFalse(document.editor_settings.numeric_linkage_enabled)
+        self.assertFalse(document.editor_settings.trash_enabled)
         self.assertFalse(document.state.is_meta_ready)
         self.assertIn("作者", document.state.meta_missing_fields)
 
@@ -81,13 +82,14 @@ class LogicTests(unittest.TestCase):
         self.assertEqual("TouchDrag1", node.fields["draw_able_name"])
         self.assertEqual(1, node.fields["target_idle"])
         self.assertEqual("touch_drag1", node.fields["parameter"])
-        self.assertIn("touch_idle1", node.fields["action_trigger"])
+        self.assertIn("touch_drag1", node.fields["action_trigger"])
 
     def test_touchidle_target_idle_regenerates_simple_fields(self) -> None:
         document = self.make_ready_document()
         node = create_node(self.schema, document, "TouchIdle")
         node.fields["target_idle"] = 13
         apply_auto_rules(self.schema, document, node, source_mode="simple", changed_key="target_idle")
+        self.assertEqual("TouchIdle13", node.fields["draw_able_name"])
         self.assertEqual("Paramtouch_idle13", node.fields["parameter"])
         self.assertIn("touch_idle13", node.fields["action_trigger"])
         self.assertIn("idle = 13", node.fields["action_trigger_active"])
@@ -113,7 +115,7 @@ class LogicTests(unittest.TestCase):
         self.assertEqual(0, node.fields["offset_y"])
         self.assertEqual(1, node.fields["drag_direct"])
 
-    def test_validation_allows_duplicate_parameter_values(self) -> None:
+    def test_validation_reports_duplicate_parameter_values(self) -> None:
         document = self.make_ready_document()
         first = create_node(self.schema, document, "TouchIdle")
         document.nodes.append(first)
@@ -123,32 +125,33 @@ class LogicTests(unittest.TestCase):
         document.nodes.append(second)
         issues = validate_document(self.schema, document)
         duplicate_issues = [issue for issue in issues if issue.field_keys == ["parameter"] and "重复" in issue.message]
-        self.assertFalse(duplicate_issues)
+        self.assertEqual(2, len(duplicate_issues))
 
     def test_validation_messages_no_longer_contain_question_marks(self) -> None:
         document = self.make_ready_document()
         first = create_node(self.schema, document, "TouchIdle")
+        document.nodes.append(first)
         second = create_node(self.schema, document, "TouchIdle")
         second.fields["draw_able_name"] = first.fields["draw_able_name"]
         second.fields["action_trigger"] = "{type = 2 ,action = 'touch_idle99'}"
         second.fields["action_trigger_active"] = "{enable = {},ignore = {'main_1'},idle = 99}"
-        document.nodes.extend([first, second])
+        document.nodes.append(second)
         issues = validate_document(self.schema, document)
         self.assertFalse(issues)
 
-    def test_numeric_linkage_disabled_skips_generated_defaults(self) -> None:
+    def test_numeric_linkage_disabled_keeps_creation_defaults(self) -> None:
         document = self.make_ready_document()
         document.editor_settings.numeric_linkage_enabled = False
         node = create_node(self.schema, document, "TouchIdle")
-        self.assertEqual("", node.fields["draw_able_name"])
-        self.assertEqual("", node.fields["parameter"])
-        self.assertEqual("", node.fields["action_trigger"])
-        self.assertEqual("", node.fields["action_trigger_active"])
+        self.assertEqual("TouchIdle1", node.fields["draw_able_name"])
+        self.assertEqual("Paramtouch_idle1", node.fields["parameter"])
+        self.assertIn("touch_idle1", node.fields["action_trigger"])
+        self.assertIn("idle = 1", node.fields["action_trigger_active"])
 
     def test_numeric_linkage_disabled_does_not_sync_simple_fields(self) -> None:
         document = self.make_ready_document()
-        node = create_node(self.schema, document, "TouchDrag")
         document.editor_settings.numeric_linkage_enabled = False
+        node = create_node(self.schema, document, "TouchDrag")
         node.fields["parameter"] = "manual_parameter"
         node.fields["action_trigger"] = "{type = 2 ,action = 'manual_action'}"
         node.fields["action_trigger_active"] = "{enable = {},idle = 1}"
@@ -161,9 +164,34 @@ class LogicTests(unittest.TestCase):
     def test_parameter_trigger_defaults_to_value_mode(self) -> None:
         document = self.make_ready_document()
         node = create_node(self.schema, document, "ParameterTrigger")
+        self.assertEqual("TouchDrag1", node.fields["draw_able_name"])
         self.assertEqual("value", node.fields["result_type"])
         self.assertEqual("", node.fields["action_trigger"])
         self.assertEqual("", node.fields["action_trigger_active"])
+
+    def test_manual_mode_touchdrag_defaults_use_unsuffixed_values(self) -> None:
+        document = self.make_ready_document()
+        document.interaction_creation_mode = "manual"
+        node = create_node(self.schema, document, "TouchDrag")
+        self.assertEqual("TouchDrag", node.fields["draw_able_name"])
+        self.assertEqual("touch_drag", node.fields["parameter"])
+        self.assertEqual(0, node.fields["target_idle"])
+        self.assertIn("touch_drag", node.fields["action_trigger"])
+        self.assertIn("idle = 0", node.fields["action_trigger_active"])
+
+    def test_manual_touchdrag_zero_target_idle_survives_roundtrip(self) -> None:
+        document = self.make_ready_document()
+        document.interaction_creation_mode = "manual"
+        node = create_node(self.schema, document, "TouchDrag")
+        document.nodes.append(node)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "manual_touchdrag.json"
+            save_document(self.schema, document, path)
+            loaded = load_document(self.schema, path)
+        loaded_node = next(item for item in loaded.nodes if item.uuid == node.uuid)
+        self.assertEqual("TouchDrag", loaded_node.fields["draw_able_name"])
+        self.assertEqual("touch_drag", loaded_node.fields["parameter"])
+        self.assertEqual(0, loaded_node.fields["target_idle"])
 
     def test_save_roundtrip_preserves_editor_settings_and_locked_nodes(self) -> None:
         document = self.make_ready_document()
@@ -205,6 +233,7 @@ class LogicTests(unittest.TestCase):
             path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
             loaded = load_document(self.schema, path)
         self.assertFalse(loaded.editor_settings.numeric_linkage_enabled)
+        self.assertFalse(loaded.editor_settings.trash_enabled)
 
     def test_empty_action_fields_stay_empty_after_display_roundtrip(self) -> None:
         document = create_document(self.schema)
@@ -220,8 +249,8 @@ class LogicTests(unittest.TestCase):
         self.assertEqual("", normalize_field_input(self.schema, node, "action_trigger_active", ""))
 
     def test_template_version_folder_name_normalizes_date(self) -> None:
-        self.assertEqual("2026-5-20", build_template_version_folder_name("2026-05-20"))
-        self.assertEqual("2026-5-28", build_template_version_folder_name("2026-05-28"))
+        self.assertEqual("20260520", build_template_version_folder_name("2026-05-20"))
+        self.assertEqual("20260528", build_template_version_folder_name("2026-05-28"))
 
     def test_load_template_csv_rows_reads_required_columns(self) -> None:
         csv_text = "版本,角色名,角色资源名,角色id\n2026-05-20,测试角色,test_role,123456\n"
@@ -345,12 +374,13 @@ class LogicTests(unittest.TestCase):
         hits = search_document(self.schema, document, "备注", use_json_field_names=True)
         self.assertTrue(any(hit.field_label == "tips" for hit in hits))
 
-    def test_node_title_uses_type_slot_and_tips(self) -> None:
+    def test_node_title_uses_draw_name_and_tips(self) -> None:
         document = self.make_ready_document()
         node = create_node(self.schema, document, "TouchIdle")
+        node.fields["draw_able_name"] = "CustomFrame"
         node.fields["tips"] = "备注"
         document.nodes.append(node)
-        self.assertEqual("TouchIdle1-备注", node_title(self.schema, node))
+        self.assertEqual("CustomFrame-备注", node_title(self.schema, node))
 
     def test_export_payload_contains_meta_and_nodes(self) -> None:
         document = self.make_ready_document()
@@ -404,6 +434,23 @@ class LogicTests(unittest.TestCase):
         self.assertIn("idle = 7", node.fields["action_trigger_active"])
         self.assertEqual("Paramtouch_idle7", node.fields["parameter"])
 
+    def test_touchidle_zero_target_idle_is_not_treated_as_empty(self) -> None:
+        controller = EditorController()
+        controller.document.editor_settings.numeric_linkage_enabled = True
+        initial = next(node for node in controller.document.nodes if node.type == "Initial")
+        controller.update_field(initial.uuid, "author", "asahi", "simple")
+        controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+        controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+        controller.update_field(initial.uuid, "CharName", "??", "simple")
+        node_uuid = controller.create_node("TouchIdle", (100, 100))
+        controller.update_field(node_uuid, "action_trigger_active", 0, "simple")
+        node = controller.get_node(node_uuid)
+        self.assertEqual("TouchIdle0", node.fields["draw_able_name"])
+        self.assertEqual("Paramtouch_idle0", node.fields["parameter"])
+        self.assertIn("touch_idle0", node.fields["action_trigger"])
+        self.assertIn("idle = 0", node.fields["action_trigger_active"])
+        self.assertEqual(0, display_value_for_field(self.schema, node, "action_trigger_active"))
+
     def test_touchdrag_action_trigger_edit_updates_internal_target_idle(self) -> None:
         controller = EditorController()
         controller.document.editor_settings.numeric_linkage_enabled = True
@@ -417,10 +464,54 @@ class LogicTests(unittest.TestCase):
         node = controller.get_node(node_uuid)
         controller.update_field(node.uuid, "action_trigger", "touch_idle7", "simple")
         node = controller.get_node(node.uuid)
+        self.assertEqual("TouchDrag7", node.fields["draw_able_name"])
         self.assertEqual("{type = 2 ,action = 'touch_idle7'}", node.fields["action_trigger"])
         self.assertEqual("touch_drag7", node.fields["parameter"])
         self.assertEqual(7, node.fields["target_idle"])
         self.assertIn("idle = 7", node.fields["action_trigger_active"])
+
+    def test_touchidle_parameter_edit_updates_linked_fields_in_simple_mode(self) -> None:
+        controller = EditorController()
+        controller.document.editor_settings.numeric_linkage_enabled = True
+        initial = next(node for node in controller.document.nodes if node.type == "Initial")
+        controller.update_field(initial.uuid, "author", "asahi", "simple")
+        controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+        controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+        controller.update_field(initial.uuid, "CharName", "??", "simple")
+        node_uuid = controller.create_node("TouchIdle", (100, 100))
+        controller.update_field(node_uuid, "parameter", "Paramtouch_idle11", "simple")
+        node = controller.get_node(node_uuid)
+        self.assertEqual("TouchIdle11", node.fields["draw_able_name"])
+        self.assertEqual("Paramtouch_idle11", node.fields["parameter"])
+        self.assertEqual(11, node.fields["target_idle"])
+        self.assertIn("touch_idle11", node.fields["action_trigger"])
+        self.assertIn("idle = 11", node.fields["action_trigger_active"])
+
+    def test_numeric_linkage_toggle_only_affects_future_nodes(self) -> None:
+        controller = EditorController()
+        controller.document.editor_settings.numeric_linkage_enabled = True
+        initial = next(node for node in controller.document.nodes if node.type == "Initial")
+        controller.update_field(initial.uuid, "author", "asahi", "simple")
+        controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+        controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+        controller.update_field(initial.uuid, "CharName", "??", "simple")
+
+        first_uuid = controller.create_node("TouchIdle", (100, 100))
+        controller.set_numeric_linkage_enabled(False)
+        second_uuid = controller.create_node("TouchIdle", (260, 100))
+
+        controller.update_field(first_uuid, "action_trigger_active", 5, "simple")
+        first = controller.get_node(first_uuid)
+        self.assertEqual("TouchIdle5", first.fields["draw_able_name"])
+        self.assertEqual("Paramtouch_idle5", first.fields["parameter"])
+        self.assertIn("touch_idle5", first.fields["action_trigger"])
+
+        controller.update_field(second_uuid, "action_trigger_active", 7, "simple")
+        second = controller.get_node(second_uuid)
+        self.assertEqual("TouchIdle2", second.fields["draw_able_name"])
+        self.assertEqual("Paramtouch_idle2", second.fields["parameter"])
+        self.assertIn("touch_idle2", second.fields["action_trigger"])
+        self.assertIn("idle = 7", second.fields["action_trigger_active"])
 
     def test_touchdrag_roundtrip_without_action_trigger_active(self) -> None:
         controller = EditorController()
@@ -497,6 +588,7 @@ class LogicTests(unittest.TestCase):
 
     def test_remove_nodes_writes_trash_bin_and_persists(self) -> None:
         controller = EditorController()
+        controller.document.editor_settings.trash_enabled = True
         initial = next(node for node in controller.document.nodes if node.type == "Initial")
         controller.update_field(initial.uuid, "author", "asahi", "simple")
         controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
@@ -516,6 +608,7 @@ class LogicTests(unittest.TestCase):
 
     def test_disabling_trash_clears_bin_and_reuses_slots(self) -> None:
         controller = EditorController()
+        controller.document.editor_settings.trash_enabled = True
         initial = next(node for node in controller.document.nodes if node.type == "Initial")
         controller.update_field(initial.uuid, "author", "asahi", "simple")
         controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
@@ -562,10 +655,10 @@ class LogicTests(unittest.TestCase):
         pasted = controller.paste_payload(payload, (260, 160))
         self.assertEqual(1, len(pasted))
         new_node = controller.get_node(pasted[0])
-        self.assertEqual("0", source_node.fields["draw_able_name"])
-        self.assertEqual("0", new_node.fields["draw_able_name"])
-        self.assertEqual("0", new_node.fields["parameter"])
-        self.assertIn("action = '0'", new_node.fields["action_trigger"])
+        self.assertEqual("TouchIdle", source_node.fields["draw_able_name"])
+        self.assertEqual("TouchIdle", new_node.fields["draw_able_name"])
+        self.assertEqual("Paramtouch_idle", new_node.fields["parameter"])
+        self.assertIn("action = 'touch_idle'", new_node.fields["action_trigger"])
         self.assertIn("idle = 0", new_node.fields["action_trigger_active"])
 
     def test_file_list_recurses_nested_directories(self) -> None:
@@ -640,6 +733,62 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             payload = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual("advanced", payload["global_mode"])
         window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_main_window_restores_last_opened_document(self) -> None:
+        settings = QSettings("OpenAI", "L2DConfigEditor")
+        settings.clear()
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                path = root / "restore.json"
+                save_document(get_default_schema(), create_document(get_default_schema()), path)
+
+                first = MainWindow(root, prefer_saved_workspace=False)
+                first._open_existing_session_or_file(path)
+                self.assertEqual(str(path), first.controller.document.path)
+                first.close()
+                settings.sync()
+
+                second = MainWindow(root, prefer_saved_workspace=False)
+                self.assertEqual(str(path), second.controller.document.path)
+                second.close()
+        finally:
+            settings.clear()
+
+    def test_main_window_restores_local_trash_preference_for_blank_document(self) -> None:
+        settings = QSettings("OpenAI", "L2DConfigEditor")
+        settings.clear()
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                first = MainWindow(root, prefer_saved_workspace=False)
+                self.assertFalse(first.controller.document.editor_settings.trash_enabled)
+                first._toggle_trash_enabled(True)
+                self.assertTrue(first.controller.document.editor_settings.trash_enabled)
+                first.close()
+
+                second = MainWindow(root, prefer_saved_workspace=False)
+                self.assertTrue(second.controller.document.editor_settings.trash_enabled)
+                second.close()
+        finally:
+            settings.clear()
+
+    def test_node_title_updates_when_draw_name_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "测试", "simple")
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            item = window.canvas.node_items[created]
+
+            window.controller.update_field(created, "draw_able_name", "CustomFrame", "simple")
+
+            self.assertEqual("CustomFrame", item._full_title_text())
+            window._mark_saved_checkpoint(saved=True)
         window.close()
 
     def test_node_form_reuses_editors_for_same_node_updates(self) -> None:
@@ -733,9 +882,9 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             created_files, created_folders = window._create_templates_from_csv(csv_path)
             self.assertEqual(3, created_files)
             self.assertEqual(2, created_folders)
-            self.assertTrue((Path(temp_dir) / "2026-5-20" / "角色A.json").exists())
-            self.assertTrue((Path(temp_dir) / "2026-5-20" / "角色B.json").exists())
-            self.assertTrue((Path(temp_dir) / "2026-5-28" / "角色C.json").exists())
+            self.assertTrue((Path(temp_dir) / "20260520" / "角色A.json").exists())
+            self.assertTrue((Path(temp_dir) / "20260520" / "角色B.json").exists())
+            self.assertTrue((Path(temp_dir) / "20260528" / "角色C.json").exists())
             window.close()
 
     def test_node_directory_click_keeps_dialog_open(self) -> None:
@@ -1096,6 +1245,36 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             comment_after = window.controller.get_node(comment_uuid)
             self.assertNotEqual(comment_before, comment_after.ui_position)
             self.assertEqual(size_before, comment_after.ui_size)
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_optimize_layout_still_works_when_some_nodes_are_locked(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "测试", "simple")
+
+            first = window.controller.create_node("TouchIdle", (420, 280))
+            second = window.controller.create_node("TouchDrag", (640, 420))
+            third = window.controller.create_node("TouchIdle", (80, 120))
+            window.controller.add_connection(first, second)
+            window.controller.add_connection(second, third)
+            locked_before = dict(window.controller.get_node(first).ui_position)
+            second_before = dict(window.controller.get_node(second).ui_position)
+            third_before = dict(window.controller.get_node(third).ui_position)
+            window.controller.set_node_locked(first, True)
+
+            changed = window.canvas.optimize_connection_layout()
+
+            self.assertTrue(changed)
+            self.assertEqual(locked_before, window.controller.get_node(first).ui_position)
+            self.assertTrue(
+                second_before != window.controller.get_node(second).ui_position
+                or third_before != window.controller.get_node(third).ui_position
+            )
             window._mark_saved_checkpoint(saved=True)
         window.close()
 

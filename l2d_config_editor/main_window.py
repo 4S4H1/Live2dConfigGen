@@ -211,6 +211,47 @@ class ExportCsvDialog(QDialog):
             item.setHidden(bool(needle) and needle not in haystack)
 
 
+class FileDirectoryDialog(QDialog):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("配置文件")
+        self.resize(640, 760)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        description = QLabel("低频切换文件时使用。可按名称搜索、双击打开。")
+        description.setWordWrap(True)
+        layout.addWidget(description)
+
+        top_row = QHBoxLayout()
+        self.refresh_button = QPushButton("刷新")
+        self.new_button = QPushButton("新建")
+        self.delete_button = QPushButton("删除")
+        top_row.addWidget(self.refresh_button)
+        top_row.addWidget(self.new_button)
+        top_row.addWidget(self.delete_button)
+        top_row.addStretch(1)
+        layout.addLayout(top_row)
+
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("搜索当前路径下的 JSON 配置")
+        layout.addWidget(self.search_edit)
+
+        self.list_widget = QListWidget()
+        self.list_widget.setObjectName("configFileList")
+        layout.addWidget(self.list_widget, 1)
+
+        button_row = QHBoxLayout()
+        self.open_button = QPushButton("打开选中")
+        self.close_button = QPushButton("关闭")
+        button_row.addWidget(self.open_button)
+        button_row.addStretch(1)
+        button_row.addWidget(self.close_button)
+        layout.addLayout(button_row)
+        self.close_button.clicked.connect(self.close)
+
+
 class NodeDirectoryDialog(QDialog):
     nodeRequested = pyqtSignal(str)
 
@@ -380,6 +421,8 @@ class MainWindow(QMainWindow):
     PASTE_GAP = 96.0
     # QSettings 键：存 Windows 注册表 HKCU\Software\OpenAI\L2DConfigEditor，不是仓库里的 config.json。
     SETTINGS_WORKSPACE_ROOT = "workspace_root"
+    SETTINGS_LAST_DOCUMENT = "last_document_path"
+    SETTINGS_TRASH_ENABLED_DEFAULT = "trash_enabled_default"
 
     def __init__(self, workdir: str | Path, *, prefer_saved_workspace: bool = True) -> None:
         super().__init__()
@@ -393,6 +436,12 @@ class MainWindow(QMainWindow):
         self.validation_cache: dict[str, list] = {}
         self.csv_dialog = CsvPreviewDialog(self.controller.schema, self)
         self.export_csv_dialog = ExportCsvDialog(self)
+        self.file_directory_dialog = FileDirectoryDialog(self)
+        self.file_search_edit = self.file_directory_dialog.search_edit
+        self.file_list = self.file_directory_dialog.list_widget
+        self.refresh_button = self.file_directory_dialog.refresh_button
+        self.new_button = self.file_directory_dialog.new_button
+        self.delete_button = self.file_directory_dialog.delete_button
         self.trash_dialog: TrashDialog | None = None
         self.node_directory_dialog: NodeDirectoryDialog | None = None
         self._auto_save_timer = QTimer(self)
@@ -410,12 +459,16 @@ class MainWindow(QMainWindow):
         self._refresh_file_list_after_save = False
 
         self.controller.pathChanged.connect(self._update_window_title)
+        self.controller.pathChanged.connect(self._remember_last_opened_document)
         self.controller.selectionChanged.connect(self._update_inspector)
         self.controller.csvPreviewChanged.connect(self._update_csv_preview)
         self.controller.statusMessage.connect(self._show_status)
         self.controller.documentSaved.connect(self._handle_document_saved)
+        self.controller.nodeAdded.connect(lambda _uuid: self._refresh_node_list_panel())
+        self.controller.nodeRemoved.connect(lambda _uuid: self._refresh_node_list_panel())
         self.controller.nodeUpdated.connect(self._handle_node_updated)
         self.controller.documentLoaded.connect(self._refresh_search_results)
+        self.controller.documentLoaded.connect(self._refresh_node_list_panel)
         self.controller.documentLoaded.connect(self._refresh_node_directory_dialog)
         self.controller.validationChanged.connect(self._store_validation)
         self.controller.documentStateChanged.connect(self._update_document_state)
@@ -434,9 +487,19 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._update_workspace_path_display()
         self._build_actions()
-        self._refresh_file_list()
+        self.file_search_edit.textChanged.connect(self._refresh_file_list)
+        self.file_list.itemClicked.connect(self._handle_file_list_item_clicked)
+        self.file_list.itemDoubleClicked.connect(self._open_selected_file)
+        self.refresh_button.clicked.connect(self._refresh_file_list)
+        self.new_button.clicked.connect(self._create_new_file)
+        self.delete_button.clicked.connect(self._delete_selected_file)
+        self.file_directory_dialog.open_button.clicked.connect(self._open_selected_file_from_dialog)
         self._apply_saved_preferences()
-        self._mark_saved_checkpoint(saved=False)
+        restored_last_document = self._restore_last_opened_document()
+        self._refresh_file_list()
+        self._refresh_node_list_panel()
+        if not restored_last_document:
+            self._mark_saved_checkpoint(saved=False)
         self._update_window_title(self.controller.document.path)
         self._update_inspector(None)
         self._sync_undo_actions()
@@ -451,6 +514,38 @@ class MainWindow(QMainWindow):
         if candidate.is_dir():
             return candidate.resolve()
         return default_path
+
+    def _remember_last_opened_document(self, path: str | None) -> None:
+        if not path:
+            return
+        candidate = Path(path)
+        if candidate.is_file():
+            self.settings.setValue(self.SETTINGS_LAST_DOCUMENT, str(candidate.resolve()))
+
+    def _restore_last_opened_document(self) -> bool:
+        raw = self.settings.value(self.SETTINGS_LAST_DOCUMENT)
+        if raw in (None, ""):
+            return False
+        candidate = Path(str(raw)).resolve()
+        try:
+            candidate.relative_to(self.workdir.resolve())
+        except Exception:
+            return False
+        if not candidate.is_file():
+            return False
+        try:
+            self._open_existing_session_or_file(candidate)
+        except Exception:
+            return False
+        return True
+
+    def _saved_trash_enabled_preference(self) -> bool:
+        raw = self.settings.value(self.SETTINGS_TRASH_ENABLED_DEFAULT, False)
+        return raw in (True, "true", "1", 1)
+
+    def _apply_local_document_defaults(self, document=None) -> None:
+        target = document or self.controller.document
+        target.editor_settings.trash_enabled = self._saved_trash_enabled_preference()
 
     def _update_workspace_path_display(self) -> None:
         self.workspace_path_edit.setText(str(self.workdir))
@@ -473,6 +568,7 @@ class MainWindow(QMainWindow):
         self.settings.sync()
         self._update_workspace_path_display()
         self._refresh_file_list()
+        self._refresh_node_list_panel()
 
     def _open_workspace_directory(self) -> None:
         if not self.workdir.exists():
@@ -539,10 +635,10 @@ class MainWindow(QMainWindow):
         eyebrow = QLabel("\u5de5\u4f5c\u533a")
         eyebrow.setObjectName("sectionEyebrow")
         workspace_layout.addWidget(eyebrow)
-        title = QLabel("\u914d\u7f6e\u6587\u4ef6")
+        title = QLabel("\u5df2\u521b\u5efa\u8282\u70b9")
         title.setObjectName("sectionTitle")
         workspace_layout.addWidget(title)
-        workspace_hint = QLabel("\u5de5\u4f5c\u533a\u7528\u4e8e\u67e5\u770b\u4e0e\u6253\u5f00\u5df2\u751f\u6210\u7684 JSON \u914d\u7f6e\uff0c\u6a21\u677f\u6279\u91cf\u521b\u5efa\u8bf7\u4ece\u83dc\u5355\u680f\u8fdb\u5165\u3002")
+        workspace_hint = QLabel("\u5de6\u4fa7\u9ed8\u8ba4\u7528\u4e8e\u67e5\u770b\u5f53\u524d\u56fe\u5185\u8282\u70b9\uff0c\u914d\u7f6e\u6587\u4ef6\u5207\u6362\u6539\u4e3a\u901a\u8fc7\u53f3\u4fa7\u6309\u94ae\u6253\u5f00\u3002")
         workspace_hint.setObjectName("panelHint")
         workspace_hint.setWordWrap(True)
         workspace_layout.addWidget(workspace_hint)
@@ -563,36 +659,22 @@ class MainWindow(QMainWindow):
         workspace_row.addWidget(self.choose_workspace_button, 0)
         workspace_row.addWidget(self.open_workspace_button, 0)
         workspace_layout.addLayout(workspace_row)
-
-        button_row = QHBoxLayout()
-        self.refresh_button = QPushButton("\u5237\u65b0")
-        self.new_button = QPushButton("\u65b0\u5efa")
-        self.new_button.setProperty("accentButton", True)
-        self.delete_button = QPushButton("\u5220\u9664")
-        self.refresh_button.clicked.connect(self._refresh_file_list)
-        self.new_button.clicked.connect(self._create_new_file)
-        self.delete_button.clicked.connect(self._delete_selected_file)
-        self.new_button.hide()
-        self.delete_button.hide()
-        for button in (self.refresh_button,):
-            button_row.addWidget(button)
-        workspace_layout.addLayout(button_row)
         layout.addWidget(workspace_card)
 
         list_card, list_layout = self._create_card()
-        list_eyebrow = QLabel("\u5217\u8868")
+        list_eyebrow = QLabel("\u8282\u70b9")
         list_eyebrow.setObjectName("sectionEyebrow")
         list_layout.addWidget(list_eyebrow)
-        self.file_search_edit = QLineEdit()
-        self.file_search_edit.setPlaceholderText("\u641c\u7d22\u5f53\u524d\u8def\u5f84\u4e0b\u7684 JSON \u914d\u7f6e")
-        self.file_search_edit.textChanged.connect(self._refresh_file_list)
-        list_layout.addWidget(self.file_search_edit)
+        self.node_search_edit = QLineEdit()
+        self.node_search_edit.setPlaceholderText("\u641c\u7d22\u5f53\u524d\u56fe\u5185\u8282\u70b9")
+        self.node_search_edit.textChanged.connect(self._refresh_node_list_panel)
+        list_layout.addWidget(self.node_search_edit)
 
-        self.file_list = QListWidget()
-        self.file_list.setObjectName("configFileList")
-        self.file_list.itemClicked.connect(self._handle_file_list_item_clicked)
-        self.file_list.itemDoubleClicked.connect(self._open_selected_file)
-        list_layout.addWidget(self.file_list, 1)
+        self.node_list = QListWidget()
+        self.node_list.setObjectName("nodeDirectoryList")
+        self.node_list.itemClicked.connect(self._focus_node_from_list_item)
+        self.node_list.itemActivated.connect(self._focus_node_from_list_item)
+        list_layout.addWidget(self.node_list, 1)
         layout.addWidget(list_card, 1)
         panel.setMinimumWidth(290)
         return panel
@@ -720,12 +802,12 @@ class MainWindow(QMainWindow):
         self.optimize_layout_button.clicked.connect(self._optimize_connection_layout)
         self.trash_button = QPushButton("\u5df2\u5220\u9664\u8282\u70b9")
         self.trash_button.clicked.connect(self._show_trash_dialog)
-        self.node_directory_button = QPushButton("节点目录")
-        self.node_directory_button.clicked.connect(self._show_node_directory_dialog)
+        self.file_directory_button = QPushButton("配置文件")
+        self.file_directory_button.clicked.connect(self._show_file_directory_dialog)
         action_row.addWidget(self.restore_layout_button)
         action_row.addWidget(self.optimize_layout_button)
         action_row.addWidget(self.trash_button)
-        action_row.addWidget(self.node_directory_button)
+        action_row.addWidget(self.file_directory_button)
         actions_block.addLayout(action_row)
 
         action_hint = QLabel("\u4f18\u5316\u8fde\u7ebf\u53ea\u4f1a\u6574\u7406\u5df2\u8fde\u7ebf\u8282\u70b9\u7684\u4f4d\u7f6e\uff0c\u4e0d\u4f1a\u6539\u52a8\u8282\u70b9\u5b57\u6bb5\u548c\u8fde\u7ebf\u5173\u7cfb\u3002")
@@ -1066,6 +1148,7 @@ class MainWindow(QMainWindow):
 
     def _create_blank_document_session(self, *, group_dir: str = "") -> None:
         document = create_document(self.controller.schema)
+        self._apply_local_document_defaults(document)
         undo_stack = QUndoStack(self)
         self._switch_to_document(document, undo_stack=undo_stack, saved=False, session_key=None, group_dir=group_dir)
 
@@ -1110,6 +1193,7 @@ class MainWindow(QMainWindow):
         self.advanced_mode_action.setChecked(self.controller.preferences.global_mode == "advanced")
         self.simple_mode_radio.setChecked(self.controller.preferences.global_mode == "simple")
         self.advanced_mode_radio.setChecked(self.controller.preferences.global_mode == "advanced")
+        self._apply_local_document_defaults(self.controller.document)
         self._handle_interaction_creation_mode_changed(self.controller.document.interaction_creation_mode)
         self._apply_wheel_settings(self._wheel_shortcut_settings())
         self._handle_editor_settings_changed(self.controller.document.editor_settings)
@@ -1261,6 +1345,9 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return
         path.unlink(missing_ok=True)
+        last_document = str(self.settings.value(self.SETTINGS_LAST_DOCUMENT, "") or "").strip()
+        if last_document and str(path.resolve()) == str(Path(last_document).resolve()):
+            self.settings.remove(self.SETTINGS_LAST_DOCUMENT)
         session_key = self._session_key_for_path(path)
         if session_key:
             self._document_sessions.pop(session_key, None)
@@ -1286,6 +1373,7 @@ class MainWindow(QMainWindow):
             self._refresh_file_list()
             return
         self._refresh_file_list()
+        self.file_directory_dialog.close()
 
     def _open_dialog(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "打开配置", str(self.workdir), "JSON Files (*.json)")
@@ -1460,6 +1548,7 @@ class MainWindow(QMainWindow):
             self.validation_summary.set_issues(self.validation_cache.get(node.uuid, []))
         else:
             self.validation_summary.set_issues([])
+        self._refresh_node_list_panel()
 
     def _handle_node_updated(self, node_uuid: str) -> None:
         if node_uuid == self.controller.selected_node_uuid:
@@ -1473,6 +1562,7 @@ class MainWindow(QMainWindow):
                 self.validation_summary.set_issues(self.validation_cache.get(node.uuid, []))
         if self.node_directory_dialog and self.node_directory_dialog.isVisible():
             self._refresh_node_directory_dialog()
+        self._refresh_node_list_panel()
         if self.search_edit.text().strip():
             self._refresh_search_results()
 
@@ -1593,6 +1683,8 @@ class MainWindow(QMainWindow):
                 self._handle_editor_settings_changed(self.controller.document.editor_settings)
                 return
         self.controller.set_trash_enabled(checked)
+        self.settings.setValue(self.SETTINGS_TRASH_ENABLED_DEFAULT, checked)
+        self.settings.sync()
 
     def _open_help_page(self) -> None:
         QDesktopServices.openUrl(QUrl.fromUserInput(HELP_PAGE_URL))
@@ -1620,6 +1712,41 @@ class MainWindow(QMainWindow):
             self.canvas.focus_on_node(node_uuid, target_scale=1.15, emphasize=True)
             if node_uuid in self.canvas.node_items:
                 self.canvas.node_items[node_uuid].setSelected(True)
+
+    def _focus_node_from_list_item(self, item: QListWidgetItem) -> None:
+        node_uuid = item.data(Qt.ItemDataRole.UserRole) if item else None
+        if isinstance(node_uuid, str) and node_uuid:
+            self._focus_node_from_directory(node_uuid)
+
+    def _refresh_node_list_panel(self) -> None:
+        if not hasattr(self, "node_list"):
+            return
+        current_selection = self.controller.selected_node_uuid
+        needle = self.node_search_edit.text().strip().lower() if hasattr(self, "node_search_edit") else ""
+        self.node_list.clear()
+        for node in self.controller.document.nodes:
+            label = self.controller.node_summary(node.uuid)
+            if needle and needle not in label.lower():
+                continue
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, node.uuid)
+            self.node_list.addItem(item)
+            if current_selection and current_selection == node.uuid:
+                self.node_list.setCurrentItem(item)
+
+    def _open_selected_file_from_dialog(self) -> None:
+        item = self.file_list.currentItem()
+        if item:
+            self._open_selected_file(item)
+
+    def _show_file_directory_dialog(self) -> None:
+        self._refresh_file_list()
+        current = self._relative_path_for_document(self.controller.document.path)
+        if current:
+            self._select_file_in_list(current)
+        self.file_directory_dialog.show()
+        self.file_directory_dialog.raise_()
+        self.file_directory_dialog.activateWindow()
 
     def _create_templates_from_csv_dialog(self) -> None:
         csv_path, _ = QFileDialog.getOpenFileName(self, "选择模板 CSV", str(self.workdir), "CSV Files (*.csv)")
@@ -1704,6 +1831,7 @@ class MainWindow(QMainWindow):
         self.search_edit.selectAll()
 
     def _focus_file_search(self) -> None:
+        self._show_file_directory_dialog()
         self.file_search_edit.setFocus()
         self.file_search_edit.selectAll()
 

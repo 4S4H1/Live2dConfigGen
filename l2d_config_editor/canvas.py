@@ -983,7 +983,7 @@ class NodeCanvasView(QGraphicsView):
         movable_nodes = {
             node.uuid: node
             for node in self.controller.document.nodes
-            if node.type != "Comment"
+            if node.type != "Comment" and not node.locked
         }
         edge_pairs = [
             (connection.from_uuid, connection.to_uuid)

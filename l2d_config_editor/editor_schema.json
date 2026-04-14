@@ -939,7 +939,7 @@
       "auto_rules": {
         "draw_template": "TouchDrag{sequence}",
         "parameter_template": "touch_drag{target_idle}",
-        "action_name_template": "touch_idle{target_idle}",
+        "action_name_template": "touch_drag{target_idle}",
         "use_sequence_for_target_idle": true,
         "supports_quick_create": true
       },
@@ -1499,11 +1499,11 @@
       "copyable": true,
       "quick_create": true,
       "resizable": false,
-      "header_color": "#8e4db6",
-      "body_color": "#352345",
-      "accent_color": "#c792ea",
+      "header_color": "#b86a1d",
+      "body_color": "#4b2c11",
+      "accent_color": "#ffc27a",
       "auto_rules": {
-        "draw_template": "ParameterTrigger{sequence}",
+        "draw_template": "TouchDrag{sequence}",
         "parameter_template": "touch_drag{target_idle}",
         "action_name_template": "touch_idle{target_idle}",
         "use_sequence_for_target_idle": true,

@@ -22,6 +22,7 @@ from .commands import (
 )
 from .constants import CLIPBOARD_MIME
 from .logic import (
+    _should_persist_target_idle,
     apply_auto_rules,
     create_document,
     create_node,
@@ -38,7 +39,6 @@ from .logic import (
     search_document,
     validate_document,
     document_to_csv_rows,
-    numeric_linkage_enabled,
 )
 from .models import ConnectionRecord, DocumentModel, EditorPreferences, NodeRecord
 from .schema import load_editor_schema
@@ -366,10 +366,20 @@ class EditorController(QObject):
             template = NodeRecord(
                 uuid=new_uuid(),
                 type=item["type"],
-                fields={key: value for key, value in item.items() if key not in {"uuid", "type", "ui_position", "ui_size", "locked"}},
+                fields={
+                    key: value
+                    for key, value in item.items()
+                    if key not in {"uuid", "type", "ui_position", "ui_size", "locked", "numeric_linkage_enabled"}
+                },
                 ui_position={"x": 0.0, "y": 0.0},
                 ui_size=item.get("ui_size"),
                 locked=bool(item.get("locked", False)),
+                numeric_linkage_enabled=bool(
+                    item.get(
+                        "numeric_linkage_enabled",
+                        self.document.editor_settings.numeric_linkage_enabled,
+                    )
+                ),
                 manual_fields=set(item.get("manual_fields", [])),
             )
             if not template.manual_fields:
@@ -440,10 +450,12 @@ class EditorController(QObject):
         }
         if node.ui_size:
             payload["ui_size"] = dict(node.ui_size)
+        if self.schema.nodes[node.type].category == "function":
+            payload["numeric_linkage_enabled"] = bool(node.numeric_linkage_enabled)
         if node.manual_fields:
             payload["manual_fields"] = sorted(node.manual_fields)
         for key, value in node.fields.items():
-            if key == "target_idle":
+            if key == "target_idle" and not _should_persist_target_idle(node):
                 continue
             if node.type in {"TouchDrag", "ParameterTrigger"} and key == "action_trigger_active":
                 continue
@@ -536,16 +548,9 @@ class EditorController(QObject):
         self.refresh_derived()
 
     def _set_editor_settings(self, settings: dict[str, Any], trash_bin) -> None:
-        previous_linkage = bool(self.document.editor_settings.numeric_linkage_enabled)
         self.document.editor_settings.numeric_linkage_enabled = bool(settings.get("numeric_linkage_enabled", False))
-        self.document.editor_settings.trash_enabled = bool(settings.get("trash_enabled", True))
+        self.document.editor_settings.trash_enabled = bool(settings.get("trash_enabled", False))
         self.document.trash_bin = list(trash_bin)
-        for node in self.document.nodes:
-            if not previous_linkage and self.document.editor_settings.numeric_linkage_enabled:
-                node.manual_fields.discard("parameter")
-                node.manual_fields.discard("action_trigger")
-            infer_manual_fields(self.schema, node, self.document)
-            apply_auto_rules(self.schema, self.document, node, source_mode="advanced", force_generated=False)
         self.refresh_derived()
 
     def _move_node(self, node_uuid: str, position: tuple[float, float]) -> None:

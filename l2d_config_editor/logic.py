@@ -97,15 +97,19 @@ def function_node_types(schema: EditorSchema) -> tuple[str, ...]:
     return tuple(type_name for type_name, node in schema.nodes.items() if node.category == "function")
 
 
+def _text(value: Any) -> str:
+    return "" if value is None else str(value)
+
+
 def parse_range(value: str) -> tuple[float, float] | None:
-    match = RANGE_PATTERN.match(str(value or "").strip())
+    match = RANGE_PATTERN.match(_text(value).strip())
     if not match:
         return None
     return float(match.group(1)), float(match.group(2))
 
 
 def normalize_parts_data(value: str) -> list[float] | None:
-    text = str(value or "").strip()
+    text = _text(value).strip()
     if not text:
         return []
     match = PARTS_DATA_PATTERN.match(text)
@@ -128,7 +132,7 @@ def _format_number(value: float) -> str:
 
 
 def canonicalize_parts_data(value: Any) -> str:
-    text = str(value or "").strip()
+    text = _text(value).strip()
     if not text:
         return ""
     parts = normalize_parts_data(text)
@@ -138,7 +142,7 @@ def canonicalize_parts_data(value: Any) -> str:
 
 
 def normalize_react_condition_list(value: Any) -> str:
-    text = str(value or "").strip()
+    text = _text(value).strip()
     if not text:
         return ""
     match = REACT_CONDITION_PATTERN.match(text)
@@ -154,12 +158,12 @@ def normalize_react_condition_list(value: Any) -> str:
         try:
             normalized.append(str(int(item)))
         except ValueError:
-            return str(value or "").strip()
+            return _text(value).strip()
     return ",".join(normalized)
 
 
 def format_react_condition_for_csv(value: Any) -> str:
-    raw = str(value or "").strip()
+    raw = _text(value).strip()
     if not raw:
         return ""
     normalized = normalize_react_condition_list(raw)
@@ -178,7 +182,7 @@ def _coerce_int(value: Any, default: int = 0) -> int:
 
 
 def _action_name_from_raw(value: Any) -> str:
-    text = str(value or "").strip()
+    text = _text(value).strip()
     if not text:
         return ""
     match = ACTION_NAME_PATTERN.search(text)
@@ -186,7 +190,7 @@ def _action_name_from_raw(value: Any) -> str:
 
 
 def _target_idle_from_raw(value: Any) -> int | None:
-    text = str(value or "").strip()
+    text = _text(value).strip()
     if not text:
         return None
     match = TARGET_IDLE_PATTERN.search(text)
@@ -196,7 +200,7 @@ def _target_idle_from_raw(value: Any) -> int | None:
 
 
 def _suffix_int(value: Any) -> int | None:
-    text = str(value or "").strip()
+    text = _text(value).strip()
     if not text:
         return None
     match = TRAILING_INT_PATTERN.search(text)
@@ -206,7 +210,7 @@ def _suffix_int(value: Any) -> int | None:
 
 
 def _classify_action_trigger(value: Any) -> str:
-    text = str(value or "").strip()
+    text = _text(value).strip()
     if not text:
         return "empty"
     if "type" in text and "2" in text and "action" in text:
@@ -215,7 +219,7 @@ def _classify_action_trigger(value: Any) -> str:
 
 
 def _classify_action_trigger_active(value: Any) -> str:
-    text = str(value or "").strip()
+    text = _text(value).strip()
     if not text:
         return "empty"
     return "idle_gate" if "idle" in text else "reserved_raw"
@@ -224,8 +228,8 @@ def _classify_action_trigger_active(value: Any) -> str:
 def _refresh_trigger_interface_fields(node: NodeRecord) -> None:
     if node.type not in {"TouchIdle", "TouchDrag", "ParameterTrigger"}:
         return
-    action_raw = str(node.fields.get("action_trigger", "") or "").strip()
-    active_raw = str(node.fields.get("action_trigger_active", "") or "").strip()
+    action_raw = _text(node.fields.get("action_trigger", "")).strip()
+    active_raw = _text(node.fields.get("action_trigger_active", "")).strip()
     action_kind = _classify_action_trigger(action_raw)
     active_kind = _classify_action_trigger_active(active_raw)
     node.fields["action_trigger_kind_ui"] = action_kind
@@ -245,6 +249,8 @@ def normalized_target_idle(node: NodeRecord) -> int:
         parameter_target_idle = _suffix_int(node.fields.get("parameter"))
         if parameter_target_idle is not None:
             return parameter_target_idle
+        if "target_idle" in node.fields:
+            return _coerce_int(node.fields.get("target_idle"), 0)
         slot_target_idle = _coerce_int(node.type_slot or node.sequence_no, 0)
         if slot_target_idle > 0:
             return slot_target_idle
@@ -374,7 +380,7 @@ def build_template_version_folder_name(version: Any) -> str:
     for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"):
         try:
             parsed = datetime.strptime(text, fmt)
-            return f"{parsed.year}-{parsed.month}-{parsed.day}"
+            return parsed.strftime("%Y%m%d")
         except ValueError:
             continue
     sanitized = re.sub(r'[<>:"/\\|?*]+', "_", text).strip(" ._")
@@ -458,6 +464,10 @@ def numeric_linkage_enabled(document: DocumentModel) -> bool:
     return bool(document.editor_settings.numeric_linkage_enabled)
 
 
+def node_numeric_linkage_enabled(node: NodeRecord) -> bool:
+    return bool(node.numeric_linkage_enabled)
+
+
 def _is_touchdrag_value_like(node: NodeRecord) -> bool:
     return node.type == "ParameterTrigger" or (node.type == "TouchDrag" and node.fields.get("result_type") == "value")
 
@@ -466,11 +476,11 @@ def display_value_for_field(schema: EditorSchema, node: NodeRecord, key: str, ra
     del schema
     value = node.fields.get(key) if raw_value is None else raw_value
     if key == "action_trigger":
-        if not str(value or "").strip():
+        if not _text(value).strip():
             return ""
         return _action_name_from_raw(value)
     if key == "action_trigger_active":
-        if not str(value or "").strip():
+        if not _text(value).strip():
             return ""
         return normalized_target_idle(node)
     if key == "parts_data":
@@ -482,15 +492,15 @@ def display_value_for_field(schema: EditorSchema, node: NodeRecord, key: str, ra
 
 def normalize_field_input(schema: EditorSchema, node: NodeRecord, key: str, display_value: Any) -> Any:
     if key == "action_trigger":
-        if not str(display_value or "").strip():
+        if not _text(display_value).strip():
             return ""
         target_idle = normalized_target_idle(node)
-        action_name = str(display_value or "").strip()
+        action_name = _text(display_value).strip()
         if node.type == "TouchIdle" and node.fields.get("transition_type") == "hard":
             return _hard_cut_action(schema, target_idle)[0]
         return _animated_action(schema, _node_schema(schema, node.type), target_idle, action_name=action_name)[0]
     if key == "action_trigger_active":
-        if str(display_value or "").strip() == "":
+        if _text(display_value).strip() == "":
             return ""
         target_idle = _coerce_int(display_value, 0)
         if node.type == "TouchIdle" and node.fields.get("transition_type") == "hard":
@@ -503,15 +513,25 @@ def normalize_field_input(schema: EditorSchema, node: NodeRecord, key: str, disp
     return display_value
 
 
+def _template_without_suffix(template: str, **values: Any) -> str:
+    result = _text(template)
+    replacements = {"sequence": "", "target_idle": "", **values}
+    for key, value in replacements.items():
+        result = result.replace(f"{{{key}}}", str(value))
+    return result.strip()
+
+
 def _manual_sequence_defaults(schema: EditorSchema, node: NodeRecord) -> None:
     if node.type not in function_node_types(schema):
         return
+    node_schema = _node_schema(schema, node.type)
     target_idle = 0
-    node.fields["draw_able_name"] = "0"
+    action_name = _template_without_suffix(node_schema.auto_rules.action_name_template or "touch_idle{target_idle}")
+    node.fields["draw_able_name"] = _template_without_suffix(node_schema.auto_rules.draw_template)
     node.fields["target_idle"] = target_idle
-    node.fields["parameter"] = "0"
-    node.fields["action_trigger"] = _animated_action(schema, _node_schema(schema, node.type), target_idle, action_name="0")[0]
-    node.fields["action_trigger_active"] = _animated_action(schema, _node_schema(schema, node.type), target_idle)[1]
+    node.fields["parameter"] = _template_without_suffix(node_schema.auto_rules.parameter_template)
+    node.fields["action_trigger"] = _animated_action(schema, node_schema, target_idle, action_name=action_name)[0]
+    node.fields["action_trigger_active"] = _animated_action(schema, node_schema, target_idle)[1]
     node.manual_fields.update({"parameter", "action_trigger"})
     _refresh_trigger_interface_fields(node)
 
@@ -524,6 +544,57 @@ def _infer_expected_actions(schema: EditorSchema, node: NodeRecord) -> tuple[str
     return _animated_action(schema, node_schema, target_idle)
 
 
+def _linked_draw_name(node_schema: NodeSchema, target_idle: int) -> str:
+    return node_schema.auto_rules.draw_template.format(sequence=target_idle, target_idle=target_idle)
+
+
+def _linked_target_idle_for_field(node: NodeRecord, changed_key: str | None) -> int | None:
+    if changed_key == "target_idle":
+        return _coerce_int(node.fields.get("target_idle"), normalized_target_idle(node))
+    if changed_key == "action_trigger_active":
+        return normalized_target_idle(node)
+    if changed_key == "draw_able_name":
+        return _suffix_int(node.fields.get("draw_able_name"))
+    if changed_key == "parameter":
+        return _suffix_int(node.fields.get("parameter"))
+    if changed_key == "action_trigger":
+        return _suffix_int(_action_name_from_raw(node.fields.get("action_trigger")))
+    return None
+
+
+def _apply_simple_linked_field_updates(
+    schema: EditorSchema,
+    node: NodeRecord,
+    *,
+    target_idle: int,
+    preserve_key: str | None,
+) -> None:
+    node_schema = _node_schema(schema, node.type)
+    if preserve_key != "draw_able_name":
+        node.fields["draw_able_name"] = _linked_draw_name(node_schema, target_idle)
+    if preserve_key == "parameter":
+        node.manual_fields.add("parameter")
+    else:
+        node.fields["parameter"] = _expected_parameter(node_schema, target_idle)
+        node.manual_fields.discard("parameter")
+    if _is_touchdrag_value_like(node):
+        node.fields["target_idle"] = 0
+        node.fields["action_trigger"] = ""
+        node.fields["action_trigger_active"] = ""
+        node.manual_fields.discard("action_trigger")
+        _refresh_trigger_interface_fields(node)
+        return
+    node.fields["target_idle"] = target_idle
+    expected_action, expected_active = _infer_expected_actions(schema, node)
+    if preserve_key == "action_trigger":
+        node.manual_fields.add("action_trigger")
+    else:
+        node.fields["action_trigger"] = expected_action
+        node.manual_fields.discard("action_trigger")
+    node.fields["action_trigger_active"] = expected_active
+    _refresh_trigger_interface_fields(node)
+
+
 def _unlinked_sequence_defaults(node: NodeRecord) -> None:
     node.fields["draw_able_name"] = ""
     node.fields["target_idle"] = 0
@@ -534,6 +605,7 @@ def _unlinked_sequence_defaults(node: NodeRecord) -> None:
 
 
 def infer_manual_fields(schema: EditorSchema, node: NodeRecord, document: DocumentModel | None = None) -> None:
+    del document
     if node.type not in function_node_types(schema):
         return
     node_schema = _node_schema(schema, node.type)
@@ -546,7 +618,7 @@ def infer_manual_fields(schema: EditorSchema, node: NodeRecord, document: Docume
         node.manual_fields.discard("parameter")
     if _is_touchdrag_value_like(node):
         node.manual_fields.discard("action_trigger")
-        if document is not None and numeric_linkage_enabled(document):
+        if node_numeric_linkage_enabled(node):
             node.fields["action_trigger"] = ""
             node.fields["action_trigger_active"] = ""
             node.fields["target_idle"] = 0
@@ -557,16 +629,13 @@ def infer_manual_fields(schema: EditorSchema, node: NodeRecord, document: Docume
         node.manual_fields.add("action_trigger")
     else:
         node.manual_fields.discard("action_trigger")
-    if document is not None and numeric_linkage_enabled(document):
+    if node_numeric_linkage_enabled(node):
         node.fields["action_trigger_active"] = expected_active
     _refresh_trigger_interface_fields(node)
 
 
 def apply_sequence_defaults(schema: EditorSchema, document: DocumentModel, node: NodeRecord) -> None:
     if node.type not in function_node_types(schema):
-        return
-    if not numeric_linkage_enabled(document):
-        _unlinked_sequence_defaults(node)
         return
     node_schema = _node_schema(schema, node.type)
     sequence = node.type_slot or node.sequence_no or 1
@@ -630,14 +699,22 @@ def apply_auto_rules(
 ) -> None:
     if node.type == "Initial":
         return
-    if changed_key in {"target_idle", "action_trigger_active"} and source_mode == "simple":
-        node.manual_fields.discard("parameter")
     if "parts_data" in node.fields:
         node.fields["parts_data"] = canonicalize_parts_data(node.fields.get("parts_data", ""))
     _update_drag_offsets(node, changed_key, source_mode)
     _update_range_abs(node)
     if node.type not in function_node_types(schema):
         return
+    if source_mode == "simple" and node_numeric_linkage_enabled(node):
+        linked_target_idle = _linked_target_idle_for_field(node, changed_key)
+        if linked_target_idle is not None:
+            _apply_simple_linked_field_updates(
+                schema,
+                node,
+                target_idle=linked_target_idle,
+                preserve_key=changed_key,
+            )
+            return
     target_idle = _coerce_int(node.fields.get("target_idle"), normalized_target_idle(node))
     node.fields["target_idle"] = target_idle
     if _is_touchdrag_value_like(node):
@@ -648,7 +725,7 @@ def apply_auto_rules(
         node.manual_fields.discard("action_trigger")
         _refresh_trigger_interface_fields(node)
         return
-    if not numeric_linkage_enabled(document):
+    if not node_numeric_linkage_enabled(node):
         _refresh_trigger_interface_fields(node)
         return
     node_schema = _node_schema(schema, node.type)
@@ -680,6 +757,11 @@ def create_node(
         sequence_no=_next_sequence_no(document, node_type),
         type_slot=base_node.type_slot if base_node and node_type not in function_node_types(schema) else None,
         export_slot=base_node.export_slot if base_node and node_type not in function_node_types(schema) else None,
+        numeric_linkage_enabled=(
+            base_node.numeric_linkage_enabled
+            if base_node is not None
+            else bool(document.editor_settings.numeric_linkage_enabled and node_type in function_node_types(schema))
+        ),
         manual_fields=set(),
     )
     if node.type in function_node_types(schema):
@@ -691,8 +773,6 @@ def create_node(
             _manual_sequence_defaults(schema, node)
         else:
             apply_sequence_defaults(schema, document, node)
-        if not numeric_linkage_enabled(document) and base_node is None:
-            _unlinked_sequence_defaults(node)
     else:
         apply_auto_rules(schema, document, node, force_generated=False)
     if node.type == "ParameterTrigger":
@@ -782,14 +862,15 @@ def node_title(schema: EditorSchema, node: NodeRecord) -> str:
     definition = _node_schema(schema, node.type)
     if node.type in function_node_types(schema):
         slot = node.type_slot or node.sequence_no or 1
-        prefix = f"{definition.title}{slot}"
-        tips = str(node.fields.get("tips", "") or "").strip()
+        draw_name = _text(node.fields.get("draw_able_name", "")).strip()
+        prefix = draw_name or f"{definition.title}{slot}"
+        tips = _text(node.fields.get("tips", "")).strip()
         return f"{prefix}-{tips}" if tips else prefix
     if node.type == "Comment":
-        content = str(node.fields.get("content", "") or "").strip().splitlines()
+        content = _text(node.fields.get("content", "")).strip().splitlines()
         first_line = content[0][:24] if content else ""
         return f"{definition.title}-{first_line}" if first_line else definition.title
-    tips = str(node.fields.get("tips", "") or "").strip()
+    tips = _text(node.fields.get("tips", "")).strip()
     return f"{definition.title}-{tips}" if tips else definition.title
 
 
@@ -817,9 +898,35 @@ def _export_node_fields(node: NodeRecord) -> dict[str, Any]:
     return {key: value for key, value in node.fields.items() if key not in hidden_fields}
 
 
+def _derived_target_idle_from_fields(node: NodeRecord) -> int | None:
+    raw_target_idle = _target_idle_from_raw(node.fields.get("action_trigger_active"))
+    if raw_target_idle is not None and node.type not in {"TouchDrag", "ParameterTrigger"}:
+        return raw_target_idle
+    if node.type not in {"TouchDrag", "ParameterTrigger"}:
+        return None
+    action_target_idle = _suffix_int(_action_name_from_raw(node.fields.get("action_trigger")))
+    if action_target_idle is not None:
+        return action_target_idle
+    parameter_target_idle = _suffix_int(node.fields.get("parameter"))
+    if parameter_target_idle is not None:
+        return parameter_target_idle
+    return None
+
+
+def _should_persist_target_idle(node: NodeRecord) -> bool:
+    if "target_idle" not in node.fields:
+        return False
+    explicit_target_idle = _coerce_int(node.fields.get("target_idle"), 0)
+    derived_target_idle = _derived_target_idle_from_fields(node)
+    if derived_target_idle is None:
+        return node.type in {"TouchDrag", "ParameterTrigger"}
+    return explicit_target_idle != derived_target_idle
+
+
 def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[str, Any]:
     sync_meta_from_initial(document)
     reassign_function_ids(schema, document)
+    function_types = set(function_node_types(schema))
     serialized_nodes = []
     for node in document.nodes:
         payload: dict[str, Any] = {
@@ -834,7 +941,11 @@ def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[
         payload["locked"] = node.locked
         if node.ui_size:
             payload["ui_size"] = node.ui_size
+        if node.type in function_types:
+            payload["numeric_linkage_enabled"] = bool(node.numeric_linkage_enabled)
         payload.update(_export_node_fields(node))
+        if _should_persist_target_idle(node):
+            payload["target_idle"] = _coerce_int(node.fields.get("target_idle"), 0)
         serialized_nodes.append(payload)
     return {
         "editor_signature": EDITOR_DOCUMENT_SIGNATURE,
@@ -871,7 +982,7 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
         interaction_creation_mode=str(payload.get("interaction_creation_mode", "auto") or "auto"),
         editor_settings=EditorSettings(
             numeric_linkage_enabled=bool(settings_payload.get("numeric_linkage_enabled", False)),
-            trash_enabled=bool(settings_payload.get("trash_enabled", True)),
+            trash_enabled=bool(settings_payload.get("trash_enabled", False)),
         ),
         meta=MetaRecord(**{key: value for key, value in meta_payload.items() if key in meta_keys}),
         connections=[ConnectionRecord(**item) for item in payload.get("connections", [])],
@@ -879,12 +990,13 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
         canvas_view=CanvasViewState(**payload.get("canvas_view", {})),
         path=str(path),
     )
+    function_types = set(function_node_types(schema))
     sequence_map: dict[str, int] = {}
     for raw in payload.get("nodes", []):
         fields = {
             key: value
             for key, value in raw.items()
-            if key not in {"uuid", "type", "ui_position", "ui_size", "mode_variant", "locked"}
+            if key not in {"uuid", "type", "ui_position", "ui_size", "mode_variant", "locked", "numeric_linkage_enabled"}
         }
         node_type = raw["type"]
         if node_type == "Initial":
@@ -904,6 +1016,11 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
             type_slot=raw.get("type_slot"),
             export_slot=raw.get("export_slot"),
             locked=bool(raw.get("locked", False)),
+            numeric_linkage_enabled=bool(
+                raw.get("numeric_linkage_enabled", settings_payload.get("numeric_linkage_enabled", False))
+                if node_type in function_types
+                else False
+            ),
         )
         infer_manual_fields(schema, node, document)
         apply_auto_rules(schema, document, node, source_mode="advanced", force_generated=False)
@@ -1056,33 +1173,46 @@ def _draw_conflict_issues(schema: EditorSchema, group: list[NodeRecord]) -> list
     return issues
 
 
+
+
 def validate_document(schema: EditorSchema, document: DocumentModel) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     initial_nodes = [node for node in document.nodes if node.type == "Initial"]
     if len(initial_nodes) > 1:
-        issues.extend(_issue_for_group(schema, "存在多个初始节点", [], initial_nodes))
+        issues.extend(_issue_for_group(schema, "Duplicate Initial nodes", [], initial_nodes))
 
-    for node in document.nodes:
-        if node.type in function_node_types(schema):
-            parts = normalize_parts_data(node.fields.get("parts_data", ""))
-            if parts is None:
-                issues.append(
-                    ValidationIssue(
-                        node_uuid=node.uuid,
-                        message=f"{_field_label(schema, node, 'parts_data')} 格式无效，应为逗号分隔的数字列表",
-                        field_keys=["parts_data"],
-                    )
+    function_types = set(function_node_types(schema))
+    function_nodes = [node for node in document.nodes if node.type in function_types]
+    duplicate_parameters: dict[str, list[NodeRecord]] = {}
+    for node in function_nodes:
+        parameter_value = _display_field_value(schema, node, "parameter")
+        if parameter_value:
+            duplicate_parameters.setdefault(parameter_value, []).append(node)
+    for group in duplicate_parameters.values():
+        if len(group) > 1:
+            issues.extend(_duplicate_field_issues(schema, group, "parameter"))
+
+    for node in function_nodes:
+        parts = normalize_parts_data(node.fields.get("parts_data", ""))
+        if parts is None:
+            issues.append(
+                ValidationIssue(
+                    node_uuid=node.uuid,
+                    message=f"{_field_label(schema, node, 'parts_data')} has invalid format; use comma-separated numbers",
+                    field_keys=["parts_data"],
                 )
-            parsed_range = parse_range(node.fields.get("range", ""))
-            if parts is not None and parsed_range is not None and any(part < parsed_range[0] or part > parsed_range[1] for part in parts):
-                issues.append(
-                    ValidationIssue(
-                        node_uuid=node.uuid,
-                        message=f"{_field_label(schema, node, 'parts_data')} 超出 {_field_label(schema, node, 'range')} 范围",
-                        field_keys=["parts_data", "range"],
-                    )
+            )
+        parsed_range = parse_range(node.fields.get("range", ""))
+        if parts is not None and parsed_range is not None and any(part < parsed_range[0] or part > parsed_range[1] for part in parts):
+            issues.append(
+                ValidationIssue(
+                    node_uuid=node.uuid,
+                    message=f"{_field_label(schema, node, 'parts_data')} exceeds {_field_label(schema, node, 'range')}",
+                    field_keys=["parts_data", "range"],
                 )
+            )
     return issues
+
 
 
 def _field_label(schema: EditorSchema, node: NodeRecord, key: str, *, use_json_field_names: bool = False) -> str:

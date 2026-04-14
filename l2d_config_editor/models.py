@@ -40,7 +40,7 @@ class EditorPreferences:
 @dataclass
 class EditorSettings:
     numeric_linkage_enabled: bool = False
-    trash_enabled: bool = True
+    trash_enabled: bool = False
 
 
 @dataclass
@@ -60,6 +60,7 @@ class NodeRecord:
     type_slot: int | None = None
     export_slot: int | None = None
     locked: bool = False
+    numeric_linkage_enabled: bool = False
     manual_fields: set[str] = field(default_factory=set)
 
     def clone(self) -> "NodeRecord":
@@ -73,6 +74,7 @@ class NodeRecord:
             type_slot=self.type_slot,
             export_slot=self.export_slot,
             locked=self.locked,
+            numeric_linkage_enabled=self.numeric_linkage_enabled,
             manual_fields=set(self.manual_fields),
         )
 
