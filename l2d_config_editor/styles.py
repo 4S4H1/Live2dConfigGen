@@ -55,6 +55,14 @@ QToolBar {
     spacing: 8px;
     padding: 4px 8px;
 }
+QToolBar QLabel {
+    color: #c9ced6;
+    background: transparent;
+    font-weight: 600;
+}
+QToolBar QWidget {
+    background: transparent;
+}
 QPushButton,
 QToolButton,
 QComboBox,

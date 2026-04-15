@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
     QStatusBar,
     QTableWidget,
     QTableWidgetItem,
+    QToolBar,
     QVBoxLayout,
     QWidget,
     QLineEdit,
@@ -487,6 +488,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._update_workspace_path_display()
         self._build_actions()
+        self._build_hidden_inspector_compat()
         self.file_search_edit.textChanged.connect(self._refresh_file_list)
         self.file_list.itemClicked.connect(self._handle_file_list_item_clicked)
         self.file_list.itemDoubleClicked.connect(self._open_selected_file)
@@ -503,7 +505,6 @@ class MainWindow(QMainWindow):
         self._update_window_title(self.controller.document.path)
         self._update_inspector(None)
         self._sync_undo_actions()
-        self.validation_summary.jumpRequested.connect(self._jump_to_validation_node)
 
     def _resolved_workspace_path(self, default: str | Path) -> Path:
         default_path = Path(default).resolve()
@@ -598,9 +599,12 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         root = QWidget()
         root.setObjectName("appRoot")
-        layout = QHBoxLayout(root)
+        layout = QVBoxLayout(root)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(12)
+
+        self.top_toolbar = self._build_top_toolbar()
+        layout.addWidget(self.top_toolbar)
 
         horizontal = QSplitter(Qt.Orientation.Horizontal)
         horizontal.setChildrenCollapsible(False)
@@ -608,13 +612,104 @@ class MainWindow(QMainWindow):
 
         horizontal.addWidget(self._build_file_panel())
         horizontal.addWidget(self._build_canvas_panel())
-        horizontal.addWidget(self._build_inspector_panel())
         horizontal.setStretchFactor(0, 0)
         horizontal.setStretchFactor(1, 1)
-        horizontal.setStretchFactor(2, 0)
 
         self.setCentralWidget(root)
         self.setStatusBar(QStatusBar(self))
+
+    def _build_hidden_inspector_compat(self) -> None:
+        self._inspector_compat_host = QWidget(self)
+        self._inspector_compat_host.hide()
+        compat_layout = QVBoxLayout(self._inspector_compat_host)
+        compat_layout.setContentsMargins(0, 0, 0, 0)
+        compat_layout.setSpacing(0)
+        self.inspector_meta = QLabel("", self._inspector_compat_host)
+        self.inspector_placeholder = QLabel("请选择一个节点", self._inspector_compat_host)
+        self.inspector_form = NodeFormWidget(self.controller.schema, inline=False, parent=self._inspector_compat_host)
+        self.inspector_form.fieldCommitted.connect(self._commit_inspector_field)
+        self.validation_summary = ValidationSummaryWidget(self._inspector_compat_host)
+        self.validation_summary.jumpRequested.connect(self._jump_to_validation_node)
+        compat_layout.addWidget(self.inspector_meta)
+        compat_layout.addWidget(self.inspector_placeholder)
+        compat_layout.addWidget(self.inspector_form)
+        compat_layout.addWidget(self.validation_summary)
+        self.inspector_meta.hide()
+        self.inspector_placeholder.hide()
+        self.inspector_form.hide()
+        self.validation_summary.hide()
+
+    def _build_top_toolbar(self) -> QToolBar:
+        toolbar = QToolBar("画布工具栏", self)
+        toolbar.setObjectName("topControlBar")
+        toolbar.setMovable(False)
+        toolbar.setFloatable(False)
+
+        mode_widget = QWidget(toolbar)
+        mode_layout = QHBoxLayout(mode_widget)
+        mode_layout.setContentsMargins(0, 0, 0, 0)
+        mode_layout.setSpacing(8)
+        mode_layout.addWidget(QLabel("编辑模式"))
+        self.simple_mode_radio = QRadioButton("简易")
+        self.advanced_mode_radio = QRadioButton("高级")
+        self.mode_button_group = QButtonGroup(self)
+        self.mode_button_group.setExclusive(True)
+        self.mode_button_group.addButton(self.simple_mode_radio)
+        self.mode_button_group.addButton(self.advanced_mode_radio)
+        self.simple_mode_radio.toggled.connect(lambda checked: checked and self.controller.set_global_mode("simple"))
+        self.advanced_mode_radio.toggled.connect(lambda checked: checked and self.controller.set_global_mode("advanced"))
+        mode_layout.addWidget(self.simple_mode_radio)
+        mode_layout.addWidget(self.advanced_mode_radio)
+        toolbar.addWidget(mode_widget)
+
+        toolbar.addSeparator()
+
+        rule_widget = QWidget(toolbar)
+        rule_layout = QHBoxLayout(rule_widget)
+        rule_layout.setContentsMargins(0, 0, 0, 0)
+        rule_layout.setSpacing(8)
+        rule_layout.addWidget(QLabel("创建规则"))
+        self.auto_create_rule_radio = QRadioButton("自动")
+        self.manual_create_rule_radio = QRadioButton("手动")
+        self.create_rule_button_group = QButtonGroup(self)
+        self.create_rule_button_group.setExclusive(True)
+        self.create_rule_button_group.addButton(self.auto_create_rule_radio)
+        self.create_rule_button_group.addButton(self.manual_create_rule_radio)
+        self.auto_create_rule_radio.toggled.connect(lambda checked: checked and self.controller.set_interaction_creation_mode("auto"))
+        self.manual_create_rule_radio.toggled.connect(lambda checked: checked and self.controller.set_interaction_creation_mode("manual"))
+        rule_layout.addWidget(self.auto_create_rule_radio)
+        rule_layout.addWidget(self.manual_create_rule_radio)
+        toolbar.addWidget(rule_widget)
+
+        toolbar.addSeparator()
+
+        self.numeric_linkage_checkbox = QCheckBox("数值联动")
+        self.numeric_linkage_checkbox.toggled.connect(self._toggle_numeric_linkage)
+        toolbar.addWidget(self.numeric_linkage_checkbox)
+
+        self.trash_enabled_checkbox = QCheckBox("启用回收站")
+        self.trash_enabled_checkbox.toggled.connect(self._toggle_trash_enabled)
+        toolbar.addWidget(self.trash_enabled_checkbox)
+
+        toolbar.addSeparator()
+
+        self.restore_layout_button = QPushButton("还原视角")
+        self.restore_layout_button.clicked.connect(self._restore_canvas_layout)
+        toolbar.addWidget(self.restore_layout_button)
+
+        self.optimize_layout_button = QPushButton("优化连线")
+        self.optimize_layout_button.clicked.connect(self._optimize_connection_layout)
+        toolbar.addWidget(self.optimize_layout_button)
+
+        self.trash_button = QPushButton("已删除节点")
+        self.trash_button.clicked.connect(self._show_trash_dialog)
+        toolbar.addWidget(self.trash_button)
+
+        self.file_directory_button = QPushButton("配置文件")
+        self.file_directory_button.clicked.connect(self._show_file_directory_dialog)
+        toolbar.addWidget(self.file_directory_button)
+
+        return toolbar
 
     def _create_card(self, object_name: str = "filePanelCard") -> tuple[QFrame, QVBoxLayout]:
         card = QFrame()
@@ -638,7 +733,7 @@ class MainWindow(QMainWindow):
         title = QLabel("\u5df2\u521b\u5efa\u8282\u70b9")
         title.setObjectName("sectionTitle")
         workspace_layout.addWidget(title)
-        workspace_hint = QLabel("\u5de6\u4fa7\u9ed8\u8ba4\u7528\u4e8e\u67e5\u770b\u5f53\u524d\u56fe\u5185\u8282\u70b9\uff0c\u914d\u7f6e\u6587\u4ef6\u5207\u6362\u6539\u4e3a\u901a\u8fc7\u53f3\u4fa7\u6309\u94ae\u6253\u5f00\u3002")
+        workspace_hint = QLabel("\u5de6\u4fa7\u9ed8\u8ba4\u7528\u4e8e\u67e5\u770b\u5f53\u524d\u56fe\u5185\u8282\u70b9\uff0c\u914d\u7f6e\u6587\u4ef6\u5207\u6362\u6539\u4e3a\u901a\u8fc7\u9876\u90e8\u5de5\u5177\u680f\u5165\u53e3\u6253\u5f00\u3002")
         workspace_hint.setObjectName("panelHint")
         workspace_hint.setWordWrap(True)
         workspace_layout.addWidget(workspace_hint)
@@ -1536,9 +1631,6 @@ class MainWindow(QMainWindow):
 
     def _update_inspector(self, node_uuid: str | None) -> None:
         node = self.controller.get_node(node_uuid) if node_uuid else None
-        self.inspector_placeholder.setVisible(node is None)
-        self.inspector_form.setVisible(node is not None)
-        self.validation_summary.setVisible(node is not None)
         if node:
             self.inspector_form.set_node(
                 node,

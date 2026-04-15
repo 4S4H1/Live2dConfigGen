@@ -108,6 +108,13 @@ class ConnectionItem(QGraphicsPathItem):
 class NodeItem(QGraphicsObject):
     geometryChanged = pyqtSignal(str)
     PIN_HIT_PADDING = 9.0
+    SIMPLE_WIDTH = 420
+    ADVANCED_WIDTH = 460
+    RESIZE_MIN_WIDTH = 360.0
+    MIN_VISIBLE_WIDTH = 340.0
+    MIN_VISIBLE_WIDTH_COMPACT = 300.0
+    MAX_ADAPTIVE_WIDTH_FACTOR = 2.6
+    DISPLAY_ROW_GAP = 28.0
 
     def __init__(self, schema: EditorSchema, controller, node, inline_width: int = 340) -> None:
         super().__init__()
@@ -129,11 +136,13 @@ class NodeItem(QGraphicsObject):
         self._header_height = self._base_header_height
         self._content_top_gap = self._base_content_top_gap
         self._title_rect = QRectF(14.0, 8.0, 180.0, 20.0)
+        self._summary_layout_rows: list[tuple[QRectF, str, QColor]] = []
         self._pin_radius = 8
         self._resizing = False
         self._resize_start = QPointF()
         self._resize_initial = (360.0, 180.0)
         self._drag_start_pos = QPointF()
+        self._drag_start_logical_pos = QPointF()
         self._rect = QRectF(0.0, 0.0, 380.0, 180.0)
         self.setFlags(
             QGraphicsItem.GraphicsItemFlag.ItemIsMovable
@@ -202,34 +211,39 @@ class NodeItem(QGraphicsObject):
         self.prepareGeometryChange()
         self.node = node
         definition = self.schema.nodes[node.type]
+        view = self._canvas_view()
+        effective_mode = view.node_display_mode(node.uuid) if view else self.controller.preferences.global_mode
+        compact_mode = view.should_render_thumbnail_nodes() if view else False
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, not node.locked)
         self.form.set_node(
             node,
-            self.controller.preferences.global_mode,
+            effective_mode,
             self.controller.preferences.debug_json_field_names,
+            compact_mode=compact_mode,
         )
-        base_width = 340 if self.controller.preferences.global_mode == "simple" else 380
-        content_width = base_width
+        base_content_width = self.SIMPLE_WIDTH if effective_mode == "simple" else self.ADVANCED_WIDTH
+        content_width = base_content_width
         if definition.resizable and node.ui_size:
             content_width = max(content_width, int(node.ui_size.get("width", content_width)) - self._margin * 2)
-        width = content_width + self._margin * 2
-        if definition.resizable and node.ui_size:
-            width = max(width, float(node.ui_size.get("width", width)))
+        persisted_width = float(node.ui_size.get("width", 0.0)) if definition.resizable and node.ui_size else 0.0
+        base_width = max(content_width + self._margin * 2, persisted_width)
+        width = max(base_width, self._adaptive_width(base_width, compact_mode))
         self._recompute_header_layout(width)
         final_content_width = int(width - self._margin * 2)
+        content_top_gap = 0.0 if compact_mode else self._content_top_gap
         self.form.setFixedWidth(final_content_width)
         self.form.ensurePolished()
-        content_height = self.form.content_height_hint()
+        content_height = 0 if compact_mode else self.form.content_height_hint()
         self.form.setFixedHeight(content_height)
         self.form.updateGeometry()
-        height = content_height + self._margin * 2 + self._header_height + self._content_top_gap
-        if definition.resizable and node.ui_size:
+        height = content_height + self._margin * 2 + self._header_height + content_top_gap
+        if definition.resizable and node.ui_size and not compact_mode:
             height = max(height, float(node.ui_size.get("height", height)))
-        self._rect = QRectF(0.0, 0.0, width, max(120.0, height))
-        self.proxy.setPos(self._margin, self._header_height + self._content_top_gap)
+        min_height = 90.0 if compact_mode else 120.0
+        self._rect = QRectF(0.0, 0.0, width, max(min_height, height))
+        self.proxy.setVisible(not compact_mode)
+        self.proxy.setPos(self._margin, self._header_height + content_top_gap)
         self.proxy.resize(final_content_width, content_height)
-        if definition.resizable:
-            node.ui_size = {"width": self._rect.width(), "height": self._rect.height()}
         self.setToolTip(self._full_title_text())
         self.update()
         self.geometryChanged.emit(self.node.uuid)
@@ -345,7 +359,7 @@ class NodeItem(QGraphicsObject):
             self.proxy.size().width() + 4,
             self.proxy.size().height() + 4,
         )
-        if content_rect.width() > 0 and content_rect.height() > 0:
+        if self.proxy.isVisible() and content_rect.width() > 0 and content_rect.height() > 0:
             panel_fill = QColor("#0d0e12")
             panel_fill.setAlpha(228)
             panel_border = QColor("#c8d3e6")
@@ -373,6 +387,15 @@ class NodeItem(QGraphicsObject):
             int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap),
             self._full_title_text(),
         )
+        summary_font = self._summary_font()
+        painter.setFont(summary_font)
+        for rect, text, color in self._summary_layout_rows:
+            painter.setPen(color)
+            painter.drawText(
+                rect,
+                int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap),
+                text,
+            )
         if self._attention_strength > 0.001:
             flash_fill = QColor(255, 255, 255, int(118 * self._attention_strength))
             painter.setBrush(flash_fill)
@@ -410,6 +433,7 @@ class NodeItem(QGraphicsObject):
             event.accept()
             return
         self._drag_start_pos = self.pos()
+        self._drag_start_logical_pos = QPointF(float(self.node.ui_position["x"]), float(self.node.ui_position["y"]))
         if not self.node.locked:
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             view = self._canvas_view()
@@ -420,7 +444,7 @@ class NodeItem(QGraphicsObject):
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._resizing:
             delta = event.scenePos() - self._resize_start
-            width = max(280.0, self._resize_initial[0] + delta.x())
+            width = max(self.RESIZE_MIN_WIDTH, self._resize_initial[0] + delta.x())
             height = max(140.0, self._resize_initial[1] + delta.y())
             self.node.ui_size = {"width": width, "height": height}
             self.update_node(self.node)
@@ -438,14 +462,18 @@ class NodeItem(QGraphicsObject):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+        view = self._canvas_view()
         if not self.node.locked:
-            view = self._canvas_view()
             if view:
                 view._set_interaction_busy("drag", False)
             self.setCursor(Qt.CursorShape.OpenHandCursor)
         current = self.pos()
-        old_pos = (self._drag_start_pos.x(), self._drag_start_pos.y())
-        new_pos = (current.x(), current.y())
+        old_pos = (self._drag_start_logical_pos.x(), self._drag_start_logical_pos.y())
+        if view:
+            logical_current = view.logical_position_from_display(self.node.uuid, current)
+        else:
+            logical_current = current
+        new_pos = (logical_current.x(), logical_current.y())
         self.controller.move_node(self.node.uuid, old_pos, new_pos)
 
     def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value: Any):
@@ -483,9 +511,28 @@ class NodeItem(QGraphicsObject):
         title_font.setPointSizeF(max(7.8, 10.4 / self._view_scale()))
         return title_font
 
+    def _summary_font(self) -> QFont:
+        summary_font = QFont(self.form.font())
+        summary_font.setBold(True)
+        summary_font.setPointSizeF(max(6.8, 8.8 / self._view_scale()))
+        return summary_font
+
+    @staticmethod
+    def _summary_text_color(color: str) -> QColor:
+        resolved = QColor(color)
+        return resolved if resolved.isValid() else QColor("#dfe5ef")
+
+    def _adaptive_width(self, base_width: float, compact_mode: bool) -> float:
+        scale = self._view_scale()
+        min_visible_width = self.MIN_VISIBLE_WIDTH_COMPACT if compact_mode else self.MIN_VISIBLE_WIDTH
+        minimum_scene_width = min_visible_width / max(0.12, scale)
+        return min(base_width * self.MAX_ADAPTIVE_WIDTH_FACTOR, max(base_width, minimum_scene_width))
+
     def _recompute_header_layout(self, width: float) -> None:
         title_font = self._title_font()
         metrics = QFontMetrics(title_font)
+        summary_font = self._summary_font()
+        summary_metrics = QFontMetrics(summary_font)
         scale = self._view_scale()
         available_width = max(140, int(width - 60.0))
         title_text = self._full_title_text()
@@ -497,9 +544,30 @@ class NodeItem(QGraphicsObject):
             int(Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap),
             title_text,
         )
+        summary_top = 0.0
+        self._summary_layout_rows = []
         accent_bar_bottom = 12.0
         zoom_in_title_offset = max(0.0, (scale - 1.0) * 5.0)
         padding_top = max(13.0, accent_bar_bottom + 1.5 + zoom_in_title_offset, 10.0 / scale)
+        title_bottom = padding_top + max(24.0, float(title_bounds.height()))
+        summary_y = title_bottom + max(6.0, 8.0 / scale)
+        row_gap = max(2.0, 4.0 / scale)
+        for icon, label, value, color in self.form.summary_display_rows():
+            row_text = f"{icon} {label}: {value}"
+            row_bounds = summary_metrics.boundingRect(
+                0,
+                0,
+                available_width,
+                4096,
+                int(Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap),
+                row_text,
+            )
+            row_height = max(16.0, float(row_bounds.height()))
+            rect = QRectF(14.0, summary_y, width - 60.0, row_height)
+            self._summary_layout_rows.append((rect, row_text, self._summary_text_color(color)))
+            summary_y += row_height + row_gap
+        if self._summary_layout_rows:
+            summary_top = self._summary_layout_rows[-1][0].bottom()
         padding_bottom = max(10.0, 12.0 / scale)
         self._title_rect = QRectF(
             14.0,
@@ -509,7 +577,7 @@ class NodeItem(QGraphicsObject):
         )
         self._header_height = max(
             self._base_header_height,
-            self._title_rect.y() + self._title_rect.height() + padding_bottom,
+            max(self._title_rect.y() + self._title_rect.height(), summary_top) + padding_bottom,
         )
         self._content_top_gap = max(self._base_content_top_gap, 16.0 / self._view_scale())
 
@@ -520,6 +588,7 @@ class NodeItem(QGraphicsObject):
 class NodeCanvasView(QGraphicsView):
     selectionSummaryChanged = pyqtSignal(object, object)
     interactionBusyChanged = pyqtSignal(bool)
+    THUMBNAIL_SCALE_THRESHOLD = 0.45
 
     def __init__(self, schema: EditorSchema, controller, parent=None) -> None:
         super().__init__(parent)
@@ -538,6 +607,8 @@ class NodeCanvasView(QGraphicsView):
         self.connection_items: dict[tuple[str, str], ConnectionItem] = {}
         self.zoom_wheel_modifier = "ctrl"
         self.horizontal_wheel_modifier = "alt_shift"
+        self.per_node_mode_overrides: dict[str, str] = {}
+        self._display_position_overrides: dict[str, QPointF] = {}
         self._warnings_by_node: dict[str, list[str]] = {}
         self._connecting_from: str | None = None
         self._connecting_moved = False
@@ -578,6 +649,8 @@ class NodeCanvasView(QGraphicsView):
         self.rebuild_scene()
 
     def rebuild_scene(self) -> None:
+        self.per_node_mode_overrides.clear()
+        self._display_position_overrides.clear()
         for item in list(self.connection_items.values()):
             self.scene_ref.removeItem(item)
         for item in list(self.node_items.values()):
@@ -628,10 +701,44 @@ class NodeCanvasView(QGraphicsView):
     def selected_connection_pairs(self) -> list[tuple[str, str]]:
         return [(item.from_uuid, item.to_uuid) for item in self.scene_ref.selectedItems() if isinstance(item, ConnectionItem)]
 
+    def node_display_mode(self, node_uuid: str) -> str:
+        return self.per_node_mode_overrides.get(node_uuid, self.controller.preferences.global_mode)
+
+    def should_render_thumbnail_nodes(self) -> bool:
+        return float(self.transform().m11()) <= self.THUMBNAIL_SCALE_THRESHOLD
+
+    def logical_position_for_node(self, node_uuid: str) -> QPointF:
+        node = self.controller.get_node(node_uuid)
+        if not node:
+            return QPointF()
+        return QPointF(float(node.ui_position["x"]), float(node.ui_position["y"]))
+
+    def display_position_for_node(self, node_uuid: str) -> QPointF:
+        return self._display_position_overrides.get(node_uuid, self.logical_position_for_node(node_uuid))
+
+    def logical_position_from_display(self, node_uuid: str, display_pos: QPointF) -> QPointF:
+        logical_pos = self.logical_position_for_node(node_uuid)
+        display_target = self.display_position_for_node(node_uuid)
+        offset = display_target - logical_pos
+        return QPointF(display_pos.x() - offset.x(), display_pos.y() - offset.y())
+
+    def toggle_node_mode_override(self, node_uuid: str) -> None:
+        current = self.node_display_mode(node_uuid)
+        next_mode = "advanced" if current == "simple" else "simple"
+        if next_mode == self.controller.preferences.global_mode:
+            self.per_node_mode_overrides.pop(node_uuid, None)
+        else:
+            self.per_node_mode_overrides[node_uuid] = next_mode
+        self._update_node_item(node_uuid)
+
     def center_on_node(self, node_uuid: str) -> None:
         item = self.node_items.get(node_uuid)
         if item:
-            self.centerOn(item)
+            target_center = self._focus_target_center(node_uuid)
+            if target_center is not None:
+                self.centerOn(target_center)
+            else:
+                self.centerOn(item)
             self._store_canvas_view()
 
     def flash_node(self, node_uuid: str, *, emphasize: bool = False) -> None:
@@ -653,7 +760,7 @@ class NodeCanvasView(QGraphicsView):
         self._focus_start_scale = current_scale
         self._focus_end_scale = max(current_scale, float(target_scale)) if target_scale is not None else current_scale
         self._focus_start_center = self.mapToScene(self.viewport().rect().center())
-        self._focus_end_center = item.mapToScene(item.boundingRect().center())
+        self._focus_end_center = self._focus_target_center(node_uuid) or item.mapRectToScene(item.boundingRect()).center()
         self._focus_target_uuid = node_uuid
         self._focus_emphasize = emphasize
         self._focus_animation.setDuration(420 if emphasize else 320)
@@ -725,6 +832,15 @@ class NodeCanvasView(QGraphicsView):
                     event.accept()
                     return
         super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            node_item = self._node_item_at_view_point(event.position())
+            if node_item:
+                self.toggle_node_mode_override(node_item.node.uuid)
+                event.accept()
+                return
+        super().mouseDoubleClickEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._panning:
@@ -830,13 +946,16 @@ class NodeCanvasView(QGraphicsView):
         item = self.node_items.get(node_uuid)
         if not node or not item:
             return
-        if item.pos() != QPointF(node.ui_position["x"], node.ui_position["y"]):
-            item.setPos(node.ui_position["x"], node.ui_position["y"])
+        target_pos = self.display_position_for_node(node_uuid)
+        if item.pos() != target_pos:
+            item.setPos(target_pos)
         item.update_node(node)
         item.set_warnings(self._warnings_by_node.get(node_uuid, []))
         self._update_connections_for_node(node_uuid)
 
     def _remove_node_item(self, node_uuid: str) -> None:
+        self.per_node_mode_overrides.pop(node_uuid, None)
+        self._display_position_overrides.pop(node_uuid, None)
         item = self.node_items.pop(node_uuid, None)
         if not item:
             return
@@ -911,6 +1030,10 @@ class NodeCanvasView(QGraphicsView):
 
     def _finish_focus_animation(self) -> None:
         self._apply_view_state(self._focus_end_scale, self._focus_end_center)
+        if self._focus_target_uuid:
+            corrected_center = self._focus_target_center(self._focus_target_uuid)
+            if corrected_center is not None:
+                self.centerOn(corrected_center)
         self._set_interaction_busy("focus", False)
         self._store_canvas_view()
         if self._focus_target_uuid:
@@ -1333,6 +1456,69 @@ class NodeCanvasView(QGraphicsView):
         self.scene_ref.bottom_right_hint = tips or "按住中键平移 / 滚轮缩放 / 右键创建 / DEL键删除"
         self.scene_ref.update()
 
+    def _focus_target_center(self, node_uuid: str) -> QPointF | None:
+        item = self.node_items.get(node_uuid)
+        if not item:
+            return None
+        return item.mapRectToScene(item.boundingRect()).center()
+
+    def _recompute_display_position_overrides(self) -> None:
+        self._display_position_overrides.clear()
+        if not self.node_items:
+            return
+        if float(self.transform().m11()) >= 0.999:
+            return
+        rows: list[dict[str, object]] = []
+        sorted_nodes = sorted(
+            self.node_items,
+            key=lambda value: (
+                self.controller.get_node(value).ui_position["y"],
+                self.controller.get_node(value).ui_position["x"],
+            ),
+        )
+        for node_uuid in sorted_nodes:
+            logical = self.logical_position_for_node(node_uuid)
+            logical_rect = self._expanded_rect_for(node_uuid, (logical.x(), logical.y()))
+            target_row = None
+            for row in rows:
+                if logical_rect.bottom() >= row["top"] and logical_rect.top() <= row["bottom"]:
+                    target_row = row
+                    break
+            if target_row is None:
+                target_row = {"top": logical_rect.top(), "bottom": logical_rect.bottom(), "nodes": []}
+                rows.append(target_row)
+            target_row["top"] = min(float(target_row["top"]), logical_rect.top())
+            target_row["bottom"] = max(float(target_row["bottom"]), logical_rect.bottom())
+            target_row["nodes"].append(node_uuid)
+        margin = 26.0
+        gap = NodeItem.DISPLAY_ROW_GAP
+        for row in rows:
+            previous_rect: QRectF | None = None
+            for node_uuid in sorted(
+                row["nodes"],
+                key=lambda value: (
+                    self.controller.get_node(value).ui_position["x"],
+                    self.controller.get_node(value).ui_position["y"],
+                ),
+            ):
+                logical_pos = self.logical_position_for_node(node_uuid)
+                target_x = float(logical_pos.x())
+                target_y = float(logical_pos.y())
+                candidate_rect = self._expanded_rect_for(node_uuid, (target_x, target_y))
+                if previous_rect is not None and candidate_rect.left() < previous_rect.right() + gap:
+                    target_x = previous_rect.right() + gap + margin
+                    candidate_rect = self._expanded_rect_for(node_uuid, (target_x, target_y))
+                self._display_position_overrides[node_uuid] = QPointF(target_x, target_y)
+                previous_rect = candidate_rect
+
+    def _apply_display_position_overrides(self) -> None:
+        for node_uuid, item in self.node_items.items():
+            target_pos = self.display_position_for_node(node_uuid)
+            if item.pos() != target_pos:
+                item.setPos(target_pos)
+
     def _refresh_scale_sensitive_nodes(self) -> None:
         for item in self.node_items.values():
             item.refresh_view_scale()
+        self._recompute_display_position_overrides()
+        self._apply_display_position_overrides()

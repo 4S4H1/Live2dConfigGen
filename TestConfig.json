@@ -36,8 +36,8 @@
       "uuid": "1cda322b61004d13bcc668f431385c55",
       "type": "TouchIdle",
       "ui_position": {
-        "x": -189.53158925619843,
-        "y": 2465.563662314051
+        "x": 69.83021069923154,
+        "y": 2396.3001613547212
       },
       "type_slot": 1,
       "export_slot": 1,
@@ -83,8 +83,8 @@
       "uuid": "b5c3bfa7f5784737abbd10e11bf06976",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 226.35404595156461,
-        "y": 2527.14978485076
+        "x": 810.7302106992316,
+        "y": 2396.3001613547212
       },
       "type_slot": 2,
       "export_slot": 2,
@@ -130,8 +130,8 @@
       "uuid": "3f3a5486ec6a4e10b256253910dc14c5",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 641.3223140495866,
-        "y": 2561.9834710743785
+        "x": 1551.6302106992316,
+        "y": 2396.3001613547212
       },
       "type_slot": 3,
       "export_slot": 3,
@@ -177,8 +177,8 @@
       "uuid": "ed09e9777e4e4bb0aaedfaa5e89f04ea",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 1117.3223140495866,
-        "y": 2561.9834710743785
+        "x": 2292.5302106992317,
+        "y": 2396.3001613547212
       },
       "type_slot": 4,
       "export_slot": 4,
@@ -193,7 +193,7 @@
       "drag_ui_direction": "",
       "transition_type": "animated",
       "action_trigger": "{type = 2 ,action = 'touch_idle3'}",
-      "action_trigger_active": "",
+      "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 0}",
       "id": 1111104,
       "mode": 1,
       "start_value": 0,
@@ -227,8 +227,8 @@
       "uuid": "6d2369268b6d42de851da510399a2442",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 1536.3636363636356,
-        "y": 2622.3140495867756
+        "x": 3033.430210699232,
+        "y": 2396.3001613547212
       },
       "type_slot": 5,
       "export_slot": 5,
@@ -274,8 +274,8 @@
       "uuid": "1dbff55c580b497cb31419e2496a197a",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 1950.413223140495,
-        "y": 2688.4297520661144
+        "x": 3774.330210699232,
+        "y": 2396.3001613547212
       },
       "type_slot": 6,
       "export_slot": 6,
@@ -321,8 +321,8 @@
       "uuid": "a105f32b2e2e4e80b1f808b4acb5f86e",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 2363.6363636363626,
-        "y": 2747.1074380165273
+        "x": 4515.230210699233,
+        "y": 2396.3001613547212
       },
       "type_slot": 7,
       "export_slot": 7,
@@ -337,7 +337,7 @@
       "drag_ui_direction": "",
       "transition_type": "animated",
       "action_trigger": "{type = 2 ,action = 'touch_idle'}",
-      "action_trigger_active": "",
+      "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 0}",
       "id": 1111107,
       "mode": 1,
       "start_value": 0,
@@ -368,8 +368,8 @@
       "uuid": "0fbdb68dae584d709fef5b196acc6352",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 2787.6033057851228,
-        "y": 2799.173553719007
+        "x": 5256.1302106992325,
+        "y": 2396.3001613547212
       },
       "type_slot": 8,
       "export_slot": 8,
@@ -415,8 +415,8 @@
       "uuid": "064955dae82c49aea1bd92258035c619",
       "type": "ParameterTrigger",
       "ui_position": {
-        "x": 3204.9149000000007,
-        "y": 2847.674500000001
+        "x": 5997.030210699232,
+        "y": 2396.3001613547212
       },
       "type_slot": 1,
       "export_slot": 9,
@@ -466,8 +466,8 @@
       "uuid": "a4086abffac3443baab1a9d774e3736f",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 3676.0,
-        "y": 2917.0
+        "x": 6737.930210699233,
+        "y": 2396.3001613547212
       },
       "type_slot": 9,
       "export_slot": 10,
@@ -554,8 +554,8 @@
   ],
   "trash_bin": [],
   "canvas_view": {
-    "scale": 1.0,
-    "offset_x": 2955.0,
-    "offset_y": 3085.0
+    "scale": 0.2393920493691636,
+    "offset_x": 3521.4202068173945,
+    "offset_y": 2853.0604997108903
   }
 }

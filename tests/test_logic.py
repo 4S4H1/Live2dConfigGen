@@ -10,7 +10,7 @@ if sys.platform != "win32":
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import QPointF, QSettings, Qt
-from PyQt6.QtWidgets import QApplication, QMessageBox
+from PyQt6.QtWidgets import QApplication, QMessageBox, QSplitter, QToolBar
 
 from l2d_config_editor.controller import EditorController
 from l2d_config_editor.logic import (
@@ -735,6 +735,107 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         window._mark_saved_checkpoint(saved=True)
         window.close()
 
+    def test_main_window_uses_two_panel_splitter_and_top_toolbar(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            window.show()
+            self.app.processEvents()
+            splitter = window.findChild(QSplitter)
+            toolbar = window.findChild(QToolBar, "topControlBar")
+
+            self.assertIsNotNone(splitter)
+            self.assertEqual(2, splitter.count())
+            self.assertIsNotNone(toolbar)
+            self.assertTrue(window.simple_mode_radio.isVisible())
+            self.assertTrue(window.auto_create_rule_radio.isVisible())
+            self.assertTrue(window.numeric_linkage_checkbox.isVisible())
+            self.assertTrue(window.restore_layout_button.isVisible())
+
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
+    def test_double_click_toggles_per_node_mode_override(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            window.controller.set_global_mode("simple")
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            item = window.canvas.node_items[created]
+
+            self.assertEqual("simple", window.canvas.node_display_mode(created))
+            self.assertNotIn(created, window.canvas.per_node_mode_overrides)
+            self.assertIn("action_trigger_active", item.form._bindings)
+
+            window.canvas.toggle_node_mode_override(created)
+            self.app.processEvents()
+
+            self.assertEqual("advanced", window.canvas.node_display_mode(created))
+            self.assertEqual("advanced", window.canvas.per_node_mode_overrides[created])
+            self.assertIn("action_trigger_active_kind_ui", item.form._bindings)
+
+            window.canvas.toggle_node_mode_override(created)
+            self.app.processEvents()
+
+            self.assertEqual("simple", window.canvas.node_display_mode(created))
+            self.assertNotIn(created, window.canvas.per_node_mode_overrides)
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
+    def test_inline_summary_order_and_thumbnail_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            node = window.controller.get_node(created)
+            item = window.canvas.node_items[created]
+
+            window.controller.update_field(created, "tips", "备注内容", "simple")
+            summary_labels = [label for label, _value in item.form.summary_items()]
+            self.assertEqual(["备注", "框", "播放动画", "目标待机"], summary_labels)
+            self.assertFalse(item.form._summary_widget.isVisible())
+            self.assertGreaterEqual(len(item._summary_layout_rows), 4)
+
+            window.canvas._apply_view_state(0.4, QPointF(node.ui_position["x"], node.ui_position["y"]))
+            self.app.processEvents()
+
+            self.assertTrue(item.form.compact_mode)
+            self.assertFalse(any(widget.isVisible() for widget, _binding in ((binding.widget, binding) for binding in item.form._bindings.values())))
+
+            drag_uuid = window.controller.create_node("TouchDrag", (420, 120))
+            drag_item = window.canvas.node_items[drag_uuid]
+            drag_summary_labels = [label for label, _value in drag_item.form.summary_items()]
+            self.assertNotIn("目标待机", drag_summary_labels)
+
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
+    def test_hidden_inspector_compat_does_not_surface_as_floating_window(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            window.controller.set_selected_node(created)
+            self.app.processEvents()
+
+            self.assertFalse(window._inspector_compat_host.isVisible())
+            self.assertFalse(window.inspector_form.isVisible())
+            self.assertFalse(window.validation_summary.isVisible())
+
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
     def test_main_window_restores_last_opened_document(self) -> None:
         settings = QSettings("OpenAI", "L2DConfigEditor")
         settings.clear()
@@ -1129,6 +1230,104 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window.canvas._refresh_scale_sensitive_nodes()
             self.app.processEvents()
             self.assertGreater(item._header_height, original_header_height)
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_zooming_out_expands_node_width_for_readability(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            item = window.canvas.node_items[created]
+            original_width = item._rect.width()
+
+            window.canvas.scale(0.5, 0.5)
+            window.canvas._refresh_scale_sensitive_nodes()
+            self.app.processEvents()
+
+            self.assertGreater(item._rect.width(), original_width)
+            self.assertGreater(item._rect.width() * window.canvas.transform().m11(), 300.0)
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_zooming_out_does_not_persist_adaptive_width_into_ui_size(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            comment_uuid = window.controller.create_node("Comment", (450, 110))
+            comment_node = window.controller.get_node(comment_uuid)
+            comment_node.ui_size = {"width": 420.0, "height": 220.0}
+            window.controller.nodeUpdated.emit(comment_uuid)
+            item = window.canvas.node_items[comment_uuid]
+
+            window.canvas.scale(0.5, 0.5)
+            window.canvas._refresh_scale_sensitive_nodes()
+            self.app.processEvents()
+
+            self.assertGreater(item._rect.width(), comment_node.ui_size["width"])
+            self.assertEqual({"width": 420.0, "height": 220.0}, comment_node.ui_size)
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_zooming_out_reflows_close_nodes_to_avoid_overlap(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            first_uuid = window.controller.create_node("TouchIdle", (200, 120))
+            second_uuid = window.controller.create_node("TouchIdle", (460, 150))
+            first_item = window.canvas.node_items[first_uuid]
+            second_item = window.canvas.node_items[second_uuid]
+            second_logical_x = window.controller.get_node(second_uuid).ui_position["x"]
+
+            window.canvas.scale(0.5, 0.5)
+            window.canvas._refresh_scale_sensitive_nodes()
+            self.app.processEvents()
+
+            self.assertGreater(second_item.pos().x(), second_logical_x)
+            self.assertFalse(first_item.mapRectToScene(first_item.boundingRect()).intersects(second_item.mapRectToScene(second_item.boundingRect())))
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_focus_selected_node_recenters_after_zoomed_out_animation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            window.show()
+            self.app.processEvents()
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            first_uuid = window.controller.create_node("TouchIdle", (200, 120))
+            second_uuid = window.controller.create_node("TouchIdle", (460, 150))
+            second_item = window.canvas.node_items[second_uuid]
+
+            window.canvas.scale(0.4, 0.4)
+            window.canvas._refresh_scale_sensitive_nodes()
+            self.app.processEvents()
+
+            second_item.setSelected(True)
+            window.controller.set_selected_node(second_uuid)
+            window._focus_selected_node()
+            window.canvas._finish_focus_animation()
+            self.app.processEvents()
+
+            viewport_center = window.canvas.mapToScene(window.canvas.viewport().rect().center())
+            target_center = second_item.mapRectToScene(second_item.boundingRect()).center()
+            self.assertLess(abs(viewport_center.x() - target_center.x()), 1.5)
+            self.assertLess(abs(viewport_center.y() - target_center.y()), 1.5)
             window._mark_saved_checkpoint(saved=True)
         window.close()
 

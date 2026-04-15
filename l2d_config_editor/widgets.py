@@ -334,6 +334,12 @@ class NodeFormWidget(QFrame):
         "note_text_alpha",
         "note_font_size",
     }
+    SUMMARY_SPECS = (
+        ("tips", "✎", "备注", "#f6c85f"),
+        ("draw_able_name", "▣", "框", "#63c7d8"),
+        ("action_trigger", "▶", "播放动画", "#f39b55"),
+        ("action_trigger_active", "◎", "目标待机", "#78d381"),
+    )
 
     def __init__(self, schema: EditorSchema, inline: bool = False, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -342,7 +348,10 @@ class NodeFormWidget(QFrame):
         self.node = None
         self.global_mode = "simple"
         self.show_json_field_names = False
+        self.compact_mode = False
         self._bindings: dict[str, EditorBinding] = {}
+        self._form_row_widgets: list[tuple[QWidget, QWidget]] = []
+        self._summary_labels: dict[str, QLabel] = {}
         self.setObjectName("inlineNodeForm" if inline else "inspectorNodeForm")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._title = QLabel("未选择节点")
@@ -357,6 +366,22 @@ class NodeFormWidget(QFrame):
         header.setSpacing(2)
         header.addWidget(self._title)
         header.addWidget(self._subtitle)
+        self._header_widget = QWidget(self)
+        self._header_widget.setLayout(header)
+        self._header_widget.setVisible(not inline)
+        self._summary_widget = QWidget(self)
+        self._summary_layout = QVBoxLayout(self._summary_widget)
+        self._summary_layout.setContentsMargins(0, 0, 0, 0)
+        self._summary_layout.setSpacing(4)
+        for key, _icon, _label, _color in self.SUMMARY_SPECS:
+            row = QLabel("")
+            row.setWordWrap(True)
+            row.setTextFormat(Qt.TextFormat.RichText)
+            row.setVisible(False)
+            row.setProperty("summaryKey", key)
+            self._summary_layout.addWidget(row)
+            self._summary_labels[key] = row
+        self._summary_widget.setVisible(inline)
         self._form = QFormLayout()
         self._form.setContentsMargins(0, 0, 0, 0)
         self._form.setSpacing(6 if inline else 8)
@@ -364,28 +389,43 @@ class NodeFormWidget(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
-        layout.addLayout(header)
+        layout.addWidget(self._header_widget)
+        layout.addWidget(self._summary_widget)
         layout.addLayout(self._form)
         self.setFrameShape(QFrame.Shape.NoFrame)
         if inline:
             self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
-    def set_node(self, node, global_mode: str, show_json_field_names: bool = False) -> None:
+    def set_node(
+        self,
+        node,
+        global_mode: str,
+        show_json_field_names: bool = False,
+        compact_mode: bool = False,
+    ) -> None:
         same_node = bool(self.node and self.node.uuid == node.uuid and self.node.type == node.type)
         self.node = node
         self.global_mode = global_mode
         self.show_json_field_names = show_json_field_names
+        self.compact_mode = compact_mode
         self._apply_dynamic_style()
         if same_node and self._bindings:
             self.refresh()
             return
         self._rebuild()
 
-    def refresh(self, global_mode: str | None = None, show_json_field_names: bool | None = None) -> None:
+    def refresh(
+        self,
+        global_mode: str | None = None,
+        show_json_field_names: bool | None = None,
+        compact_mode: bool | None = None,
+    ) -> None:
         if global_mode:
             self.global_mode = global_mode
         if show_json_field_names is not None:
             self.show_json_field_names = show_json_field_names
+        if compact_mode is not None:
+            self.compact_mode = compact_mode
         if not self.node:
             return
         definition = self.schema.nodes[self.node.type]
@@ -395,14 +435,17 @@ class NodeFormWidget(QFrame):
             return
         self._apply_dynamic_style()
         self._sync_header()
+        self._sync_summary()
         for key, binding in self._bindings.items():
             binding.setter(self.node.fields.get(key))
             binding.read_only_setter(bool(self.node.locked))
+        self._apply_inline_visibility()
 
     def _clear_form(self) -> None:
         while self._form.rowCount():
             self._form.removeRow(0)
         self._bindings.clear()
+        self._form_row_widgets.clear()
 
     def _sync_header(self) -> None:
         if not self.node:
@@ -423,9 +466,11 @@ class NodeFormWidget(QFrame):
         self._clear_form()
         if not self.node:
             self._sync_header()
+            self._sync_summary()
             return
         definition = self.schema.nodes[self.node.type]
         self._sync_header()
+        self._sync_summary()
         for field in self._visible_fields(definition.fields):
             widget, setter, read_only_setter = self._build_editor(field)
             label = QLabel()
@@ -446,11 +491,13 @@ class NodeFormWidget(QFrame):
             widget.setProperty("fieldRole", role)
             label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
             self._form.addRow(label, widget)
+            self._form_row_widgets.append((label, widget))
             self._bindings[field.key] = EditorBinding(widget=widget, setter=setter, read_only_setter=read_only_setter)
             setter(self.node.fields.get(field.key, field.default))
             read_only_setter(bool(self.node.locked))
         if self.node.type == "Comment":
             self._add_comment_appearance_row()
+        self._apply_inline_visibility()
         self.adjustSize()
 
     def _visible_fields(self, fields: tuple[FieldSchema, ...]) -> list[FieldSchema]:
@@ -469,7 +516,9 @@ class NodeFormWidget(QFrame):
         button.setProperty("accentButton", True)
         button.clicked.connect(self._show_comment_appearance_dialog)
         button.setEnabled(not bool(self.node and self.node.locked))
-        self._form.addRow(QLabel("外观"), button)
+        label = QLabel("外观")
+        self._form.addRow(label, button)
+        self._form_row_widgets.append((label, button))
 
     @staticmethod
     def _field_role(field: FieldSchema) -> str:
@@ -494,17 +543,18 @@ class NodeFormWidget(QFrame):
         margins = layout.contentsMargins()
         total = margins.top() + margins.bottom()
 
-        header_height = self._title.sizeHint().height()
-        if self._subtitle.text():
-            header_height += 2 + self._subtitle.sizeHint().height()
-        total += header_height
+        if self._header_widget.isVisible():
+            header_height = self._title.sizeHint().height()
+            if self._subtitle.text():
+                header_height += 2 + self._subtitle.sizeHint().height()
+            total += header_height
 
         row_heights: list[int] = []
-        for row in range(self._form.rowCount()):
-            label_item = self._form.itemAt(row, QFormLayout.ItemRole.LabelRole)
-            field_item = self._form.itemAt(row, QFormLayout.ItemRole.FieldRole)
-            label_height = label_item.widget().sizeHint().height() if label_item and label_item.widget() else 0
-            field_height = field_item.widget().sizeHint().height() if field_item and field_item.widget() else 0
+        for label_widget, field_widget in self._form_row_widgets:
+            if not label_widget.isVisible() or not field_widget.isVisible():
+                continue
+            label_height = label_widget.sizeHint().height()
+            field_height = field_widget.sizeHint().height()
             row_heights.append(max(label_height, field_height))
 
         if row_heights:
@@ -512,6 +562,26 @@ class NodeFormWidget(QFrame):
             total += sum(row_heights)
             total += self._form.spacing() * (len(row_heights) - 1)
         return total
+
+    def summary_items(self) -> list[tuple[str, str]]:
+        if not self.node:
+            return []
+        items: list[tuple[str, str]] = []
+        for key, _icon, label, _color in self.SUMMARY_SPECS:
+            value = self._summary_value(key)
+            if value:
+                items.append((label, value))
+        return items
+
+    def summary_display_rows(self) -> list[tuple[str, str, str, str]]:
+        if not self.node:
+            return []
+        rows: list[tuple[str, str, str, str]] = []
+        for key, icon, label, color in self.SUMMARY_SPECS:
+            value = self._summary_value(key)
+            if value:
+                rows.append((icon, label, value, color))
+        return rows
 
     def commit_pending_edits(self) -> None:
         for binding in self._bindings.values():
@@ -671,6 +741,41 @@ class NodeFormWidget(QFrame):
         if not self.node:
             return value
         return display_value_for_field(self.schema, self.node, key, value)
+
+    def _summary_value(self, key: str) -> str:
+        if not self.node or key not in self.node.fields:
+            return ""
+        if key == "action_trigger_active" and self.node.type in {"TouchDrag", "ParameterTrigger"}:
+            return ""
+        value = self._display_value(key, self.node.fields.get(key))
+        return "" if value is None else str(value).strip()
+
+    def _sync_summary(self) -> None:
+        has_visible_rows = False
+        for key, icon, label, color in self.SUMMARY_SPECS:
+            row = self._summary_labels[key]
+            value = self._summary_value(key)
+            row.setVisible(bool(self.inline and value))
+            if not value:
+                row.clear()
+                continue
+            has_visible_rows = True
+            row.setText(
+                f"<span style='color:{color}; font-weight:700;'>{icon}</span> "
+                f"<span style='color:{color}; font-weight:600;'>{label}：</span>"
+                f"<span style='color:#dfe5ef;'>{value}</span>"
+            )
+        self._summary_widget.setVisible(bool(self.inline and has_visible_rows))
+
+    def _apply_inline_visibility(self) -> None:
+        if not self.inline:
+            self._header_widget.setVisible(True)
+            self._summary_widget.setVisible(False)
+            return
+        for label_widget, field_widget in self._form_row_widgets:
+            label_widget.setVisible(not self.compact_mode)
+            field_widget.setVisible(not self.compact_mode)
+        self._summary_widget.setVisible(False)
 
     def _apply_dynamic_style(self) -> None:
         if not self.node or self.node.type != "Comment":
