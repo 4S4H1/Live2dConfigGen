@@ -115,6 +115,10 @@ class NodeItem(QGraphicsObject):
     MIN_VISIBLE_WIDTH_COMPACT = 300.0
     MAX_ADAPTIVE_WIDTH_FACTOR = 2.6
     DISPLAY_ROW_GAP = 28.0
+    TITLE_BASE_POINT_SIZE = 10.4
+    TITLE_MIN_POINT_SIZE = 7.8
+    SUMMARY_BASE_POINT_SIZE = 8.8
+    SUMMARY_MIN_POINT_SIZE = 6.8
 
     def __init__(self, schema: EditorSchema, controller, node, inline_width: int = 340) -> None:
         super().__init__()
@@ -135,6 +139,7 @@ class NodeItem(QGraphicsObject):
         self._base_content_top_gap = 12.0
         self._header_height = self._base_header_height
         self._content_top_gap = self._base_content_top_gap
+        self._font_scale_floor = 0.03
         self._title_rect = QRectF(14.0, 8.0, 180.0, 20.0)
         self._summary_layout_rows: list[tuple[QRectF, str, QColor]] = []
         self._pin_radius = 8
@@ -227,6 +232,7 @@ class NodeItem(QGraphicsObject):
             content_width = max(content_width, int(node.ui_size.get("width", content_width)) - self._margin * 2)
         persisted_width = float(node.ui_size.get("width", 0.0)) if definition.resizable and node.ui_size else 0.0
         base_width = max(content_width + self._margin * 2, persisted_width)
+        self._font_scale_floor = self._text_scale_floor(base_width, compact_mode)
         width = max(base_width, self._adaptive_width(base_width, compact_mode))
         self._recompute_header_layout(width)
         final_content_width = int(width - self._margin * 2)
@@ -505,16 +511,29 @@ class NodeItem(QGraphicsObject):
     def refresh_view_scale(self) -> None:
         self.update_node(self.node)
 
+    def _text_scale_floor(self, base_width: float, compact_mode: bool) -> float:
+        min_visible_width = self.MIN_VISIBLE_WIDTH_COMPACT if compact_mode else self.MIN_VISIBLE_WIDTH
+        max_adaptive_width = max(base_width, base_width * self.MAX_ADAPTIVE_WIDTH_FACTOR)
+        return min(1.0, max(0.03, min_visible_width / max(1.0, max_adaptive_width)))
+
+    def _scale_compensated_point_size(self, base_size: float, min_size: float) -> float:
+        # Once adaptive width hits its cap during zoom-out, let header text shrink with the canvas
+        # instead of keeping a fixed on-screen size that causes aggressive wrapping.
+        compensation_scale = max(self._view_scale(), self._font_scale_floor)
+        return max(min_size, base_size / compensation_scale)
+
     def _title_font(self) -> QFont:
         title_font = QFont(self.form.font())
         title_font.setBold(True)
-        title_font.setPointSizeF(max(7.8, 10.4 / self._view_scale()))
+        title_font.setPointSizeF(self._scale_compensated_point_size(self.TITLE_BASE_POINT_SIZE, self.TITLE_MIN_POINT_SIZE))
         return title_font
 
     def _summary_font(self) -> QFont:
         summary_font = QFont(self.form.font())
         summary_font.setBold(True)
-        summary_font.setPointSizeF(max(6.8, 8.8 / self._view_scale()))
+        summary_font.setPointSizeF(
+            self._scale_compensated_point_size(self.SUMMARY_BASE_POINT_SIZE, self.SUMMARY_MIN_POINT_SIZE)
+        )
         return summary_font
 
     @staticmethod

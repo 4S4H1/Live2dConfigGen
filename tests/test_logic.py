@@ -1254,6 +1254,45 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
+    def test_extreme_zoom_out_allows_header_fonts_to_shrink_with_canvas(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            item = window.canvas.node_items[created]
+            node = window.controller.get_node(created)
+            center = QPointF(node.ui_position["x"], node.ui_position["y"])
+
+            def title_screen_size() -> float:
+                return item._title_font().pointSizeF() * window.canvas.transform().m11()
+
+            def summary_screen_size() -> float:
+                return item._summary_font().pointSizeF() * window.canvas.transform().m11()
+
+            baseline_title_size = title_screen_size()
+            baseline_summary_size = summary_screen_size()
+
+            window.canvas._apply_view_state(0.4, center)
+            self.app.processEvents()
+            stable_title_size = title_screen_size()
+            stable_summary_size = summary_screen_size()
+
+            window.canvas._apply_view_state(0.18, center)
+            self.app.processEvents()
+            shrunk_title_size = title_screen_size()
+            shrunk_summary_size = summary_screen_size()
+
+            self.assertAlmostEqual(stable_title_size, baseline_title_size, delta=0.35)
+            self.assertAlmostEqual(stable_summary_size, baseline_summary_size, delta=0.35)
+            self.assertLess(shrunk_title_size, stable_title_size)
+            self.assertLess(shrunk_summary_size, stable_summary_size)
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
     def test_zooming_out_does_not_persist_adaptive_width_into_ui_size(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
