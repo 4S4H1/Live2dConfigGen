@@ -1,261 +1,268 @@
-# Design System Inspiration of Mistral AI
+# Design System Inspiration of Raycast
 
 ## 1. Visual Theme & Atmosphere
 
-Mistral AI's interface is a sun-drenched landscape rendered in code — a warm, bold, unapologetically European design that trades the typical blue-screen AI aesthetic for golden amber, burnt orange, and the feeling of late-afternoon light in southern France. Every surface glows with warmth: backgrounds fade from pale cream to deep amber, shadows carry golden undertones (`rgba(127, 99, 21, ...)`), and the brand's signature orange (`#fa520f`) burns through the page like a signal fire.
+Raycast's marketing site feels like the dark interior of a precision instrument — a Swiss watch case carved from obsidian. The background isn't just dark, it's an almost-black blue-tint (`#07080a`) that creates a sense of being inside a macOS native application rather than a website. Every surface, every border, every shadow is calibrated to evoke the feeling of a high-performance desktop utility: fast, minimal, trustworthy.
 
-The design language is maximalist in its warmth but minimalist in its structure. Huge display headlines (82px) crash into the viewport with aggressive negative tracking (-2.05px), creating text blocks that feel like billboards or protest posters — declarations rather than descriptions. The typography uses Arial (likely a custom font with Arial as fallback) at extreme sizes, creating a raw, unadorned voice that says "we build frontier AI" with no decoration needed.
+The signature move is the layered shadow system borrowed from macOS window chrome: multi-layer box-shadows with inset highlights that simulate physical depth, as if cards and buttons are actual pressed or raised glass elements on a dark desk. Combined with Raycast Red (`#FF6363`) — deployed almost exclusively in the hero's iconic diagonal stripe pattern — the palette creates a brand that reads as "powerful tool with personality." The red doesn't dominate; it punctuates.
 
-What makes Mistral distinctive is the complete commitment to a warm color temperature. The signature "block" identity — a gradient system flowing from bright yellow (`#ffd900`) through amber (`#ffa110`) to burnt orange (`#fa520f`) — creates a visual identity that's immediately recognizable. Even the shadows are warm, using amber-tinted blacks instead of cool grays. Combined with dramatic landscape photography in golden tones, the design feels less like a tech company and more like a European luxury brand that happens to build language models.
+Inter is used everywhere — headings, body, buttons, captions — with extensive OpenType features (`calt`, `kern`, `liga`, `ss03`) creating a consistent, readable typographic voice. The positive letter-spacing (0.2px–0.4px on body text) is unusual for a dark UI and gives the text an airy, breathable quality that counterbalances the dense, dark surfaces. GeistMono appears for code elements, reinforcing the developer-tool identity.
 
 **Key Characteristics:**
-- Golden-amber color universe: every tone from pale cream (#fffaeb) to burnt orange (#fa520f)
-- Massive display typography (82px) with aggressive negative letter-spacing (-2.05px)
-- Warm golden shadow system using amber-tinted rgba values
-- The Mistral "M" block identity — a gradient from yellow to orange
-- Dramatic landscape photography in warm golden tones
-- Uppercase typography used strategically for section labels and CTAs
-- Near-zero border-radius — sharp, architectural geometry
-- French-European confidence: bold, warm, declarative
+- Near-black blue-tinted background (`#07080a`) — not pure black, subtly blue-shifted
+- macOS-native shadow system with multi-layer inset highlights simulating physical depth
+- Raycast Red (`#FF6363`) as a punctuation color — hero stripes, not pervasive
+- Inter with positive letter-spacing (0.2px) for an airy, readable dark-mode experience
+- Radix UI component primitives powering the interaction layer
+- Subtle rgba white borders (0.06–0.1 opacity) for containment on dark surfaces
+- Keyboard shortcut styling with gradient key caps and heavy shadows
 
 ## 2. Color Palette & Roles
 
 ### Primary
-- **Mistral Orange** (`#fa520f`): The core brand color — a vivid, saturated orange-red that anchors the entire identity. Used for primary emphasis, the brand block, and the highest-signal moments.
-- **Mistral Flame** (`#fb6424`): A slightly warmer, lighter variant of the brand orange used for secondary brand moments and hover states.
-- **Block Orange** (`#ff8105`): A pure orange used in the gradient block system — warmer and less red than Mistral Orange.
+- **Near-Black Blue** (`#07080a`): Primary page background — the foundational void with a subtle blue-cold undertone
+- **Pure White** (`#ffffff`): Primary heading text, high-emphasis elements
+- **Raycast Red** (`#FF6363` / `hsl(0, 100%, 69%)`): Brand accent — hero stripes, danger states, critical highlights
 
 ### Secondary & Accent
-- **Sunshine 900** (`#ff8a00`): Deep golden amber — the darkest sunshine tone, used for strong accent moments.
-- **Sunshine 700** (`#ffa110`): Warm amber-gold — the core sunshine accent for backgrounds and interactive elements.
-- **Sunshine 500** (`#ffb83e`): Medium golden — balanced warmth for mid-level emphasis.
-- **Sunshine 300** (`#ffd06a`): Light golden — for subtle warm tints and secondary backgrounds.
-- **Block Gold** (`#ffe295`): Pale gold — soft background accents and gentle warmth.
-- **Bright Yellow** (`#ffd900`): The brightest tone in the gradient — used at the "top" of the block identity.
+- **Raycast Blue** (`hsl(202, 100%, 67%)` / ~`#55b3ff`): Interactive accent — links, focus states, selected items
+- **Raycast Green** (`hsl(151, 59%, 59%)` / ~`#5fc992`): Success states, positive indicators
+- **Raycast Yellow** (`hsl(43, 100%, 60%)` / ~`#ffbc33`): Warning accents, highlights
+- **Blue Transparent** (`hsla(202, 100%, 67%, 0.15)`): Blue tint overlay for interactive surfaces
+- **Red Transparent** (`hsla(0, 100%, 69%, 0.15)`): Red tint overlay for danger/error surfaces
 
 ### Surface & Background
-- **Warm Ivory** (`#fffaeb`): The lightest page background — barely tinted with warmth, the foundation canvas.
-- **Cream** (`#fff0c2`): The primary warm surface and secondary button background — noticeably golden.
-- **Pure White** (`#ffffff`): Used for maximum contrast elements and popover surfaces.
-- **Mistral Black** (`#1f1f1f`): The primary dark surface for buttons, text, and dark sections.
-- **Accent Orange** (defined as `hsl(17, 96%, 52%)`): The functional accent color for interactive states.
+- **Deep Background** (`#07080a`): Page canvas, the darkest surface
+- **Surface 100** (`#101111`): Elevated surface, card backgrounds
+- **Key Start** (`#121212`): Keyboard key gradient start
+- **Key End** (`#0d0d0d`): Keyboard key gradient end
+- **Card Surface** (`#1b1c1e`): Badge backgrounds, tag fills, elevated containers
+- **Button Foreground** (`#18191a`): Dark surface for button text on light backgrounds
 
 ### Neutrals & Text
-- **Mistral Black** (`#1f1f1f`): Primary text color and dark button backgrounds — a near-black that's warmer than pure #000.
-- **Black Tint** (defined as `hsl(0, 0%, 24%)`): A medium dark gray for secondary text on light backgrounds.
-- **Pure White** (`#ffffff`): Text on dark surfaces and CTA labels.
+- **Near White** (`#f9f9f9` / `hsl(240, 11%, 96%)`): Primary body text, high-emphasis content
+- **Light Gray** (`#cecece` / `#cdcdce`): Secondary body text, descriptions
+- **Silver** (`#c0c0c0`): Tertiary text, subdued labels
+- **Medium Gray** (`#9c9c9d`): Link default color, secondary navigation
+- **Dim Gray** (`#6a6b6c`): Disabled text, low-emphasis labels
+- **Dark Gray** (`#434345`): Muted borders, inactive navigation links
+- **Border** (`hsl(195, 5%, 15%)` / ~`#252829`): Standard border color for cards and dividers
+- **Dark Border** (`#2f3031`): Separator lines, table borders
 
 ### Semantic & Accent
-- **Input Border** (defined as `hsl(240, 5.9%, 90%)`): A cool-tinted light gray for form borders — one of the few cool tones in the system.
-- **White Overlay** (`oklab(1, 0, 0 / 0.088–0.1)`): Semi-transparent white for frosted glass effects and button overlays.
+- **Error Red** (`hsl(0, 100%, 69%)`): Error states, destructive actions
+- **Success Green** (`hsl(151, 59%, 59%)`): Success confirmations, positive states
+- **Warning Yellow** (`hsl(43, 100%, 60%)`): Warnings, attention-needed states
+- **Info Blue** (`hsl(202, 100%, 67%)`): Informational highlights, links
 
 ### Gradient System
-- **Mistral Block Gradient**: The signature identity — a multi-step gradient flowing through Yellow (`#ffd900`) → Gold (`#ffe295`) → Amber (`#ffa110`) → Orange (`#ff8105`) → Flame (`#fb6424`) → Mistral Orange (`#fa520f`). This gradient appears in the logo blocks, section backgrounds, and decorative elements.
-- **Golden Landscape Wash**: Photography and backgrounds use warm amber overlays creating a consistent golden temperature across the page.
-- **Warm Shadow Cascade**: Multi-layered golden shadows that build depth with amber-tinted transparency rather than gray.
+- **Keyboard Key Gradient**: Linear gradient from `#121212` (top) to `#0d0d0d` (bottom) — simulates physical key depth
+- **Warm Glow**: `rgba(215, 201, 175, 0.05)` radial spread — subtle warm ambient glow behind featured elements
 
 ## 3. Typography Rules
 
 ### Font Family
-- **Primary**: Likely a custom font (Font Source detected) with `Arial` as fallback, and extended stack: `ui-sans-serif, system-ui, Apple Color Emoji, Segoe UI Emoji, Segoe UI Symbol, Noto Color Emoji`
+- **Primary**: `Inter` — humanist sans-serif, used everywhere. Fallbacks: `Inter Fallback`, system sans-serif
+- **System**: `SF Pro Text` — Apple system font for select macOS-native UI elements. Fallbacks: `SF Pro Icons`, `Inter`, `Inter Fallback`
+- **Monospace**: `GeistMono` — Vercel's monospace font for code elements. Fallbacks: `ui-monospace`, `SFMono-Regular`, `Roboto Mono`, `Menlo`, `Monaco`
+- **OpenType features**: `calt`, `kern`, `liga`, `ss03` enabled globally; `ss02`, `ss08` on display text; `liga` disabled (`"liga" 0`) on hero headings
 
 ### Hierarchy
 
-| Role | Font | Size | Weight | Line Height | Letter Spacing | Notes |
-|------|------|------|--------|-------------|----------------|-------|
-| Display / Hero | Arial (custom) | 82px (5.13rem) | 400 | 1.00 (tight) | -2.05px | Maximum impact, billboard scale |
-| Section Heading | Arial (custom) | 56px (3.5rem) | 400 | 0.95 (ultra-tight) | normal | Feature section anchors |
-| Sub-heading Large | Arial (custom) | 48px (3rem) | 400 | 0.95 (ultra-tight) | normal | Secondary section titles |
-| Sub-heading | Arial (custom) | 32px (2rem) | 400 | 1.15 (tight) | normal | Card headings, feature names |
-| Card Title | Arial (custom) | 30px (1.88rem) | 400 | 1.20 (tight) | normal | Mid-level headings |
-| Feature Title | Arial (custom) | 24px (1.5rem) | 400 | 1.33 | normal | Small headings |
-| Body / Button | Arial (custom) | 16px (1rem) | 400 | 1.50 | normal | Standard body, button text |
-| Button Uppercase | Arial (custom) | 16px (1rem) | 400 | 1.50 | normal | Uppercase CTA labels |
-| Caption / Link | Arial (custom) | 14px (0.88rem) | 400 | 1.43 | normal | Metadata, secondary links |
+| Role | Size | Weight | Line Height | Letter Spacing | Notes |
+|------|------|--------|-------------|----------------|-------|
+| Display Hero | 64px | 600 | 1.10 | 0px | OpenType: liga 0, ss02, ss08 |
+| Section Display | 56px | 400 | 1.17 | 0.2px | OpenType: calt, kern, liga, ss03 |
+| Section Heading | 24px | 500 | normal | 0.2px | OpenType: calt, kern, liga, ss03 |
+| Card Heading | 22px | 400 | 1.15 | 0px | OpenType: calt, kern, liga, ss03 |
+| Sub-heading | 20px | 500 | 1.60 | 0.2px | Relaxed line-height for readability |
+| Body Large | 18px | 400 | 1.15 | 0.2px | OpenType: calt, kern, liga, ss03 |
+| Body | 16px | 500 | 1.60 | 0.2px | Primary body text, relaxed rhythm |
+| Body Tight | 16px | 400 | 1.15 | 0.1px | UI labels, compact contexts |
+| Button | 16px | 600 | 1.15 | 0.3px | Semibold, slightly wider tracking |
+| Nav Link | 16px | 500 | 1.40 | 0.3px | Links in navigation |
+| Caption | 14px | 500 | 1.14 | 0.2px | Small labels, metadata |
+| Caption Bold | 14px | 600 | 1.40 | 0px | Emphasized captions |
+| Small | 12px | 600 | 1.33 | 0px | Badges, tags, micro-labels |
+| Small Link | 12px | 400 | 1.50 | 0.4px | Footer links, fine print |
+| Code | 14px (GeistMono) | 500 | 1.60 | 0.3px | Code blocks, technical content |
+| Code Small | 12px (GeistMono) | 400 | 1.60 | 0.2px | Inline code, terminal output |
 
 ### Principles
-- **Single weight, maximum impact**: The entire system uses weight 400 (regular) — even at 82px. This creates a surprisingly elegant effect where the size alone carries authority without needing bold weight.
-- **Ultra-tight at scale**: Line-heights of 0.95–1.00 at display sizes create text blocks where ascenders nearly touch descenders from the line above — creating dense, poster-like composition.
-- **Aggressive tracking on display**: -2.05px letter-spacing at 82px compresses the hero text into a monolithic block.
-- **Uppercase as emphasis**: Strategic `text-transform: uppercase` on button labels and section markers creates a formal, European signage quality.
-- **No weight variation**: Unlike most systems that use 300–700 weight range, Mistral uses 400 everywhere. Hierarchy comes from size and color, never weight.
+- **Positive tracking on dark**: Unlike most dark UIs that use tight or neutral letter-spacing, Raycast applies +0.2px to +0.4px — creating an airy, readable feel that compensates for the dark background
+- **Weight 500 as baseline**: Most body text uses medium weight (500), not regular (400) — subtle extra heft improves legibility on dark surfaces
+- **Display restraint**: Hero text at 64px/600 is confident but not oversized — Raycast avoids typographic spectacle in favor of functional elegance
+- **OpenType everywhere**: `ss03` (stylistic set 3) is enabled globally across Inter, giving the typeface a slightly more geometric, tool-like quality
 
 ## 4. Component Stylings
 
 ### Buttons
-
-**Cream Surface**
-- Background: Cream (`#fff0c2`)
-- Text: Mistral Black (`#1f1f1f`)
-- No visible border
-- The warm, inviting secondary CTA
-
-**Dark Solid**
-- Background: Mistral Black (`#1f1f1f`)
-- Text: Pure White (`#ffffff`)
-- Padding: 12px (all sides)
-- No visible border
-- The primary action button — dark on warm
-
-**Ghost / Transparent**
-- Background: transparent with slight dark overlay (`oklab(0, 0, 0 / 0.1)`)
-- Text: Mistral Black (`#1f1f1f`)
-- Opacity: 0.4
-- For secondary/de-emphasized actions
-
-**Text / Underline**
-- Background: transparent
-- Text: Mistral Black (`#1f1f1f`)
-- Padding: 8px 0px 0px (top-only)
-- Minimal styling — text link as button
-- For tertiary navigation actions
+- **Primary Pill**: Transparent background, white text, pill shape (86px radius), multi-layer inset shadow (`rgba(255, 255, 255, 0.1) 0px 1px 0px 0px inset`). Hover: opacity 0.6
+- **Secondary Button**: Transparent background, white text, 6px radius, `1px solid rgba(255, 255, 255, 0.1)` border, subtle drop shadow (`rgba(0, 0, 0, 0.03) 0px 7px 3px`). Hover: opacity 0.6
+- **Ghost Button**: No background or border, gray text (`#6a6b6c`), 86px radius, same inset shadow. Hover: opacity 0.6, text brightens to white
+- **CTA (Download)**: Semi-transparent white background (`hsla(0, 0%, 100%, 0.815)`), dark text (`#18191a`), pill shape. Hover: full white background (`hsl(0, 0%, 100%)`)
+- **Transition**: All buttons use opacity transition for hover rather than background-color change — a signature Raycast interaction pattern
 
 ### Cards & Containers
-- Background: Warm Ivory (`#fffaeb`), Cream (`#fff0c2`), or Pure White
-- Border: minimal to none — containers defined by background color
-- Radius: near-zero — sharp, architectural corners
-- Shadow: warm golden multi-layer (`rgba(127, 99, 21, 0.12) -8px 16px 39px, rgba(127, 99, 21, 0.1) -33px 64px 72px, rgba(127, 99, 21, 0.06) -73px 144px 97px, ...`) — a dramatic, cascading warm shadow
-- Distinctive: the golden shadow creates a "golden hour" lighting effect
+- **Standard Card**: `#101111` surface, `1px solid rgba(255, 255, 255, 0.06)` border, 12px–16px border-radius
+- **Elevated Card**: Ring shadow `rgb(27, 28, 30) 0px 0px 0px 1px` outer + `rgb(7, 8, 10) 0px 0px 0px 1px inset` inner — creates a double-ring containment
+- **Feature Card**: 16px–20px border-radius, subtle warm glow (`rgba(215, 201, 175, 0.05) 0px 0px 20px 5px`) behind hero elements
+- **Hover**: Cards brighten slightly via border opacity increase or subtle shadow enhancement
 
 ### Inputs & Forms
-- Border: `hsl(240, 5.9%, 90%)` — the sole cool-toned element
-- Focus: accent color ring
-- Minimal styling consistent with sparse aesthetic
+- Dark input fields with `#07080a` background, `1px solid rgba(255, 255, 255, 0.08)` border, 8px border-radius
+- Focus state: Border brightens, blue glow (`hsla(202, 100%, 67%, 0.15)`) ring appears
+- Text: `#f9f9f9` input color, `#6a6b6c` placeholder
+- Labels: `#9c9c9d` at 14px weight 500
 
 ### Navigation
-- Transparent nav overlaying the warm hero
-- Logo: Mistral "M" wordmark
-- Links: Dark text (white on dark sections)
-- CTA: Dark solid button or cream surface button
-- Minimal, wide-spaced layout
+- **Top nav**: Dark background blending with page, white text links at 16px weight 500
+- **Nav links**: Gray text (`#9c9c9d`) → white on hover, underline decoration on hover
+- **CTA button**: Semi-transparent white pill at nav end
+- **Mobile**: Collapses to hamburger, maintains dark theme
+- **Sticky**: Nav fixed at top with subtle border separator
 
 ### Image Treatment
-- Dramatic landscape photography in warm golden tones
-- The winding road through golden hills — a recurring visual motif
-- The Mistral "M" rendered at large scale on golden backgrounds
-- Warm color grading on all photography
-- Full-bleed sections with photography
+- **Product screenshots**: macOS window chrome style — rounded corners (12px), deep shadows simulating floating windows
+- **Full-bleed sections**: Dark screenshots blend seamlessly into the dark background
+- **Hero illustration**: Diagonal stripe pattern in Raycast Red — abstract, geometric, brand-defining
+- **App UI embeds**: Showing actual Raycast command palette and extensions — product as content
 
-### Distinctive Components
+### Keyboard Shortcut Keys
+- **Key cap styling**: Gradient background (`#121212` → `#0d0d0d`), heavy multi-layer shadow (`rgba(0, 0, 0, 0.4) 0px 1.5px 0.5px 2.5px` + inset shadows), creating realistic physical key appearance
+- Border-radius: 4px–6px for individual keys
 
-**Mistral Block Identity**
-- A row of colored blocks forming the gradient: yellow → amber → orange → burnt orange
-- Each block gets progressively more orange/red
-- The visual DNA of the brand — recognizable at any size
-
-**Golden Shadow Cards**
-- Cards elevated with warm amber multi-layered shadows
-- 5 layers of shadow from 16px to 400px offset
-- Creates a "floating in golden light" effect unique to Mistral
-
-**Dark Footer Gradient**
-- Footer transitions from warm amber to dark through a dramatic gradient
-- Creates a "sunset" effect as the page ends
+### Badges & Tags
+- **Neutral badge**: `#1b1c1e` background, white text, 6px radius, 14px font at weight 500, `0px 6px` padding
+- Compact, pill-like treatment for categorization
 
 ## 5. Layout Principles
 
 ### Spacing System
-- Base unit: 8px
-- Scale: 2px, 4px, 8px, 10px, 12px, 16px, 20px, 24px, 32px, 40px, 48px, 64px, 80px, 98px, 100px
-- Button padding: 12px or 8px 0px (compact)
-- Section vertical spacing: very generous (80px–100px)
+- **Base unit**: 8px
+- **Scale**: 1px, 2px, 3px, 4px, 8px, 10px, 12px, 16px, 20px, 24px, 32px, 40px
+- **Section padding**: 80px–120px vertical between major sections
+- **Card padding**: 16px–32px internal spacing
+- **Component gaps**: 8px–16px between related elements
 
 ### Grid & Container
-- Max container width: approximately 1280px, centered
-- Hero: full-width with massive typography overlaying warm backgrounds
-- Feature sections: wide-format layouts with dramatic imagery
-- Card grids: 2–3 column layouts
+- **Max width**: ~1200px container (breakpoint at 1204px), centered
+- **Column patterns**: Single-column hero, 2–3 column feature grids, full-width showcase sections
+- **App showcase**: Product UI presented in centered window frames
 
 ### Whitespace Philosophy
-- **Bold declarations**: Huge headlines surrounded by generous whitespace create billboard-like impact — each statement gets its own breathing space.
-- **Warm void**: Empty space itself feels warm because the backgrounds are tinted ivory/cream rather than pure white.
-- **Photography as space-filler**: Large landscape images serve double duty as content and decorative whitespace.
+- **Dramatic negative space**: Sections float in vast dark void, creating cinematic pacing between features
+- **Dense product, sparse marketing**: The product UI screenshots are information-dense, but the surrounding marketing copy uses minimal text with generous spacing
+- **Vertical rhythm**: Consistent 24px–32px gaps between elements within sections
 
 ### Border Radius Scale
-- Near-zero: The dominant radius — sharp, architectural corners on most elements
-- This extreme sharpness contrasts with the warmth of the colors, creating a tension between soft color and hard geometry.
+- **2px–3px**: Micro-elements, code spans, tiny indicators
+- **4px–5px**: Keyboard keys, small interactive elements
+- **6px**: Buttons, badges, tags — the workhorse radius
+- **8px**: Input fields, inline components
+- **9px–11px**: Images, medium containers
+- **12px**: Standard cards, product screenshots
+- **16px**: Large cards, feature sections
+- **20px**: Hero cards, prominent containers
+- **86px+**: Pill buttons, nav CTAs — full pill shape
 
 ## 6. Depth & Elevation
 
 | Level | Treatment | Use |
 |-------|-----------|-----|
-| Flat (Level 0) | No shadow | Page backgrounds, text blocks |
-| Golden Float (Level 1) | Multi-layer warm shadow (5 layers, 12%→0% opacity, amber-tinted) | Feature cards, product showcases, elevated content |
+| Level 0 (Void) | No shadow, `#07080a` surface | Page background |
+| Level 1 (Subtle) | `rgba(0, 0, 0, 0.28) 0px 1.189px 2.377px` | Minimal lift, inline elements |
+| Level 2 (Ring) | `rgb(27, 28, 30) 0px 0px 0px 1px` outer + `rgb(7, 8, 10) 0px 0px 0px 1px inset` inner | Card containment, double-ring technique |
+| Level 3 (Button) | `rgba(255, 255, 255, 0.05) 0px 1px 0px 0px inset` + `rgba(255, 255, 255, 0.25) 0px 0px 0px 1px` + `rgba(0, 0, 0, 0.2) 0px -1px 0px 0px inset` | macOS-native button press — white highlight top, dark inset bottom |
+| Level 4 (Key) | 5-layer shadow stack with inset press effects | Keyboard shortcut key caps — physical 3D appearance |
+| Level 5 (Floating) | `rgba(0, 0, 0, 0.5) 0px 0px 0px 2px` + `rgba(255, 255, 255, 0.19) 0px 0px 14px` + insets | Command palette, floating panels — heavy depth with glow |
 
-**Shadow Philosophy**: Mistral uses a single but extraordinarily complex shadow — **five cascading layers** of amber-tinted shadow (`rgba(127, 99, 21, ...)`) that build from a close 16px offset to a distant 400px offset. The result is a rich, warm, "golden hour" lighting effect that makes elevated elements look like they're bathed in afternoon sunlight. This is the most distinctive shadow system in any major AI brand.
+### Shadow Philosophy
+Raycast's shadow system is the most macOS-native on the web. Multi-layer shadows combine:
+- **Outer rings** for containment (replacing traditional borders)
+- **Inset top highlights** (`rgba(255, 255, 255, 0.05–0.25)`) simulating light source from above
+- **Inset bottom darks** (`rgba(0, 0, 0, 0.2)`) simulating shadow underneath
+- The effect is physical: elements feel like glass or brushed metal, not flat rectangles
+
+### Decorative Depth
+- **Warm glow**: `rgba(215, 201, 175, 0.05) 0px 0px 20px 5px` behind featured elements — a subtle warm aura on the cold dark canvas
+- **Blue info glow**: `rgba(0, 153, 255, 0.15)` for interactive state emphasis
+- **Red danger glow**: `rgba(255, 99, 99, 0.15)` for error/destructive state emphasis
 
 ## 7. Do's and Don'ts
 
 ### Do
-- Use the warm color spectrum exclusively: ivory, cream, amber, gold, orange
-- Keep display typography at 82px+ with -2.05px letter-spacing for hero sections
-- Use the Mistral block gradient (yellow → amber → orange) for brand moments
-- Apply warm golden shadows (amber-tinted rgba) for elevated elements
-- Use Mistral Black (#1f1f1f) for text — never pure #000000
-- Keep font weight at 400 throughout — let size and color carry hierarchy
-- Use sharp, architectural corners — near-zero border-radius
-- Apply uppercase on button labels and section markers for European formality
-- Use warm landscape photography with golden color grading
+- Use `#07080a` (not pure black) as the background — the blue-cold tint is essential to the Raycast feel
+- Apply positive letter-spacing (+0.2px) on body text — this is deliberately different from most dark UIs
+- Use multi-layer shadows with inset highlights for interactive elements — the macOS-native depth is signature
+- Keep Raycast Red (`#FF6363`) as punctuation, not pervasive — reserve it for hero moments and error states
+- Use `rgba(255, 255, 255, 0.06)` borders for card containment — barely visible, structurally essential
+- Apply weight 500 as the body text baseline — medium weight improves dark-mode legibility
+- Use pill shapes (86px+ radius) for primary CTAs, rectangular shapes (6px–8px) for secondary actions
+- Enable OpenType features `calt`, `kern`, `liga`, `ss03` on all Inter text
+- Use opacity transitions (hover: opacity 0.6) for button interactions, not color changes
 
 ### Don't
-- Don't introduce cool colors (blue, green, purple) — the palette is exclusively warm
-- Don't use bold (700+) weight — 400 is the only weight
-- Don't round corners — the sharp geometry is intentional
-- Don't use cool-toned shadows — shadows must carry amber warmth
-- Don't use pure white as a page background — always warm-tinted (#fffaeb minimum)
-- Don't reduce hero text below 48px on desktop — the billboard scale is core
-- Don't use more than 2 font weights — size variation replaces weight variation
-- Don't add gradients outside the warm spectrum — no blue-to-purple, no cool transitions
-- Don't use generic gray for text — even neutrals should be warm-tinted
+- Use pure black (`#000000`) as the background — the blue tint differentiates Raycast from generic dark themes
+- Apply negative letter-spacing on body text — Raycast deliberately uses positive spacing for readability
+- Use Raycast Blue as the primary accent for everything — blue is for interactive/info, red is the brand color
+- Create single-layer flat shadows — the multi-layer inset system is core to the macOS-native aesthetic
+- Use regular weight (400) for body text when 500 is available — the extra weight prevents dark-mode text from feeling thin
+- Mix warm and cool borders — stick to the cool gray (`hsl(195, 5%, 15%)`) border palette
+- Apply heavy drop shadows without inset companions — shadows always come in pairs (outer + inset)
+- Use decorative elements, gradients, or colorful backgrounds — the dark void is the stage, content is the performer
 
 ## 8. Responsive Behavior
 
 ### Breakpoints
 | Name | Width | Key Changes |
 |------|-------|-------------|
-| Mobile | <640px | Single column, stacked everything, hero text reduces to ~32px |
-| Tablet | 640–768px | Minor layout adjustments |
-| Small Desktop | 768–1024px | 2-column layouts begin |
-| Desktop | 1024–1280px | Full layout with maximum typography scale |
+| Mobile | <600px | Single column, stacked cards, hamburger nav, hero text reduces to ~40px |
+| Small Tablet | 600px–768px | 2-column grid begins, nav partially visible |
+| Tablet | 768px–1024px | 2–3 column features, nav expanding, screenshots scale |
+| Desktop | 1024px–1200px | Full layout, all nav links visible, 64px hero display |
+| Large Desktop | >1200px | Max-width container centered, generous side margins |
 
 ### Touch Targets
-- Buttons use generous padding (12px minimum)
-- Navigation elements adequately spaced
-- Cards serve as large touch targets
+- Pill buttons: 86px radius with 20px padding — well above 44px minimum
+- Secondary buttons: 8px padding minimum, but border provides visual target expansion
+- Nav links: 16px text with surrounding padding for accessible touch targets
 
 ### Collapsing Strategy
-- **Navigation**: Collapses to hamburger on mobile
-- **Hero text**: 82px → 56px → 48px → 32px progressive scaling
-- **Feature sections**: Multi-column → stacked
-- **Photography**: Scales proportionally, may crop on mobile
-- **Block identity**: Scales down proportionally
+- **Navigation**: Full horizontal nav → hamburger at mobile with slide-out menu
+- **Hero**: 64px display → 48px → 36px across breakpoints
+- **Feature grids**: 3-column → 2-column → single-column stack
+- **Product screenshots**: Scale within containers, maintaining macOS window chrome proportions
+- **Keyboard shortcut displays**: Simplify or hide on mobile where keyboard shortcuts are irrelevant
 
 ### Image Behavior
-- Landscape photography scales proportionally
-- Warm color grading maintained at all sizes
-- Block gradient elements resize fluidly
-- No art direction changes — same warm composition at all sizes
+- Product screenshots scale responsively within fixed-ratio containers
+- Hero diagonal stripe pattern scales proportionally
+- macOS window chrome rounded corners maintained at all sizes
+- No lazy-loading artifacts — images are critical to the product narrative
 
 ## 9. Agent Prompt Guide
 
 ### Quick Color Reference
-- Brand Orange: "Mistral Orange (#fa520f)"
-- Page Background: "Warm Ivory (#fffaeb)"
-- Warm Surface: "Cream (#fff0c2)"
-- Primary Text: "Mistral Black (#1f1f1f)"
-- Sunshine Amber: "Sunshine 700 (#ffa110)"
-- Bright Gold: "Bright Yellow (#ffd900)"
-- Text on Dark: "Pure White (#ffffff)"
+- Primary Background: Near-Black Blue (`#07080a`)
+- Primary Text: Near White (`#f9f9f9`)
+- Brand Accent: Raycast Red (`#FF6363`)
+- Interactive Blue: Raycast Blue (`hsl(202, 100%, 67%)` / ~`#55b3ff`)
+- Secondary Text: Medium Gray (`#9c9c9d`)
+- Card Surface: Surface 100 (`#101111`)
+- Border: Dark Border (`hsl(195, 5%, 15%)` / ~`#252829`)
 
 ### Example Component Prompts
-- "Create a hero section on Warm Ivory (#fffaeb) with a massive headline at 82px Arial weight 400, line-height 1.0, letter-spacing -2.05px. Mistral Black (#1f1f1f) text. Add a dark solid CTA button (#1f1f1f bg, white text, 12px padding, sharp corners) and a cream secondary button (#fff0c2 bg)."
-- "Design a feature card on Cream (#fff0c2) with sharp corners (no border-radius). Apply the golden shadow system: rgba(127, 99, 21, 0.12) -8px 16px 39px as the primary layer. Title at 32px weight 400, body at 16px."
-- "Build the Mistral block identity: a row of colored blocks from Bright Yellow (#ffd900) through Sunshine 700 (#ffa110) to Mistral Orange (#fa520f). Sharp corners, no gaps."
-- "Create a dark footer section on Mistral Black (#1f1f1f) with Pure White (#ffffff) text. Footer links at 14px. Add a warm gradient from Sunshine 700 (#ffa110) at the top fading to Mistral Black."
+- "Create a hero section on #07080a background with 64px Inter heading (weight 600, line-height 1.1), near-white text (#f9f9f9), and a semi-transparent white pill CTA button (hsla(0,0%,100%,0.815), 86px radius, dark text #18191a)"
+- "Design a feature card with #101111 background, 1px solid rgba(255,255,255,0.06) border, 16px border-radius, double-ring shadow (rgb(27,28,30) 0px 0px 0px 1px outer), 22px Inter heading, and #9c9c9d body text"
+- "Build a navigation bar on dark background (#07080a), Inter links at 16px weight 500 in #9c9c9d, hover to white, and a translucent white pill button at the right end"
+- "Create a keyboard shortcut display with key caps using gradient background (#121212→#0d0d0d), 5-layer shadow for physical depth, 4px radius, Inter 12px weight 600 text"
+- "Design an alert card with #101111 surface, Raycast Red (#FF6363) left border accent, translucent red glow (hsla(0,100%,69%,0.15)), white heading, and #cecece description text"
 
 ### Iteration Guide
-1. Keep the warm temperature — "shift toward amber" not "shift toward gray"
-2. Use size for hierarchy — 82px → 56px → 48px → 32px → 24px → 16px
-3. Never add border-radius — sharp corners only
-4. Shadows are always warm: "golden shadow with amber tones"
-5. Font weight is always 400 — describe emphasis through size and color
+When refining existing screens generated with this design system:
+1. Check the background is `#07080a` not pure black — the blue tint is critical
+2. Verify letter-spacing is positive (+0.2px) on body text — negative spacing breaks the Raycast aesthetic
+3. Ensure shadows have both outer and inset layers — single-layer shadows look flat and wrong
+4. Confirm Inter has OpenType features `calt`, `kern`, `liga`, `ss03` enabled
+5. Test that hover states use opacity transitions (0.6) not color swaps — this is a core interaction pattern

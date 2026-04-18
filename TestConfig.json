@@ -140,7 +140,7 @@
       "type": "TouchIdle",
       "ui_position": {
         "x": 1551.6302106992316,
-        "y": 2396.3001613547212
+        "y": 2392.8761874453644
       },
       "type_slot": 3,
       "export_slot": 3,
@@ -342,8 +342,8 @@
       "uuid": "a105f32b2e2e4e80b1f808b4acb5f86e",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 4515.230210699233,
-        "y": 2396.3001613547212
+        "x": 4187.134764258708,
+        "y": 3073.572747704062
       },
       "type_slot": 7,
       "export_slot": 7,
@@ -392,8 +392,8 @@
       "uuid": "0fbdb68dae584d709fef5b196acc6352",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 5256.1302106992325,
-        "y": 2396.3001613547212
+        "x": 5242.930968601053,
+        "y": 2969.5243896186266
       },
       "type_slot": 8,
       "export_slot": 8,
@@ -434,7 +434,7 @@
       "listener_data": "",
       "shop_action": 0,
       "relation_parameter": "",
-      "theme_body_color": "#1a3550",
+      "theme_body_color": "#500c0d",
       "theme_border_color": "#74b9ff",
       "theme_text_color": "#f3f8ff"
     },
@@ -587,8 +587,8 @@
   ],
   "trash_bin": [],
   "canvas_view": {
-    "scale": 0.43469957406289694,
-    "offset_x": 4639.986142954351,
-    "offset_y": 2730.6214931516183
+    "scale": 0.5303334803567341,
+    "offset_x": 4631.048370447868,
+    "offset_y": 2884.9772014597875
   }
 }
