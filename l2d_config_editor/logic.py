@@ -114,14 +114,29 @@ def _valid_color_or_none(value: Any) -> str | None:
 
 def default_node_theme(schema: EditorSchema, node: NodeRecord) -> dict[str, str]:
     definition = schema.nodes[node.type]
+    palette_by_type = {
+        "Initial": {"body": "#1d3a34", "border": "#5bd3b3", "text": "#ecfffb"},
+        "TouchIdle": {"body": "#1a3550", "border": "#74b9ff", "text": "#f3f8ff"},
+        "TouchDrag": {"body": "#33264f", "border": "#b59cff", "text": "#f7f1ff"},
+        "ParameterTrigger": {"body": "#4a3319", "border": "#ffb766", "text": "#fff8ef"},
+        "DrawFrame": {"body": "#d8e4f2", "border": "#7aa2d6", "text": "#18324d"},
+        "Comment": {"body": "#6c5a38", "border": "#e0b66b", "text": "#fff8eb"},
+    }
+    palette = palette_by_type.get(node.type)
     if node.type == "Comment":
-        body = _valid_color_or_none(node.fields.get("note_box_color")) or "#76808d"
-        border = _valid_color_or_none(node.fields.get("note_box_color")) or "#69b070"
-        text = _valid_color_or_none(node.fields.get("note_text_color")) or "#f3f5f8"
+        body = _valid_color_or_none(node.fields.get("note_box_color")) or (palette["body"] if palette else "#6c5a38")
+        border = _valid_color_or_none(node.fields.get("theme_border_color")) or body or (palette["border"] if palette else "#e0b66b")
+        text = _valid_color_or_none(node.fields.get("note_text_color")) or (palette["text"] if palette else "#fff8eb")
         return {
             "theme_body_color": body,
             "theme_border_color": border,
             "theme_text_color": text,
+        }
+    if palette:
+        return {
+            "theme_body_color": palette["body"],
+            "theme_border_color": palette["border"],
+            "theme_text_color": palette["text"],
         }
     return {
         "theme_body_color": _valid_color_or_none(definition.body_color) or "#27384d",

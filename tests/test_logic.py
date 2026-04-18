@@ -38,11 +38,29 @@ from l2d_config_editor.schema import load_editor_schema
 from l2d_config_editor.widgets import NodeFormWidget
 
 
+def _close_top_level_widgets(app: QApplication) -> None:
+    def choose_discard(box):
+        buttons = box.buttons()
+        if buttons:
+            box._forced_clicked_button = buttons[1] if len(buttons) > 1 else buttons[0]
+        return 0
+
+    with patch.object(QMessageBox, "exec", choose_discard), patch.object(
+        QMessageBox, "clickedButton", lambda box: getattr(box, "_forced_clicked_button", None)
+    ):
+        for widget in list(app.topLevelWidgets()):
+            widget.close()
+        app.processEvents()
+
+
 class LogicTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
         cls.schema = get_default_schema()
+
+    def tearDown(self) -> None:
+        _close_top_level_widgets(self.app)
 
     def make_ready_document(self):
         document = create_document(self.schema)
@@ -706,6 +724,9 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
 
+    def tearDown(self) -> None:
+        _close_top_level_widgets(self.app)
+
     def test_controller_blocks_creation_until_meta_ready(self) -> None:
         controller = EditorController()
         result = controller.create_node("TouchIdle", (100, 100))
@@ -778,16 +799,41 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertIn(created, window.canvas.expanded_node_uuids)
             self.assertTrue(item.proxy.isVisible())
             self.assertIn("action_trigger_active_kind_ui", item.form._bindings)
-
             window.canvas.toggle_node_display_mode(created)
             self.app.processEvents()
-
             self.assertEqual("card", window.canvas.node_display_mode(created))
             self.assertNotIn(created, window.canvas.expanded_node_uuids)
+            self.assertFalse(item.proxy.isVisible())
             window._mark_saved_checkpoint(saved=True)
             window.close()
 
-    def test_inline_summary_order_and_thumbnail_mode(self) -> None:
+    def test_card_field_focus_opens_detail_and_focuses_editor(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            window.controller.set_global_mode("simple")
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            item = window.canvas.node_items[created]
+
+            self.assertEqual("card", window.canvas.node_display_mode(created))
+            self.assertFalse(item.proxy.isVisible())
+
+            self.assertTrue(window.canvas.focus_node_field(created, "parameter"))
+            self.app.processEvents()
+
+            self.assertEqual("detail", window.canvas.node_display_mode(created))
+            self.assertTrue(item.proxy.isVisible())
+            self.assertIn(created, window.canvas.expanded_node_uuids)
+            self.assertEqual(created, window.controller.selected_node_uuid)
+            self.assertIn("parameter", item.form._bindings)
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
+    def test_inline_summary_order_and_zoom_out_keeps_card_mode(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
@@ -806,11 +852,14 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertIn("note", item._card_layout)
             self.assertIn("draw", item._card_layout)
             self.assertFalse(item.proxy.isVisible())
+            self.assertFalse(item.form.compact_mode)
 
             window.canvas._apply_view_state(0.4, QPointF(node.ui_position["x"], node.ui_position["y"]))
             self.app.processEvents()
 
-            self.assertTrue(item.form.compact_mode)
+            self.assertFalse(item.form.compact_mode)
+            self.assertFalse(item.proxy.isVisible())
+            self.assertIn("action", item._card_layout)
             self.assertEqual(QPointF(node.ui_position["x"], node.ui_position["y"]), item.pos())
 
             drag_uuid = window.controller.create_node("TouchDrag", (420, 120))
@@ -1237,7 +1286,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
-    def test_zooming_out_expands_node_width_for_readability(self) -> None:
+    def test_zooming_out_keeps_node_geometry_stable_while_screen_size_shrinks(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
@@ -1248,17 +1297,23 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             created = window.controller.create_node("TouchIdle", (200, 120))
             item = window.canvas.node_items[created]
             original_width = item._rect.width()
+            original_height = item._rect.height()
+            original_screen_width = original_width * window.canvas.transform().m11()
+            original_screen_height = original_height * window.canvas.transform().m11()
 
             window.canvas.scale(0.5, 0.5)
             window.canvas._refresh_scale_sensitive_nodes()
             self.app.processEvents()
 
-            self.assertGreater(item._rect.width(), original_width)
-            self.assertGreater(item._rect.width() * window.canvas.transform().m11(), 300.0)
+            self.assertAlmostEqual(item._rect.width(), original_width, delta=0.1)
+            self.assertGreaterEqual(item._rect.height(), original_height)
+            self.assertLess(item._rect.height(), original_height + 40.0)
+            self.assertLess(item._rect.width() * window.canvas.transform().m11(), original_screen_width * 0.6)
+            self.assertLess(item._rect.height() * window.canvas.transform().m11(), original_screen_height * 0.6)
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
-    def test_extreme_zoom_out_allows_header_fonts_to_shrink_with_canvas(self) -> None:
+    def test_zooming_out_keeps_title_stable_but_scales_summary_for_visibility(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
@@ -1271,33 +1326,49 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             node = window.controller.get_node(created)
             center = QPointF(node.ui_position["x"], node.ui_position["y"])
 
+            def title_point_size() -> float:
+                return item._title_font().pointSizeF()
+
+            def summary_point_size() -> float:
+                return item._summary_font().pointSizeF()
+
             def title_screen_size() -> float:
-                return item._title_font().pointSizeF() * window.canvas.transform().m11()
+                return title_point_size() * window.canvas.transform().m11()
 
             def summary_screen_size() -> float:
-                return item._summary_font().pointSizeF() * window.canvas.transform().m11()
+                return summary_point_size() * window.canvas.transform().m11()
 
+            baseline_title_point_size = title_point_size()
+            baseline_summary_point_size = summary_point_size()
             baseline_title_size = title_screen_size()
             baseline_summary_size = summary_screen_size()
 
             window.canvas._apply_view_state(0.4, center)
             self.app.processEvents()
+            stable_title_point_size = title_point_size()
+            stable_summary_point_size = summary_point_size()
             stable_title_size = title_screen_size()
             stable_summary_size = summary_screen_size()
 
             window.canvas._apply_view_state(0.18, center)
             self.app.processEvents()
+            shrunk_title_point_size = title_point_size()
+            shrunk_summary_point_size = summary_point_size()
             shrunk_title_size = title_screen_size()
             shrunk_summary_size = summary_screen_size()
 
-            self.assertAlmostEqual(stable_title_size, baseline_title_size, delta=0.35)
-            self.assertAlmostEqual(stable_summary_size, baseline_summary_size, delta=0.35)
+            self.assertAlmostEqual(stable_title_point_size, baseline_title_point_size, delta=0.01)
+            self.assertGreater(stable_summary_point_size, baseline_summary_point_size)
+            self.assertAlmostEqual(shrunk_title_point_size, baseline_title_point_size, delta=0.01)
+            self.assertGreaterEqual(shrunk_summary_point_size, stable_summary_point_size)
+            self.assertLess(stable_title_size, baseline_title_size)
+            self.assertLess(stable_summary_size, baseline_summary_size)
             self.assertLess(shrunk_title_size, stable_title_size)
             self.assertLess(shrunk_summary_size, stable_summary_size)
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
-    def test_zooming_out_does_not_persist_adaptive_width_into_ui_size(self) -> None:
+    def test_zooming_out_does_not_change_comment_geometry_or_ui_size(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
@@ -1310,13 +1381,61 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             comment_node.ui_size = {"width": 420.0, "height": 220.0}
             window.controller.nodeUpdated.emit(comment_uuid)
             item = window.canvas.node_items[comment_uuid]
+            original_width = item._rect.width()
+            original_height = item._rect.height()
 
             window.canvas.scale(0.5, 0.5)
             window.canvas._refresh_scale_sensitive_nodes()
             self.app.processEvents()
 
-            self.assertGreater(item._rect.width(), comment_node.ui_size["width"])
+            self.assertAlmostEqual(item._rect.width(), original_width, delta=0.1)
+            self.assertAlmostEqual(item._rect.height(), original_height, delta=0.1)
             self.assertEqual({"width": 420.0, "height": 220.0}, comment_node.ui_size)
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_draw_frame_title_font_scales_up_when_zooming_out(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            frame_uuid = window.controller.create_node("DrawFrame", (260, 180))
+            item = window.canvas.node_items[frame_uuid]
+            node = window.controller.get_node(frame_uuid)
+            center = QPointF(node.ui_position["x"], node.ui_position["y"])
+            baseline_font_size = item._draw_frame_title_font().pointSizeF()
+            baseline_rect_height = item._draw_frame_title_rect().height()
+
+            window.canvas._apply_view_state(0.45, center)
+            self.app.processEvents()
+
+            self.assertGreater(item._draw_frame_title_font().pointSizeF(), baseline_font_size)
+            self.assertGreater(item._draw_frame_title_rect().height(), baseline_rect_height)
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_function_node_pins_follow_card_frame_outer_edges(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            item = window.canvas.node_items[created]
+            self.assertFalse(window.canvas.should_render_thumbnail_nodes())
+            self.assertFalse(item.proxy.isVisible())
+            self.assertTrue(item._uses_compact_card())
+            frame_rect = item._card_layout["frame"]
+
+            self.assertAlmostEqual(item.input_pin_rect().center().x(), frame_rect.left(), delta=0.1)
+            self.assertAlmostEqual(item.output_pin_rect().center().x(), frame_rect.right(), delta=0.1)
+            self.assertAlmostEqual(item.input_pin_rect().center().y(), frame_rect.center().y(), delta=0.1)
+            self.assertAlmostEqual(item.output_pin_rect().center().y(), frame_rect.center().y(), delta=0.1)
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
@@ -1393,6 +1512,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window.canvas._refresh_scale_sensitive_nodes()
             self.app.processEvents()
             self.assertEqual("card", item._display_mode)
+            self.assertFalse(item.proxy.isVisible())
             self.assertGreaterEqual(item._card_layout["frame"].top(), baseline_frame_top)
             window._mark_saved_checkpoint(saved=True)
         window.close()

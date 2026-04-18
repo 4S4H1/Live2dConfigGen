@@ -457,7 +457,7 @@ class NodeFormWidget(QFrame):
         self.node = node
         self.global_mode = global_mode
         self.show_json_field_names = show_json_field_names
-        self.compact_mode = compact_mode
+        self.compact_mode = False
         self._apply_dynamic_style()
         if same_node and self._bindings:
             self.refresh()
@@ -475,7 +475,7 @@ class NodeFormWidget(QFrame):
         if show_json_field_names is not None:
             self.show_json_field_names = show_json_field_names
         if compact_mode is not None:
-            self.compact_mode = compact_mode
+            self.compact_mode = False
         if not self.node:
             return
         definition = self.schema.nodes[self.node.type]
@@ -655,6 +655,17 @@ class NodeFormWidget(QFrame):
                 widget.committed.emit(widget.edit.text().strip())
                 continue
 
+    def focus_field(self, key: str) -> bool:
+        binding = self._bindings.get(key)
+        if not binding:
+            return False
+        widget = binding.widget
+        target = widget.edit if isinstance(widget, ColorFieldWidget) else widget
+        target.setFocus(Qt.FocusReason.MouseFocusReason)
+        if isinstance(target, QLineEdit):
+            target.selectAll()
+        return True
+
     def _build_editor(self, field: FieldSchema) -> tuple[QWidget, Callable[[Any], None], Callable[[bool], None]]:
         if field.editor == "text":
             if field.multiline:
@@ -826,8 +837,8 @@ class NodeFormWidget(QFrame):
             self._summary_widget.setVisible(False)
             return
         for label_widget, field_widget in self._form_row_widgets:
-            label_widget.setVisible(not self.compact_mode)
-            field_widget.setVisible(not self.compact_mode)
+            label_widget.setVisible(True)
+            field_widget.setVisible(True)
         self._summary_widget.setVisible(False)
 
     def _apply_dynamic_style(self) -> None:

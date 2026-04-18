@@ -30,7 +30,10 @@
       "memo": "阿斯蒂芬22",
       "ship_skin_id": 11111,
       "react_condition": "111111",
-      "author": "阿斯蒂芬"
+      "author": "阿斯蒂芬",
+      "theme_body_color": "#1d3a34",
+      "theme_border_color": "#5bd3b3",
+      "theme_text_color": "#ecfffb"
     },
     {
       "uuid": "1cda322b61004d13bcc668f431385c55",
@@ -77,7 +80,10 @@
       "limit_time": 1.0,
       "listener_data": "",
       "shop_action": 0,
-      "relation_parameter": ""
+      "relation_parameter": "",
+      "theme_body_color": "#1a3550",
+      "theme_border_color": "#74b9ff",
+      "theme_text_color": "#f3f8ff"
     },
     {
       "uuid": "b5c3bfa7f5784737abbd10e11bf06976",
@@ -124,7 +130,10 @@
       "limit_time": 1.0,
       "listener_data": "",
       "shop_action": 0,
-      "relation_parameter": ""
+      "relation_parameter": "",
+      "theme_body_color": "#1a3550",
+      "theme_border_color": "#74b9ff",
+      "theme_text_color": "#f3f8ff"
     },
     {
       "uuid": "3f3a5486ec6a4e10b256253910dc14c5",
@@ -146,7 +155,7 @@
       "drag_ui_direction": "",
       "transition_type": "animated",
       "action_trigger": "{type = 2 ,action = 'touch_idle3'}",
-      "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 212121212}",
+      "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 123}",
       "id": 1111103,
       "mode": 1,
       "start_value": 0,
@@ -171,7 +180,10 @@
       "limit_time": 1.0,
       "listener_data": "",
       "shop_action": 0,
-      "relation_parameter": ""
+      "relation_parameter": "",
+      "theme_body_color": "#1a3550",
+      "theme_border_color": "#74b9ff",
+      "theme_text_color": "#f3f8ff"
     },
     {
       "uuid": "ed09e9777e4e4bb0aaedfaa5e89f04ea",
@@ -221,7 +233,10 @@
       "relation_parameter": "",
       "manual_fields": [
         "action_trigger"
-      ]
+      ],
+      "theme_body_color": "#1a3550",
+      "theme_border_color": "#74b9ff",
+      "theme_text_color": "#f3f8ff"
     },
     {
       "uuid": "6d2369268b6d42de851da510399a2442",
@@ -268,14 +283,17 @@
       "limit_time": 1.0,
       "listener_data": "",
       "shop_action": 0,
-      "relation_parameter": ""
+      "relation_parameter": "",
+      "theme_body_color": "#1a3550",
+      "theme_border_color": "#74b9ff",
+      "theme_text_color": "#f3f8ff"
     },
     {
       "uuid": "1dbff55c580b497cb31419e2496a197a",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 3774.330210699232,
-        "y": 2396.3001613547212
+        "x": 3774.3302106992314,
+        "y": 2393.999722017609
       },
       "type_slot": 6,
       "export_slot": 6,
@@ -315,7 +333,10 @@
       "limit_time": 1.0,
       "listener_data": "",
       "shop_action": 0,
-      "relation_parameter": ""
+      "relation_parameter": "",
+      "theme_body_color": "#1a3550",
+      "theme_border_color": "#74b9ff",
+      "theme_text_color": "#f3f8ff"
     },
     {
       "uuid": "a105f32b2e2e4e80b1f808b4acb5f86e",
@@ -362,7 +383,10 @@
       "limit_time": 1.0,
       "listener_data": "",
       "shop_action": 0,
-      "relation_parameter": ""
+      "relation_parameter": "",
+      "theme_body_color": "#1a3550",
+      "theme_border_color": "#74b9ff",
+      "theme_text_color": "#f3f8ff"
     },
     {
       "uuid": "0fbdb68dae584d709fef5b196acc6352",
@@ -409,7 +433,10 @@
       "limit_time": 1.0,
       "listener_data": "",
       "shop_action": 0,
-      "relation_parameter": ""
+      "relation_parameter": "",
+      "theme_body_color": "#1a3550",
+      "theme_border_color": "#74b9ff",
+      "theme_text_color": "#f3f8ff"
     },
     {
       "uuid": "064955dae82c49aea1bd92258035c619",
@@ -460,6 +487,9 @@
       "relation_parameter": "",
       "action_trigger": "",
       "result_type": "value",
+      "theme_body_color": "#4a3319",
+      "theme_border_color": "#ffb766",
+      "theme_text_color": "#fff8ef",
       "target_idle": 0
     },
     {
@@ -507,7 +537,10 @@
       "limit_time": 1.0,
       "listener_data": "",
       "shop_action": 0,
-      "relation_parameter": ""
+      "relation_parameter": "",
+      "theme_body_color": "#1a3550",
+      "theme_border_color": "#74b9ff",
+      "theme_text_color": "#f3f8ff"
     }
   ],
   "connections": [
@@ -554,8 +587,8 @@
   ],
   "trash_bin": [],
   "canvas_view": {
-    "scale": 0.2393920493691636,
-    "offset_x": 3521.4202068173945,
-    "offset_y": 2853.0604997108903
+    "scale": 0.43469957406289694,
+    "offset_x": 4639.986142954351,
+    "offset_y": 2730.6214931516183
   }
 }
