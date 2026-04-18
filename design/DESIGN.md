@@ -1,261 +1,278 @@
-# Design System Inspiration of Mistral AI
+# Design System Inspiration of HashiCorp
 
 ## 1. Visual Theme & Atmosphere
 
-Mistral AI's interface is a sun-drenched landscape rendered in code — a warm, bold, unapologetically European design that trades the typical blue-screen AI aesthetic for golden amber, burnt orange, and the feeling of late-afternoon light in southern France. Every surface glows with warmth: backgrounds fade from pale cream to deep amber, shadows carry golden undertones (`rgba(127, 99, 21, ...)`), and the brand's signature orange (`#fa520f`) burns through the page like a signal fire.
+HashiCorp's website is enterprise infrastructure made tangible — a design system that must communicate the complexity of cloud infrastructure management while remaining approachable. The visual language splits between two modes: a clean white light-mode for informational sections and a dramatic dark-mode (`#15181e`, `#0d0e12`) for hero areas and product showcases, creating a day/night duality that mirrors the "build in light, deploy in dark" developer workflow.
 
-The design language is maximalist in its warmth but minimalist in its structure. Huge display headlines (82px) crash into the viewport with aggressive negative tracking (-2.05px), creating text blocks that feel like billboards or protest posters — declarations rather than descriptions. The typography uses Arial (likely a custom font with Arial as fallback) at extreme sizes, creating a raw, unadorned voice that says "we build frontier AI" with no decoration needed.
+The typography is anchored by a custom brand font (HashiCorp Sans, loaded as `__hashicorpSans_96f0ca`) that carries substantial weight — literally. Headings use 600–700 weights with tight line-heights (1.17–1.19), creating dense, authoritative text blocks that communicate enterprise confidence. The hero headline at 82px weight 600 with OpenType `"kern"` enabled is not decorative — it's infrastructure-grade typography.
 
-What makes Mistral distinctive is the complete commitment to a warm color temperature. The signature "block" identity — a gradient system flowing from bright yellow (`#ffd900`) through amber (`#ffa110`) to burnt orange (`#fa520f`) — creates a visual identity that's immediately recognizable. Even the shadows are warm, using amber-tinted blacks instead of cool grays. Combined with dramatic landscape photography in golden tones, the design feels less like a tech company and more like a European luxury brand that happens to build language models.
+What distinguishes HashiCorp is its multi-product color system. Each product in the portfolio has its own brand color — Terraform purple (`#7b42bc`), Vault yellow (`#ffcf25`), Waypoint teal (`#14c6cb`), Vagrant blue (`#1868f2`) — and these colors appear throughout as accent tokens via a CSS custom property system (`--mds-color-*`). This creates a design system within a design system: the parent brand is black-and-white with blue accents, while each child product injects its own chromatic identity.
+
+The component system uses the `mds` (Markdown Design System) prefix, indicating a systematic, token-driven approach where colors, spacing, and states are all managed through CSS variables. Shadows are remarkably subtle — dual-layer micro-shadows using `rgba(97, 104, 117, 0.05)` that are nearly invisible but provide just enough depth to separate interactive surfaces from the background.
 
 **Key Characteristics:**
-- Golden-amber color universe: every tone from pale cream (#fffaeb) to burnt orange (#fa520f)
-- Massive display typography (82px) with aggressive negative letter-spacing (-2.05px)
-- Warm golden shadow system using amber-tinted rgba values
-- The Mistral "M" block identity — a gradient from yellow to orange
-- Dramatic landscape photography in warm golden tones
-- Uppercase typography used strategically for section labels and CTAs
-- Near-zero border-radius — sharp, architectural geometry
-- French-European confidence: bold, warm, declarative
+- Dual-mode: clean white sections + dramatic dark (`#15181e`) hero/product areas
+- Custom HashiCorp Sans font with 600–700 weights and `"kern"` feature
+- Multi-product color system via `--mds-color-*` CSS custom properties
+- Product brand colors: Terraform purple, Vault yellow, Waypoint teal, Vagrant blue
+- Uppercase letter-spaced captions (13px, weight 600, 1.3px letter-spacing)
+- Micro-shadows: dual-layer at 0.05 opacity — depth through whisper, not shout
+- Token-driven `mds` component system with semantic variable names
+- Tight border radius: 2px–8px, nothing pill-shaped or circular
+- System-ui fallback stack for secondary text
 
 ## 2. Color Palette & Roles
 
-### Primary
-- **Mistral Orange** (`#fa520f`): The core brand color — a vivid, saturated orange-red that anchors the entire identity. Used for primary emphasis, the brand block, and the highest-signal moments.
-- **Mistral Flame** (`#fb6424`): A slightly warmer, lighter variant of the brand orange used for secondary brand moments and hover states.
-- **Block Orange** (`#ff8105`): A pure orange used in the gradient block system — warmer and less red than Mistral Orange.
+### Brand Primary
+- **Black** (`#000000`): Primary brand color, text on light surfaces, `--mds-color-hcp-brand`
+- **Dark Charcoal** (`#15181e`): Dark mode backgrounds, hero sections
+- **Near Black** (`#0d0e12`): Deepest dark mode surface, form inputs on dark
 
-### Secondary & Accent
-- **Sunshine 900** (`#ff8a00`): Deep golden amber — the darkest sunshine tone, used for strong accent moments.
-- **Sunshine 700** (`#ffa110`): Warm amber-gold — the core sunshine accent for backgrounds and interactive elements.
-- **Sunshine 500** (`#ffb83e`): Medium golden — balanced warmth for mid-level emphasis.
-- **Sunshine 300** (`#ffd06a`): Light golden — for subtle warm tints and secondary backgrounds.
-- **Block Gold** (`#ffe295`): Pale gold — soft background accents and gentle warmth.
-- **Bright Yellow** (`#ffd900`): The brightest tone in the gradient — used at the "top" of the block identity.
+### Neutral Scale
+- **Light Gray** (`#f1f2f3`): Light backgrounds, subtle surfaces
+- **Mid Gray** (`#d5d7db`): Borders, button text on dark
+- **Cool Gray** (`#b2b6bd`): Border accents (at 0.1–0.4 opacity)
+- **Dark Gray** (`#656a76`): Helper text, secondary labels, `--mds-form-helper-text-color`
+- **Charcoal** (`#3b3d45`): Secondary text on light, button borders
+- **Near White** (`#efeff1`): Primary text on dark surfaces
 
-### Surface & Background
-- **Warm Ivory** (`#fffaeb`): The lightest page background — barely tinted with warmth, the foundation canvas.
-- **Cream** (`#fff0c2`): The primary warm surface and secondary button background — noticeably golden.
-- **Pure White** (`#ffffff`): Used for maximum contrast elements and popover surfaces.
-- **Mistral Black** (`#1f1f1f`): The primary dark surface for buttons, text, and dark sections.
-- **Accent Orange** (defined as `hsl(17, 96%, 52%)`): The functional accent color for interactive states.
+### Product Brand Colors
+- **Terraform Purple** (`#7b42bc`): `--mds-color-terraform-button-background`
+- **Vault Yellow** (`#ffcf25`): `--mds-color-vault-button-background`
+- **Waypoint Teal** (`#14c6cb`): `--mds-color-waypoint-button-background-focus`
+- **Waypoint Teal Hover** (`#12b6bb`): `--mds-color-waypoint-button-background-hover`
+- **Vagrant Blue** (`#1868f2`): `--mds-color-vagrant-brand`
+- **Purple Accent** (`#911ced`): `--mds-color-palette-purple-300`
+- **Visited Purple** (`#a737ff`): `--mds-color-foreground-action-visited`
 
-### Neutrals & Text
-- **Mistral Black** (`#1f1f1f`): Primary text color and dark button backgrounds — a near-black that's warmer than pure #000.
-- **Black Tint** (defined as `hsl(0, 0%, 24%)`): A medium dark gray for secondary text on light backgrounds.
-- **Pure White** (`#ffffff`): Text on dark surfaces and CTA labels.
+### Semantic Colors
+- **Action Blue** (`#1060ff`): Primary action links on dark
+- **Link Blue** (`#2264d6`): Primary links on light
+- **Bright Blue** (`#2b89ff`): Active links, hover accent
+- **Amber** (`#bb5a00`): `--mds-color-palette-amber-200`, warning states
+- **Amber Light** (`#fbeabf`): `--mds-color-palette-amber-100`, warning backgrounds
+- **Vault Faint Yellow** (`#fff9cf`): `--mds-color-vault-radar-gradient-faint-stop`
+- **Orange** (`#a9722e`): `--mds-color-unified-core-orange-6`
+- **Red** (`#731e25`): `--mds-color-unified-core-red-7`, error states
+- **Navy** (`#101a59`): `--mds-color-unified-core-blue-7`
 
-### Semantic & Accent
-- **Input Border** (defined as `hsl(240, 5.9%, 90%)`): A cool-tinted light gray for form borders — one of the few cool tones in the system.
-- **White Overlay** (`oklab(1, 0, 0 / 0.088–0.1)`): Semi-transparent white for frosted glass effects and button overlays.
-
-### Gradient System
-- **Mistral Block Gradient**: The signature identity — a multi-step gradient flowing through Yellow (`#ffd900`) → Gold (`#ffe295`) → Amber (`#ffa110`) → Orange (`#ff8105`) → Flame (`#fb6424`) → Mistral Orange (`#fa520f`). This gradient appears in the logo blocks, section backgrounds, and decorative elements.
-- **Golden Landscape Wash**: Photography and backgrounds use warm amber overlays creating a consistent golden temperature across the page.
-- **Warm Shadow Cascade**: Multi-layered golden shadows that build depth with amber-tinted transparency rather than gray.
+### Shadows
+- **Micro Shadow** (`rgba(97, 104, 117, 0.05) 0px 1px 1px, rgba(97, 104, 117, 0.05) 0px 2px 2px`): Default card/button elevation
+- **Focus Outline**: `3px solid var(--mds-color-focus-action-external)` — systematic focus ring
 
 ## 3. Typography Rules
 
-### Font Family
-- **Primary**: Likely a custom font (Font Source detected) with `Arial` as fallback, and extended stack: `ui-sans-serif, system-ui, Apple Color Emoji, Segoe UI Emoji, Segoe UI Symbol, Noto Color Emoji`
+### Font Families
+- **Primary Brand**: `__hashicorpSans_96f0ca` (HashiCorp Sans), with fallback: `__hashicorpSans_Fallback_96f0ca`
+- **System UI**: `system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial`
 
 ### Hierarchy
 
 | Role | Font | Size | Weight | Line Height | Letter Spacing | Notes |
 |------|------|------|--------|-------------|----------------|-------|
-| Display / Hero | Arial (custom) | 82px (5.13rem) | 400 | 1.00 (tight) | -2.05px | Maximum impact, billboard scale |
-| Section Heading | Arial (custom) | 56px (3.5rem) | 400 | 0.95 (ultra-tight) | normal | Feature section anchors |
-| Sub-heading Large | Arial (custom) | 48px (3rem) | 400 | 0.95 (ultra-tight) | normal | Secondary section titles |
-| Sub-heading | Arial (custom) | 32px (2rem) | 400 | 1.15 (tight) | normal | Card headings, feature names |
-| Card Title | Arial (custom) | 30px (1.88rem) | 400 | 1.20 (tight) | normal | Mid-level headings |
-| Feature Title | Arial (custom) | 24px (1.5rem) | 400 | 1.33 | normal | Small headings |
-| Body / Button | Arial (custom) | 16px (1rem) | 400 | 1.50 | normal | Standard body, button text |
-| Button Uppercase | Arial (custom) | 16px (1rem) | 400 | 1.50 | normal | Uppercase CTA labels |
-| Caption / Link | Arial (custom) | 14px (0.88rem) | 400 | 1.43 | normal | Metadata, secondary links |
+| Display Hero | HashiCorp Sans | 82px (5.13rem) | 600 | 1.17 (tight) | normal | `"kern"` enabled |
+| Section Heading | HashiCorp Sans | 52px (3.25rem) | 600 | 1.19 (tight) | normal | `"kern"` enabled |
+| Feature Heading | HashiCorp Sans | 42px (2.63rem) | 700 | 1.19 (tight) | -0.42px | Negative tracking |
+| Sub-heading | HashiCorp Sans | 34px (2.13rem) | 600–700 | 1.18 (tight) | normal | Feature blocks |
+| Card Title | HashiCorp Sans | 26px (1.63rem) | 700 | 1.19 (tight) | normal | Card and panel headings |
+| Small Title | HashiCorp Sans | 19px (1.19rem) | 700 | 1.21 (tight) | normal | Compact headings |
+| Body Emphasis | HashiCorp Sans | 17px (1.06rem) | 600–700 | 1.18–1.35 | normal | Bold body text |
+| Body Large | system-ui | 20px (1.25rem) | 400–600 | 1.50 | normal | Hero descriptions |
+| Body | system-ui | 16px (1.00rem) | 400–500 | 1.63–1.69 (relaxed) | normal | Standard body text |
+| Nav Link | system-ui | 15px (0.94rem) | 500 | 1.60 (relaxed) | normal | Navigation items |
+| Small Body | system-ui | 14px (0.88rem) | 400–500 | 1.29–1.71 | normal | Secondary content |
+| Caption | system-ui | 13px (0.81rem) | 400–500 | 1.23–1.69 | normal | Metadata, footer links |
+| Uppercase Label | HashiCorp Sans | 13px (0.81rem) | 600 | 1.69 (relaxed) | 1.3px | `text-transform: uppercase` |
 
 ### Principles
-- **Single weight, maximum impact**: The entire system uses weight 400 (regular) — even at 82px. This creates a surprisingly elegant effect where the size alone carries authority without needing bold weight.
-- **Ultra-tight at scale**: Line-heights of 0.95–1.00 at display sizes create text blocks where ascenders nearly touch descenders from the line above — creating dense, poster-like composition.
-- **Aggressive tracking on display**: -2.05px letter-spacing at 82px compresses the hero text into a monolithic block.
-- **Uppercase as emphasis**: Strategic `text-transform: uppercase` on button labels and section markers creates a formal, European signage quality.
-- **No weight variation**: Unlike most systems that use 300–700 weight range, Mistral uses 400 everywhere. Hierarchy comes from size and color, never weight.
+- **Brand/System split**: HashiCorp Sans for headings and brand-critical text; system-ui for body, navigation, and functional text. The brand font carries the weight, system-ui carries the words.
+- **Kern always on**: All HashiCorp Sans text enables OpenType `"kern"` — letterfitting is non-negotiable.
+- **Tight headings**: Every heading uses 1.17–1.21 line-height, creating dense, stacked text blocks that feel infrastructural — solid, load-bearing.
+- **Relaxed body**: Body text uses 1.50–1.69 line-height (notably generous), creating comfortable reading rhythm beneath the dense headings.
+- **Uppercase labels as wayfinding**: 13px uppercase with 1.3px letter-spacing serves as the systematic category/section marker — always HashiCorp Sans weight 600.
 
 ## 4. Component Stylings
 
 ### Buttons
 
-**Cream Surface**
-- Background: Cream (`#fff0c2`)
-- Text: Mistral Black (`#1f1f1f`)
-- No visible border
-- The warm, inviting secondary CTA
+**Primary Dark**
+- Background: `#15181e`
+- Text: `#d5d7db`
+- Padding: 9px 9px 9px 15px (asymmetric, more left padding)
+- Radius: 5px
+- Border: `1px solid rgba(178, 182, 189, 0.4)`
+- Shadow: `rgba(97, 104, 117, 0.05) 0px 1px 1px, rgba(97, 104, 117, 0.05) 0px 2px 2px`
+- Focus: `3px solid var(--mds-color-focus-action-external)`
+- Hover: uses `--mds-color-surface-interactive` token
 
-**Dark Solid**
-- Background: Mistral Black (`#1f1f1f`)
-- Text: Pure White (`#ffffff`)
-- Padding: 12px (all sides)
-- No visible border
-- The primary action button — dark on warm
+**Secondary White**
+- Background: `#ffffff`
+- Text: `#3b3d45`
+- Padding: 8px 12px
+- Radius: 4px
+- Hover: `--mds-color-surface-interactive` + low-shadow elevation
+- Focus: `3px solid transparent` outline
+- Clean, minimal appearance
 
-**Ghost / Transparent**
-- Background: transparent with slight dark overlay (`oklab(0, 0, 0 / 0.1)`)
-- Text: Mistral Black (`#1f1f1f`)
-- Opacity: 0.4
-- For secondary/de-emphasized actions
+**Product-Colored Buttons**
+- Terraform: background `#7b42bc`
+- Vault: background `#ffcf25` (dark text)
+- Waypoint: background `#14c6cb`, hover `#12b6bb`
+- Each product button follows the same structural pattern but uses its brand color
 
-**Text / Underline**
-- Background: transparent
-- Text: Mistral Black (`#1f1f1f`)
-- Padding: 8px 0px 0px (top-only)
-- Minimal styling — text link as button
-- For tertiary navigation actions
+### Badges / Pills
+- Background: `#42225b` (deep purple)
+- Text: `#efeff1`
+- Padding: 3px 7px
+- Radius: 5px
+- Border: `1px solid rgb(180, 87, 255)`
+- Font: 16px
+
+### Inputs
+
+**Text Input (Dark Mode)**
+- Background: `#0d0e12`
+- Text: `#efeff1`
+- Border: `1px solid rgb(97, 104, 117)`
+- Padding: 11px
+- Radius: 5px
+- Focus: `3px solid var(--mds-color-focus-action-external)` outline
+
+**Checkbox**
+- Background: `#0d0e12`
+- Border: `1px solid rgb(97, 104, 117)`
+- Radius: 3px
+
+### Links
+- **Action Blue on Light**: `#2264d6`, hover → blue-600 variable, underline on hover
+- **Action Blue on Dark**: `#1060ff` or `#2b89ff`, underline on hover
+- **White on Dark**: `#ffffff`, transparent underline → visible underline on hover
+- **Neutral on Light**: `#3b3d45`, transparent underline → visible underline on hover
+- **Light on Dark**: `#efeff1`, similar hover pattern
+- All links use `var(--wpl-blue-600)` as hover color
 
 ### Cards & Containers
-- Background: Warm Ivory (`#fffaeb`), Cream (`#fff0c2`), or Pure White
-- Border: minimal to none — containers defined by background color
-- Radius: near-zero — sharp, architectural corners
-- Shadow: warm golden multi-layer (`rgba(127, 99, 21, 0.12) -8px 16px 39px, rgba(127, 99, 21, 0.1) -33px 64px 72px, rgba(127, 99, 21, 0.06) -73px 144px 97px, ...`) — a dramatic, cascading warm shadow
-- Distinctive: the golden shadow creates a "golden hour" lighting effect
-
-### Inputs & Forms
-- Border: `hsl(240, 5.9%, 90%)` — the sole cool-toned element
-- Focus: accent color ring
-- Minimal styling consistent with sparse aesthetic
+- Light mode: white background, micro-shadow elevation
+- Dark mode: `#15181e` or darker surfaces
+- Radius: 8px for cards and containers
+- Product showcase cards with gradient borders or accent lighting
 
 ### Navigation
-- Transparent nav overlaying the warm hero
-- Logo: Mistral "M" wordmark
-- Links: Dark text (white on dark sections)
-- CTA: Dark solid button or cream surface button
-- Minimal, wide-spaced layout
-
-### Image Treatment
-- Dramatic landscape photography in warm golden tones
-- The winding road through golden hills — a recurring visual motif
-- The Mistral "M" rendered at large scale on golden backgrounds
-- Warm color grading on all photography
-- Full-bleed sections with photography
-
-### Distinctive Components
-
-**Mistral Block Identity**
-- A row of colored blocks forming the gradient: yellow → amber → orange → burnt orange
-- Each block gets progressively more orange/red
-- The visual DNA of the brand — recognizable at any size
-
-**Golden Shadow Cards**
-- Cards elevated with warm amber multi-layered shadows
-- 5 layers of shadow from 16px to 400px offset
-- Creates a "floating in golden light" effect unique to Mistral
-
-**Dark Footer Gradient**
-- Footer transitions from warm amber to dark through a dramatic gradient
-- Creates a "sunset" effect as the page ends
+- Clean horizontal nav with mega-menu dropdowns
+- HashiCorp logo left-aligned
+- system-ui 15px weight 500 for links
+- Product categories organized by lifecycle management group
+- "Get started" and "Contact us" CTAs in header
+- Dark mode variant for hero sections
 
 ## 5. Layout Principles
 
 ### Spacing System
 - Base unit: 8px
-- Scale: 2px, 4px, 8px, 10px, 12px, 16px, 20px, 24px, 32px, 40px, 48px, 64px, 80px, 98px, 100px
-- Button padding: 12px or 8px 0px (compact)
-- Section vertical spacing: very generous (80px–100px)
+- Scale: 2px, 3px, 4px, 6px, 7px, 8px, 9px, 11px, 12px, 16px, 20px, 24px, 32px, 40px, 48px
 
 ### Grid & Container
-- Max container width: approximately 1280px, centered
-- Hero: full-width with massive typography overlaying warm backgrounds
-- Feature sections: wide-format layouts with dramatic imagery
+- Max content width: ~1150px (xl breakpoint)
+- Full-width dark hero sections with contained content
 - Card grids: 2–3 column layouts
+- Generous horizontal padding at desktop scale
+
+### Breakpoints
+| Name | Width | Key Changes |
+|------|-------|-------------|
+| Mobile Small | <375px | Tight single column |
+| Mobile | 375–480px | Standard mobile |
+| Small Tablet | 480–600px | Minor adjustments |
+| Tablet | 600–768px | 2-column grids begin |
+| Small Desktop | 768–992px | Full nav visible |
+| Desktop | 992–1120px | Standard layout |
+| Large Desktop | 1120–1440px | Max-width content |
+| Ultra-wide | >1440px | Centered, generous margins |
 
 ### Whitespace Philosophy
-- **Bold declarations**: Huge headlines surrounded by generous whitespace create billboard-like impact — each statement gets its own breathing space.
-- **Warm void**: Empty space itself feels warm because the backgrounds are tinted ivory/cream rather than pure white.
-- **Photography as space-filler**: Large landscape images serve double duty as content and decorative whitespace.
+- **Enterprise breathing room**: Generous vertical spacing between sections (48px–80px+) communicates stability and seriousness.
+- **Dense headings, spacious body**: Tight line-height headings sit above relaxed body text, creating visual "weight at the top" of each section.
+- **Dark as canvas**: Dark hero sections use extra vertical padding to let 3D illustrations and gradients breathe.
 
 ### Border Radius Scale
-- Near-zero: The dominant radius — sharp, architectural corners on most elements
-- This extreme sharpness contrasts with the warmth of the colors, creating a tension between soft color and hard geometry.
+- Minimal (2px): Links, small inline elements
+- Subtle (3px): Checkboxes, small inputs
+- Standard (4px): Secondary buttons
+- Comfortable (5px): Primary buttons, badges, inputs
+- Card (8px): Cards, containers, images
 
 ## 6. Depth & Elevation
 
 | Level | Treatment | Use |
 |-------|-----------|-----|
-| Flat (Level 0) | No shadow | Page backgrounds, text blocks |
-| Golden Float (Level 1) | Multi-layer warm shadow (5 layers, 12%→0% opacity, amber-tinted) | Feature cards, product showcases, elevated content |
+| Flat (Level 0) | No shadow | Default surfaces, text blocks |
+| Whisper (Level 1) | `rgba(97, 104, 117, 0.05) 0px 1px 1px, rgba(97, 104, 117, 0.05) 0px 2px 2px` | Cards, buttons, interactive surfaces |
+| Focus (Level 2) | `3px solid var(--mds-color-focus-action-external)` outline | Focus rings — color-matched to context |
 
-**Shadow Philosophy**: Mistral uses a single but extraordinarily complex shadow — **five cascading layers** of amber-tinted shadow (`rgba(127, 99, 21, ...)`) that build from a close 16px offset to a distant 400px offset. The result is a rich, warm, "golden hour" lighting effect that makes elevated elements look like they're bathed in afternoon sunlight. This is the most distinctive shadow system in any major AI brand.
+**Shadow Philosophy**: HashiCorp uses arguably the subtlest shadow system in modern web design. The dual-layer shadows at 5% opacity are nearly invisible — they exist not to create visual depth but to signal interactivity. If you can see the shadow, it's too strong. This restraint communicates the enterprise value of stability — nothing floats, nothing is uncertain.
 
 ## 7. Do's and Don'ts
 
 ### Do
-- Use the warm color spectrum exclusively: ivory, cream, amber, gold, orange
-- Keep display typography at 82px+ with -2.05px letter-spacing for hero sections
-- Use the Mistral block gradient (yellow → amber → orange) for brand moments
-- Apply warm golden shadows (amber-tinted rgba) for elevated elements
-- Use Mistral Black (#1f1f1f) for text — never pure #000000
-- Keep font weight at 400 throughout — let size and color carry hierarchy
-- Use sharp, architectural corners — near-zero border-radius
-- Apply uppercase on button labels and section markers for European formality
-- Use warm landscape photography with golden color grading
+- Use HashiCorp Sans for headings and brand text, system-ui for body and UI text
+- Enable `"kern"` on all HashiCorp Sans text
+- Use product brand colors ONLY for their respective products (Terraform = purple, Vault = yellow, etc.)
+- Apply uppercase labels at 13px weight 600 with 1.3px letter-spacing for section markers
+- Keep shadows at the "whisper" level (0.05 opacity dual-layer)
+- Use the `--mds-color-*` token system for consistent color application
+- Maintain the tight-heading / relaxed-body rhythm (1.17–1.21 vs 1.50–1.69 line-heights)
+- Use `3px solid` focus outlines for accessibility
 
 ### Don't
-- Don't introduce cool colors (blue, green, purple) — the palette is exclusively warm
-- Don't use bold (700+) weight — 400 is the only weight
-- Don't round corners — the sharp geometry is intentional
-- Don't use cool-toned shadows — shadows must carry amber warmth
-- Don't use pure white as a page background — always warm-tinted (#fffaeb minimum)
-- Don't reduce hero text below 48px on desktop — the billboard scale is core
-- Don't use more than 2 font weights — size variation replaces weight variation
-- Don't add gradients outside the warm spectrum — no blue-to-purple, no cool transitions
-- Don't use generic gray for text — even neutrals should be warm-tinted
+- Don't use product brand colors outside their product context (no Terraform purple on Vault content)
+- Don't increase shadow opacity above 0.1 — the whisper level is intentional
+- Don't use pill-shaped buttons (>8px radius) — the sharp, minimal radius is structural
+- Don't skip the `"kern"` feature on headings — the font requires it
+- Don't use HashiCorp Sans for small body text — it's designed for 17px+ heading use
+- Don't mix product colors in the same component — each product has one color
+- Don't use pure black (`#000000`) for dark backgrounds — use `#15181e` or `#0d0e12`
+- Don't forget the asymmetric button padding — 9px 9px 9px 15px is intentional
 
 ## 8. Responsive Behavior
 
 ### Breakpoints
 | Name | Width | Key Changes |
 |------|-------|-------------|
-| Mobile | <640px | Single column, stacked everything, hero text reduces to ~32px |
-| Tablet | 640–768px | Minor layout adjustments |
-| Small Desktop | 768–1024px | 2-column layouts begin |
-| Desktop | 1024–1280px | Full layout with maximum typography scale |
-
-### Touch Targets
-- Buttons use generous padding (12px minimum)
-- Navigation elements adequately spaced
-- Cards serve as large touch targets
+| Mobile | <768px | Single column, hamburger nav, stacked CTAs |
+| Tablet | 768–992px | 2-column grids, nav begins expanding |
+| Desktop | 992–1150px | Full layout, mega-menu nav |
+| Large | >1150px | Max-width centered, generous margins |
 
 ### Collapsing Strategy
-- **Navigation**: Collapses to hamburger on mobile
-- **Hero text**: 82px → 56px → 48px → 32px progressive scaling
-- **Feature sections**: Multi-column → stacked
-- **Photography**: Scales proportionally, may crop on mobile
-- **Block identity**: Scales down proportionally
-
-### Image Behavior
-- Landscape photography scales proportionally
-- Warm color grading maintained at all sizes
-- Block gradient elements resize fluidly
-- No art direction changes — same warm composition at all sizes
+- Hero: 82px → 52px → 42px heading sizes
+- Navigation: mega-menu → hamburger
+- Product cards: 3-column → 2-column → stacked
+- Dark sections maintain full-width but compress padding
+- Buttons: inline → full-width stacked on mobile
 
 ## 9. Agent Prompt Guide
 
 ### Quick Color Reference
-- Brand Orange: "Mistral Orange (#fa520f)"
-- Page Background: "Warm Ivory (#fffaeb)"
-- Warm Surface: "Cream (#fff0c2)"
-- Primary Text: "Mistral Black (#1f1f1f)"
-- Sunshine Amber: "Sunshine 700 (#ffa110)"
-- Bright Gold: "Bright Yellow (#ffd900)"
-- Text on Dark: "Pure White (#ffffff)"
+- Light bg: `#ffffff`, `#f1f2f3`
+- Dark bg: `#15181e`, `#0d0e12`
+- Text light: `#000000`, `#3b3d45`
+- Text dark: `#efeff1`, `#d5d7db`
+- Links: `#2264d6` (light), `#1060ff` (dark), `#2b89ff` (active)
+- Helper text: `#656a76`
+- Borders: `rgba(178, 182, 189, 0.4)`, `rgb(97, 104, 117)`
+- Focus: `3px solid` product-appropriate color
 
 ### Example Component Prompts
-- "Create a hero section on Warm Ivory (#fffaeb) with a massive headline at 82px Arial weight 400, line-height 1.0, letter-spacing -2.05px. Mistral Black (#1f1f1f) text. Add a dark solid CTA button (#1f1f1f bg, white text, 12px padding, sharp corners) and a cream secondary button (#fff0c2 bg)."
-- "Design a feature card on Cream (#fff0c2) with sharp corners (no border-radius). Apply the golden shadow system: rgba(127, 99, 21, 0.12) -8px 16px 39px as the primary layer. Title at 32px weight 400, body at 16px."
-- "Build the Mistral block identity: a row of colored blocks from Bright Yellow (#ffd900) through Sunshine 700 (#ffa110) to Mistral Orange (#fa520f). Sharp corners, no gaps."
-- "Create a dark footer section on Mistral Black (#1f1f1f) with Pure White (#ffffff) text. Footer links at 14px. Add a warm gradient from Sunshine 700 (#ffa110) at the top fading to Mistral Black."
+- "Create a hero on dark background (#15181e). Headline at 82px HashiCorp Sans weight 600, line-height 1.17, kern enabled, white text. Sub-text at 20px system-ui weight 400, line-height 1.50, #d5d7db text. Two buttons: primary dark (#15181e, 5px radius, 9px 15px padding) and secondary white (#ffffff, 4px radius, 8px 12px padding)."
+- "Design a product card: white background, 8px radius, dual-layer shadow at rgba(97,104,117,0.05). Title at 26px HashiCorp Sans weight 700, body at 16px system-ui weight 400 line-height 1.63."
+- "Build an uppercase section label: 13px HashiCorp Sans weight 600, line-height 1.69, letter-spacing 1.3px, text-transform uppercase, #656a76 color."
+- "Create a product-specific CTA button: Terraform → #7b42bc background, Vault → #ffcf25 with dark text, Waypoint → #14c6cb. All: 5px radius, 500 weight text, 16px system-ui."
+- "Design a dark form: #0d0e12 input background, #efeff1 text, 1px solid rgb(97,104,117) border, 5px radius, 11px padding. Focus: 3px solid accent-color outline."
 
 ### Iteration Guide
-1. Keep the warm temperature — "shift toward amber" not "shift toward gray"
-2. Use size for hierarchy — 82px → 56px → 48px → 32px → 24px → 16px
-3. Never add border-radius — sharp corners only
-4. Shadows are always warm: "golden shadow with amber tones"
-5. Font weight is always 400 — describe emphasis through size and color
+1. Always start with the mode decision: light (white) for informational, dark (#15181e) for hero/product
+2. HashiCorp Sans for headings only (17px+), system-ui for everything else
+3. Shadows are at whisper level (0.05 opacity) — if visible, reduce
+4. Product colors are sacred — each product owns exactly one color
+5. Focus rings are always 3px solid, color-matched to product context
+6. Uppercase labels are the systematic wayfinding pattern — 13px, 600, 1.3px tracking

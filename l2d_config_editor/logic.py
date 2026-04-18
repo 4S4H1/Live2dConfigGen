@@ -25,6 +25,7 @@ from .models import (
     ValidationIssue,
 )
 from .schema import EditorSchema, FieldSchema, NodeSchema, load_editor_schema
+from .styles import normalize_theme_mode, theme_palette
 
 RANGE_PATTERN = re.compile(r"^\{\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\}$")
 ACTION_NAME_PATTERN = re.compile(r"action\s*=\s*'([^']*)'")
@@ -67,6 +68,7 @@ COMMENT_LEGACY_APPEARANCE_KEYS = (
 )
 DEFAULT_THEME_TEXT_COLOR = "#f7f8fa"
 DRAWFRAME_DEFAULT_SIZE = {"width": 520.0, "height": 320.0}
+_RUNTIME_THEME_MODE = "light"
 
 
 @lru_cache(maxsize=2)
@@ -112,34 +114,60 @@ def _valid_color_or_none(value: Any) -> str | None:
     return None
 
 
+def set_runtime_theme_mode(mode: str | None) -> None:
+    global _RUNTIME_THEME_MODE
+    _RUNTIME_THEME_MODE = normalize_theme_mode(mode)
+
+
+def runtime_theme_mode() -> str:
+    return _RUNTIME_THEME_MODE
+
+
 def default_node_theme(schema: EditorSchema, node: NodeRecord) -> dict[str, str]:
-    definition = schema.nodes[node.type]
+    palette = theme_palette(runtime_theme_mode())
+    defaults = dict(palette["node_defaults"])
     if node.type == "Comment":
-        body = _valid_color_or_none(node.fields.get("note_box_color")) or "#76808d"
-        border = _valid_color_or_none(node.fields.get("note_box_color")) or "#69b070"
-        text = _valid_color_or_none(node.fields.get("note_text_color")) or "#f3f5f8"
+        theme_defaults = defaults["comment"]
+        body = _valid_color_or_none(node.fields.get("note_box_color")) or theme_defaults["body"]
+        border = _valid_color_or_none(node.fields.get("theme_border_color")) or _valid_color_or_none(node.fields.get("note_box_color")) or theme_defaults["border"]
+        text = _valid_color_or_none(node.fields.get("note_text_color")) or theme_defaults["text"]
         return {
             "theme_body_color": body,
             "theme_border_color": border,
             "theme_text_color": text,
         }
+    if node.type == "DrawFrame":
+        theme_defaults = defaults["drawframe"]
+    elif node.type == "Initial":
+        theme_defaults = defaults["initial"]
+    else:
+        theme_defaults = defaults["function"]
     return {
-        "theme_body_color": _valid_color_or_none(definition.body_color) or "#27384d",
-        "theme_border_color": _valid_color_or_none(definition.accent_color) or "#78b1ff",
-        "theme_text_color": DEFAULT_THEME_TEXT_COLOR,
+        "theme_body_color": theme_defaults["body"],
+        "theme_border_color": theme_defaults["border"],
+        "theme_text_color": theme_defaults["text"] or DEFAULT_THEME_TEXT_COLOR,
     }
 
 
 def apply_node_appearance_defaults(schema: EditorSchema, node: NodeRecord) -> None:
-    defaults = default_node_theme(schema, node)
-    for key, value in defaults.items():
-        if not _valid_color_or_none(node.fields.get(key)):
-            node.fields[key] = value
+    del schema
+    for key in NODE_THEME_FIELD_KEYS:
+        normalized = _valid_color_or_none(node.fields.get(key))
+        if normalized:
+            node.fields[key] = normalized
+        elif key in node.fields and str(node.fields.get(key) or "").strip():
+            node.fields.pop(key, None)
     if node.type == "Comment":
-        if not _valid_color_or_none(node.fields.get("note_box_color")):
-            node.fields["note_box_color"] = node.fields["theme_body_color"]
-        if not _valid_color_or_none(node.fields.get("note_text_color")):
-            node.fields["note_text_color"] = node.fields["theme_text_color"]
+        note_box_color = _valid_color_or_none(node.fields.get("note_box_color"))
+        if note_box_color:
+            node.fields["note_box_color"] = note_box_color
+        elif "note_box_color" in node.fields and str(node.fields.get("note_box_color") or "").strip():
+            node.fields.pop("note_box_color", None)
+        note_text_color = _valid_color_or_none(node.fields.get("note_text_color"))
+        if note_text_color:
+            node.fields["note_text_color"] = note_text_color
+        elif "note_text_color" in node.fields and str(node.fields.get("note_text_color") or "").strip():
+            node.fields.pop("note_text_color", None)
         try:
             node.fields["note_box_alpha"] = int(node.fields.get("note_box_alpha", 62))
         except (TypeError, ValueError):
@@ -867,6 +895,8 @@ def create_node(
         node.fields["target_idle"] = 0
         node.manual_fields.discard("action_trigger")
         _refresh_trigger_interface_fields(node)
+    if node.type == "DrawFrame" and not str(node.fields.get("title", "") or "").strip():
+        node.fields["title"] = "画框"
     apply_node_appearance_defaults(schema, node)
     sync_comment_legacy_appearance(node)
     return node
@@ -1095,6 +1125,8 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
             raw_target_idle = _target_idle_from_raw(fields.get("action_trigger_active"))
             if raw_target_idle is not None:
                 fields["target_idle"] = raw_target_idle
+        if node_type == "DrawFrame" and not str(fields.get("title", "") or "").strip():
+            fields["title"] = "画框"
         sequence_map[node_type] = sequence_map.get(node_type, 0) + 1
         node = NodeRecord(
             uuid=raw.get("uuid") or new_uuid(),

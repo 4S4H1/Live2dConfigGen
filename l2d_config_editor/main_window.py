@@ -52,7 +52,9 @@ from .logic import (
     load_document,
     load_template_csv_rows,
     save_document,
+    set_runtime_theme_mode,
 )
+from .styles import build_app_style, normalize_theme_mode
 from .widgets import (
     ColorFieldWidget,
     CommitComboBox,
@@ -418,6 +420,7 @@ class ShortcutConfigDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
+    SETTINGS_THEME_MODE = "ui/theme_mode"
     AUTOSAVE_DELAY_MS = 1800
     PASTE_GAP = 96.0
     # QSettings 键：存 Windows 注册表 HKCU\Software\OpenAI\L2DConfigEditor，不是仓库里的 config.json。
@@ -428,6 +431,8 @@ class MainWindow(QMainWindow):
     def __init__(self, workdir: str | Path, *, prefer_saved_workspace: bool = True) -> None:
         super().__init__()
         self.settings = QSettings("OpenAI", "L2DConfigEditor")
+        self._theme_mode = normalize_theme_mode(self.settings.value(self.SETTINGS_THEME_MODE, "light"))
+        set_runtime_theme_mode(self._theme_mode)
         if prefer_saved_workspace:
             self.workdir = self._resolved_workspace_path(workdir)
         else:
@@ -1083,6 +1088,18 @@ class MainWindow(QMainWindow):
         mode_menu.addAction(self.simple_mode_action)
         mode_menu.addAction(self.advanced_mode_action)
 
+        theme_menu = view_menu.addMenu("主题")
+        theme_group = QActionGroup(self)
+        theme_group.setExclusive(True)
+        self.light_theme_action = QAction("浅色模式", self, checkable=True)
+        self.dark_theme_action = QAction("深色模式", self, checkable=True)
+        self.light_theme_action.triggered.connect(lambda: self._set_theme_mode("light"))
+        self.dark_theme_action.triggered.connect(lambda: self._set_theme_mode("dark"))
+        theme_group.addAction(self.light_theme_action)
+        theme_group.addAction(self.dark_theme_action)
+        theme_menu.addAction(self.light_theme_action)
+        theme_menu.addAction(self.dark_theme_action)
+
         help_doc_action = QAction("使用说明", self)
         help_doc_action.triggered.connect(self._open_help_page)
         help_menu.addAction(help_doc_action)
@@ -1113,6 +1130,26 @@ class MainWindow(QMainWindow):
     def _apply_wheel_settings(self, settings: dict[str, str]) -> None:
         self.canvas.zoom_wheel_modifier = settings.get("zoom_modifier", "ctrl")
         self.canvas.horizontal_wheel_modifier = settings.get("horizontal_modifier", "alt_shift")
+
+    def _set_theme_mode(self, mode: str) -> None:
+        self._apply_theme_mode(mode, persist=True)
+
+    def _apply_theme_mode(self, mode: str, *, persist: bool) -> None:
+        normalized = normalize_theme_mode(mode)
+        self._theme_mode = normalized
+        set_runtime_theme_mode(normalized)
+        app = QGuiApplication.instance()
+        if app is not None:
+            app.setStyleSheet(build_app_style(normalized))
+        if hasattr(self, "canvas"):
+            self.canvas.apply_theme(normalized)
+        if hasattr(self, "light_theme_action"):
+            self.light_theme_action.setChecked(normalized == "light")
+        if hasattr(self, "dark_theme_action"):
+            self.dark_theme_action.setChecked(normalized == "dark")
+        if persist:
+            self.settings.setValue(self.SETTINGS_THEME_MODE, normalized)
+            self.settings.sync()
 
     def _show_shortcut_settings_dialog(self) -> None:
         shortcuts = {
@@ -1278,6 +1315,7 @@ class MainWindow(QMainWindow):
             self.save_action.setEnabled(can_save)
 
     def _apply_saved_preferences(self) -> None:
+        self._apply_theme_mode(self._theme_mode, persist=False)
         mode = self.settings.value("ui/global_mode", self.controller.preferences.global_mode)
         if isinstance(mode, str):
             self.controller.set_global_mode(mode)

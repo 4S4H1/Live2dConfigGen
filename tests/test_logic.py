@@ -879,6 +879,28 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         finally:
             settings.clear()
 
+    def test_main_window_defaults_to_light_theme_and_persists_theme_switch(self) -> None:
+        settings = QSettings("OpenAI", "L2DConfigEditor")
+        settings.clear()
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                first = MainWindow(temp_dir, prefer_saved_workspace=False)
+                self.assertEqual("light", first._theme_mode)
+                self.assertTrue(first.light_theme_action.isChecked())
+                self.assertEqual("#fffaeb", str(first.canvas.theme_palette["canvas_bg"]))
+                first._set_theme_mode("dark")
+                self.assertEqual("dark", first._theme_mode)
+                self.assertTrue(first.dark_theme_action.isChecked())
+                first.close()
+
+                second = MainWindow(temp_dir, prefer_saved_workspace=False)
+                self.assertEqual("dark", second._theme_mode)
+                self.assertTrue(second.dark_theme_action.isChecked())
+                self.assertEqual("#1f1f1f", str(second.canvas.theme_palette["canvas_bg"]))
+                second.close()
+        finally:
+            settings.clear()
+
     def test_node_title_updates_when_draw_name_changes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
@@ -1034,6 +1056,25 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         left_half_scene = output_center + QPointF(-item._pin_radius * 0.75, 0.0)
         self.assertEqual("output", item.pin_hit(right_half_scene))
         self.assertEqual("output", item.pin_hit(left_half_scene))
+        window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_card_mode_pins_anchor_to_card_frame_edges(self) -> None:
+        window = MainWindow("/Users/asahi/Live2dConfigGen", prefer_saved_workspace=False)
+        window.controller.set_global_mode("simple")
+        initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+        window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+        window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+        window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+        window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+        created = window.controller.create_node("TouchIdle", (200, 120))
+        item = window.canvas.node_items[created]
+        frame_rect = item._card_layout["frame"]
+
+        self.assertAlmostEqual(frame_rect.left(), item.input_pin_rect().center().x(), delta=1.0)
+        self.assertAlmostEqual(frame_rect.right(), item.output_pin_rect().center().x(), delta=1.0)
+        self.assertAlmostEqual(frame_rect.center().y(), item.input_pin_rect().center().y(), delta=1.0)
+        self.assertAlmostEqual(frame_rect.center().y(), item.output_pin_rect().center().y(), delta=1.0)
         window._mark_saved_checkpoint(saved=True)
         window.close()
 
@@ -1237,7 +1278,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
-    def test_zooming_out_expands_node_width_for_readability(self) -> None:
+    def test_zooming_out_scales_node_dimensions_together_for_readability(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
@@ -1248,17 +1289,20 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             created = window.controller.create_node("TouchIdle", (200, 120))
             item = window.canvas.node_items[created]
             original_width = item._rect.width()
+            original_height = item._rect.height()
+            original_ratio = original_width / original_height
 
             window.canvas.scale(0.5, 0.5)
             window.canvas._refresh_scale_sensitive_nodes()
             self.app.processEvents()
 
             self.assertGreater(item._rect.width(), original_width)
-            self.assertGreater(item._rect.width() * window.canvas.transform().m11(), 300.0)
+            self.assertGreater(item._rect.height(), original_height)
+            self.assertAlmostEqual(original_ratio, item._rect.width() / item._rect.height(), delta=0.12)
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
-    def test_extreme_zoom_out_allows_header_fonts_to_shrink_with_canvas(self) -> None:
+    def test_extreme_zoom_out_scales_header_fonts_progressively_with_canvas(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
@@ -1290,8 +1334,8 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             shrunk_title_size = title_screen_size()
             shrunk_summary_size = summary_screen_size()
 
-            self.assertAlmostEqual(stable_title_size, baseline_title_size, delta=0.35)
-            self.assertAlmostEqual(stable_summary_size, baseline_summary_size, delta=0.35)
+            self.assertLess(stable_title_size, baseline_title_size)
+            self.assertLess(stable_summary_size, baseline_summary_size)
             self.assertLess(shrunk_title_size, stable_title_size)
             self.assertLess(shrunk_summary_size, stable_summary_size)
             window._mark_saved_checkpoint(saved=True)
@@ -1394,6 +1438,26 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.app.processEvents()
             self.assertEqual("card", item._display_mode)
             self.assertGreaterEqual(item._card_layout["frame"].top(), baseline_frame_top)
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_draw_frame_title_font_grows_when_zoomed_out(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("DrawFrame", (160, 80))
+            item = window.canvas.node_items[created]
+            baseline_size = item._draw_frame_title_point_size()
+
+            window.canvas._apply_view_state(0.18, QPointF(0.0, 0.0))
+            self.app.processEvents()
+
+            self.assertGreater(item._draw_frame_title_point_size(), baseline_size)
+            self.assertLessEqual(item._draw_frame_title_point_size(), item.DRAWFRAME_TITLE_MAX_POINT_SIZE)
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
