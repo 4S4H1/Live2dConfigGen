@@ -24,8 +24,10 @@ from .constants import CLIPBOARD_MIME
 from .logic import (
     _should_persist_target_idle,
     apply_auto_rules,
+    apply_node_appearance_defaults,
     create_document,
     create_node,
+    sync_comment_legacy_appearance,
     export_document_dict,
     infer_manual_fields,
     is_editor_document_file,
@@ -526,6 +528,9 @@ class EditorController(QObject):
         if not node:
             return
         node.fields[key] = value
+        apply_node_appearance_defaults(self.schema, node)
+        if node.type == "Comment" and key in {"theme_body_color", "theme_border_color", "theme_text_color"}:
+            sync_comment_legacy_appearance(node)
         if node.type in {"TouchDrag", "ParameterTrigger"} and key in {"action_trigger", "parameter"}:
             node.fields["action_trigger_active"] = ""
             if source_mode == "simple":

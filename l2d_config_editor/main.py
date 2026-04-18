@@ -17,7 +17,7 @@ def _project_root() -> Path:
 
 
 PROJECT_ROOT = _project_root()
-
+6
 if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))

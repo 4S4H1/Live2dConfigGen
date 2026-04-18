@@ -230,6 +230,51 @@ class CommentAppearanceDialog(QDialog):
         }
 
 
+class NodeAppearanceDialog(QDialog):
+    def __init__(self, values: dict[str, Any], parent: QWidget | None = None, *, include_font_size: bool = False) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("节点外观")
+        self.resize(420, 220 if not include_font_size else 250)
+        self._include_font_size = include_font_size
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self.body_color_button = ColorChoiceButton("选择主体颜色", self)
+        self.body_color_button.set_color(str(values.get("theme_body_color") or values.get("note_box_color") or "#76808d"))
+        form.addRow("主体颜色", self.body_color_button)
+
+        self.border_color_button = ColorChoiceButton("选择边框颜色", self)
+        self.border_color_button.set_color(str(values.get("theme_border_color") or values.get("note_box_color") or "#69b070"))
+        form.addRow("边框颜色", self.border_color_button)
+
+        self.text_color_button = ColorChoiceButton("选择字体颜色", self)
+        self.text_color_button.set_color(str(values.get("theme_text_color") or values.get("note_text_color") or "#f3f5f8"))
+        form.addRow("字体颜色", self.text_color_button)
+
+        self.font_size_spin: QSpinBox | None = None
+        if self._include_font_size:
+            self.font_size_spin = QSpinBox(self)
+            self.font_size_spin.setRange(11, 28)
+            self.font_size_spin.setValue(int(values.get("note_font_size", 15) or 15))
+            form.addRow("字体大小", self.font_size_spin)
+
+        layout.addLayout(form)
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def values(self) -> dict[str, Any]:
+        values = {
+            "theme_body_color": self.body_color_button.color_name(),
+            "theme_border_color": self.border_color_button.color_name(),
+            "theme_text_color": self.text_color_button.color_name(),
+        }
+        if self._include_font_size and self.font_size_spin is not None:
+            values["note_font_size"] = int(self.font_size_spin.value())
+        return values
+
+
 @dataclass
 class EditorBinding:
     widget: QWidget
@@ -327,6 +372,11 @@ class ValidationSummaryWidget(QFrame):
 
 class NodeFormWidget(QFrame):
     fieldCommitted = pyqtSignal(str, object)
+    APPEARANCE_KEYS = {
+        "theme_body_color",
+        "theme_border_color",
+        "theme_text_color",
+    }
     COMMENT_APPEARANCE_KEYS = {
         "note_box_color",
         "note_box_alpha",
@@ -495,8 +545,7 @@ class NodeFormWidget(QFrame):
             self._bindings[field.key] = EditorBinding(widget=widget, setter=setter, read_only_setter=read_only_setter)
             setter(self.node.fields.get(field.key, field.default))
             read_only_setter(bool(self.node.locked))
-        if self.node.type == "Comment":
-            self._add_comment_appearance_row()
+        self._add_appearance_row()
         self._apply_inline_visibility()
         self.adjustSize()
 
@@ -505,16 +554,20 @@ class NodeFormWidget(QFrame):
             return []
         result: list[FieldSchema] = []
         for field in fields:
+            if field.key in self.APPEARANCE_KEYS:
+                continue
             if self.node.type == "Comment" and field.key in self.COMMENT_APPEARANCE_KEYS:
                 continue
             if field_visible(field, self.node.fields, self.global_mode):
                 result.append(field)
         return result
 
-    def _add_comment_appearance_row(self) -> None:
+    def _add_appearance_row(self) -> None:
+        if not self.node:
+            return
         button = QPushButton("外观设置")
         button.setProperty("accentButton", True)
-        button.clicked.connect(self._show_comment_appearance_dialog)
+        button.clicked.connect(self._show_appearance_dialog)
         button.setEnabled(not bool(self.node and self.node.locked))
         label = QLabel("外观")
         self._form.addRow(label, button)
@@ -528,10 +581,10 @@ class NodeFormWidget(QFrame):
             return "diagnostic"
         return "standard"
 
-    def _show_comment_appearance_dialog(self) -> None:
-        if not self.node or self.node.type != "Comment":
+    def _show_appearance_dialog(self) -> None:
+        if not self.node:
             return
-        dialog = CommentAppearanceDialog(self.node.fields, self)
+        dialog = NodeAppearanceDialog(self.node.fields, self, include_font_size=self.node.type == "Comment")
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         for key, value in dialog.values().items():
@@ -778,21 +831,24 @@ class NodeFormWidget(QFrame):
         self._summary_widget.setVisible(False)
 
     def _apply_dynamic_style(self) -> None:
-        if not self.node or self.node.type != "Comment":
+        if not self.node:
             self.setStyleSheet("")
             return
-        text_color = QColor(str(self.node.fields.get("note_text_color") or "#f3f5f8"))
+        text_key = "note_text_color" if self.node.type == "Comment" else "theme_text_color"
+        default_text = "#f3f5f8" if self.node.type == "Comment" else "#f7f8fa"
+        text_color = QColor(str(self.node.fields.get(text_key) or default_text))
         if not text_color.isValid():
-            text_color = QColor("#f3f5f8")
+            text_color = QColor(default_text)
+        if self.node.type == "Comment":
+            try:
+                alpha = max(0, min(100, int(self.node.fields.get("note_text_alpha", 100))))
+            except (TypeError, ValueError):
+                alpha = 100
+            text_color.setAlphaF(alpha / 100.0)
         try:
-            alpha = max(0, min(100, int(self.node.fields.get("note_text_alpha", 100))))
+            font_size = max(11, min(28, int(self.node.fields.get("note_font_size", 15)))) if self.node.type == "Comment" else 13
         except (TypeError, ValueError):
-            alpha = 100
-        text_color.setAlphaF(alpha / 100.0)
-        try:
-            font_size = max(11, min(28, int(self.node.fields.get("note_font_size", 15))))
-        except (TypeError, ValueError):
-            font_size = 15
+            font_size = 15 if self.node.type == "Comment" else 13
         rgba = f"rgba({text_color.red()}, {text_color.green()}, {text_color.blue()}, {text_color.alpha()})"
         self.setStyleSheet(
             f"QLabel {{ color: {rgba}; }}"

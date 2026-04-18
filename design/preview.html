@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Design System Preview: Mistral AI (Dark)</title>
+<title>Design System Preview: Mistral AI (Light)</title>
 <style>
   :root {
     --color-mistral-orange: #fa520f;
@@ -22,19 +22,19 @@
     --color-black-tint: hsl(0, 0%, 24%);
     --color-input-border: hsl(240, 5.9%, 90%);
     --font-primary: Arial, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
-    /* Dark mode */
-    --bg-page: #1f1f1f;
-    --bg-card: #2a2a2a;
-    --bg-nav: rgba(31, 31, 31, 0.92);
-    --text-primary: #ffffff;
-    --text-secondary: rgba(255, 255, 255, 0.7);
-    --text-muted: rgba(255, 255, 255, 0.4);
-    --border-color: rgba(255, 161, 16, 0.15);
-    --border-subtle: rgba(255, 161, 16, 0.08);
-    --section-label-color: var(--color-sunshine-700);
-    --golden-shadow: -8px 16px 39px rgba(127, 99, 21, 0.18),
-                     -33px 64px 72px rgba(127, 99, 21, 0.14),
-                     -73px 144px 97px rgba(127, 99, 21, 0.08);
+    /* Light mode */
+    --bg-page: #fffaeb;
+    --bg-card: #fff0c2;
+    --bg-nav: rgba(255, 250, 235, 0.92);
+    --text-primary: #1f1f1f;
+    --text-secondary: hsl(0, 0%, 24%);
+    --text-muted: #7f6315;
+    --border-color: rgba(127, 99, 21, 0.15);
+    --border-subtle: rgba(127, 99, 21, 0.08);
+    --section-label-color: var(--color-mistral-orange);
+    --golden-shadow: -8px 16px 39px rgba(127, 99, 21, 0.12),
+                     -33px 64px 72px rgba(127, 99, 21, 0.10),
+                     -73px 144px 97px rgba(127, 99, 21, 0.06);
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -70,7 +70,6 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    color: var(--text-primary);
   }
   .nav-brand .mistral-block {
     display: flex;
@@ -93,8 +92,8 @@
   }
   .nav-links a:hover { color: var(--color-mistral-orange); }
   .nav-cta {
-    background: var(--color-cream);
-    color: var(--color-mistral-black);
+    background: var(--color-mistral-black);
+    color: var(--color-white);
     padding: 12px 24px;
     border: none;
     border-radius: 0;
@@ -121,7 +120,7 @@
     width: 700px;
     height: 700px;
     transform: translate(-50%, -50%);
-    background: radial-gradient(circle, rgba(250, 82, 15, 0.10) 0%, rgba(255, 161, 16, 0.06) 40%, transparent 70%);
+    background: radial-gradient(circle, rgba(255, 161, 16, 0.10) 0%, rgba(250, 82, 15, 0.05) 40%, transparent 70%);
     pointer-events: none;
   }
   .hero h1 {
@@ -158,6 +157,19 @@
   }
 
   /* BUTTONS */
+  .btn-dark {
+    background: var(--color-mistral-black);
+    color: var(--color-white);
+    padding: 12px 24px;
+    border: none;
+    border-radius: 0;
+    font-size: 16px;
+    font-family: var(--font-primary);
+    font-weight: 400;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    cursor: pointer;
+  }
   .btn-cream {
     background: var(--color-cream);
     color: var(--color-mistral-black);
@@ -171,8 +183,8 @@
     letter-spacing: 0.5px;
     cursor: pointer;
   }
-  .btn-dark {
-    background: var(--color-white);
+  .btn-ghost {
+    background: transparent;
     color: var(--color-mistral-black);
     padding: 12px 24px;
     border: none;
@@ -182,25 +194,12 @@
     font-weight: 400;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-    cursor: pointer;
-  }
-  .btn-ghost {
-    background: transparent;
-    color: var(--text-primary);
-    padding: 12px 24px;
-    border: none;
-    border-radius: 0;
-    font-size: 16px;
-    font-family: var(--font-primary);
-    font-weight: 400;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    opacity: 0.5;
+    opacity: 0.6;
     cursor: pointer;
   }
   .btn-text {
     background: transparent;
-    color: var(--text-primary);
+    color: var(--color-mistral-black);
     padding: 8px 0 0 0;
     border: none;
     border-radius: 0;
@@ -310,8 +309,8 @@
   .card-golden {
     box-shadow: var(--golden-shadow);
   }
-  .card-bordered {
-    background: #333333;
+  .card-white {
+    background: var(--color-white);
     border: 1px solid var(--border-color);
   }
   .card h3 {
@@ -334,8 +333,8 @@
   .spacing-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
   .spacing-item { text-align: center; }
   .spacing-box {
-    background: rgba(250, 82, 15, 0.18);
-    border: 1px solid rgba(250, 82, 15, 0.35);
+    background: rgba(250, 82, 15, 0.12);
+    border: 1px solid rgba(250, 82, 15, 0.3);
     border-radius: 0;
     margin-bottom: 8px;
   }
@@ -381,11 +380,11 @@
     box-shadow: none;
   }
   .elevation-golden {
-    box-shadow: -8px 16px 39px rgba(127, 99, 21, 0.18),
-                -33px 64px 72px rgba(127, 99, 21, 0.14),
-                -73px 144px 97px rgba(127, 99, 21, 0.08),
-                -130px 257px 131px rgba(127, 99, 21, 0.03),
-                -203px 400px 143px rgba(127, 99, 21, 0.01);
+    box-shadow: -8px 16px 39px rgba(127, 99, 21, 0.12),
+                -33px 64px 72px rgba(127, 99, 21, 0.10),
+                -73px 144px 97px rgba(127, 99, 21, 0.06),
+                -130px 257px 131px rgba(127, 99, 21, 0.02),
+                -203px 400px 143px rgba(127, 99, 21, 0.00);
   }
   .elevation-name { font-size: 18px; font-weight: 400; margin-bottom: 8px; }
   .elevation-desc { font-size: 13px; color: var(--text-secondary); line-height: 1.5; }
@@ -464,8 +463,8 @@
   <h1>Design System Preview:<br><span>Mistral AI</span></h1>
   <p>Warm golden tokens from the sunshine gradient design system</p>
   <div class="hero-buttons">
-    <button class="btn-cream">Explore Tokens</button>
-    <button class="btn-ghost">VIEW SOURCE</button>
+    <button class="btn-dark">Explore Tokens</button>
+    <button class="btn-cream">View Source</button>
   </div>
 </section>
 
@@ -564,27 +563,11 @@
     <h3 class="color-group-title">Surface & Background</h3>
     <div class="color-grid">
       <div class="color-swatch">
-        <div class="color-swatch-block" style="background: #1f1f1f; border: 1px solid rgba(255,161,16,0.2);"></div>
-        <div class="color-swatch-info">
-          <div class="color-swatch-name">Mistral Black</div>
-          <div class="color-swatch-hex">#1f1f1f</div>
-          <div class="color-swatch-role">Dark mode page background</div>
-        </div>
-      </div>
-      <div class="color-swatch">
-        <div class="color-swatch-block" style="background: #2a2a2a; border: 1px solid rgba(255,161,16,0.2);"></div>
-        <div class="color-swatch-info">
-          <div class="color-swatch-name">Card Surface</div>
-          <div class="color-swatch-hex">#2a2a2a</div>
-          <div class="color-swatch-role">Dark mode card background</div>
-        </div>
-      </div>
-      <div class="color-swatch">
-        <div class="color-swatch-block" style="background: #fffaeb;"></div>
+        <div class="color-swatch-block" style="background: #fffaeb; border: 1px solid rgba(127,99,21,0.15);"></div>
         <div class="color-swatch-info">
           <div class="color-swatch-name">Warm Ivory</div>
           <div class="color-swatch-hex">#fffaeb</div>
-          <div class="color-swatch-role">Light mode page background</div>
+          <div class="color-swatch-role">Page background, lightest canvas</div>
         </div>
       </div>
       <div class="color-swatch">
@@ -595,26 +578,12 @@
           <div class="color-swatch-role">Primary warm surface, button backgrounds</div>
         </div>
       </div>
-    </div>
-  </div>
-
-  <div class="color-group">
-    <h3 class="color-group-title">Neutrals & Text</h3>
-    <div class="color-grid">
       <div class="color-swatch">
-        <div class="color-swatch-block" style="background: #ffffff; border: 1px solid rgba(255,161,16,0.15);"></div>
+        <div class="color-swatch-block" style="background: #ffffff; border: 1px solid rgba(127,99,21,0.15);"></div>
         <div class="color-swatch-info">
           <div class="color-swatch-name">Pure White</div>
           <div class="color-swatch-hex">#ffffff</div>
-          <div class="color-swatch-role">Primary text on dark surfaces</div>
-        </div>
-      </div>
-      <div class="color-swatch">
-        <div class="color-swatch-block" style="background: rgba(255,255,255,0.7); border: 1px solid rgba(255,161,16,0.15);"></div>
-        <div class="color-swatch-info">
-          <div class="color-swatch-name">White 70%</div>
-          <div class="color-swatch-hex">rgba(255,255,255,0.7)</div>
-          <div class="color-swatch-role">Secondary text on dark surfaces</div>
+          <div class="color-swatch-role">Maximum contrast, popover surfaces</div>
         </div>
       </div>
       <div class="color-swatch">
@@ -622,7 +591,37 @@
         <div class="color-swatch-info">
           <div class="color-swatch-name">Mistral Black</div>
           <div class="color-swatch-hex">#1f1f1f</div>
+          <div class="color-swatch-role">Dark buttons, text, dark sections</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="color-group">
+    <h3 class="color-group-title">Neutrals & Text</h3>
+    <div class="color-grid">
+      <div class="color-swatch">
+        <div class="color-swatch-block" style="background: #1f1f1f;"></div>
+        <div class="color-swatch-info">
+          <div class="color-swatch-name">Mistral Black</div>
+          <div class="color-swatch-hex">#1f1f1f</div>
           <div class="color-swatch-role">Primary text on light surfaces</div>
+        </div>
+      </div>
+      <div class="color-swatch">
+        <div class="color-swatch-block" style="background: hsl(0, 0%, 24%);"></div>
+        <div class="color-swatch-info">
+          <div class="color-swatch-name">Black Tint</div>
+          <div class="color-swatch-hex">hsl(0, 0%, 24%)</div>
+          <div class="color-swatch-role">Secondary text on light backgrounds</div>
+        </div>
+      </div>
+      <div class="color-swatch">
+        <div class="color-swatch-block" style="background: #ffffff; border: 1px solid rgba(127,99,21,0.15);"></div>
+        <div class="color-swatch-info">
+          <div class="color-swatch-name">Pure White</div>
+          <div class="color-swatch-hex">#ffffff</div>
+          <div class="color-swatch-role">Text on dark surfaces, CTA labels</div>
         </div>
       </div>
     </div>
@@ -686,7 +685,7 @@
   </div>
 
   <div class="type-sample">
-    <div class="type-sample-text" style="font-family: var(--font-primary); font-size: 14px; font-weight: 400; line-height: 1.43; text-transform: uppercase; letter-spacing: 2.52px; color: var(--color-sunshine-700);">SECTION LABEL TAG</div>
+    <div class="type-sample-text" style="font-family: var(--font-primary); font-size: 14px; font-weight: 400; line-height: 1.43; text-transform: uppercase; letter-spacing: 2.52px; color: var(--color-mistral-orange);">SECTION LABEL TAG</div>
     <div class="type-sample-label">Section Label &mdash; 14px / 400 / 2.52px / uppercase &mdash; Arial</div>
   </div>
 </section>
@@ -700,12 +699,12 @@
 
   <div class="button-row">
     <div class="button-demo">
-      <button class="btn-cream">GET STARTED</button>
-      <div class="button-demo-label">Cream Surface</div>
+      <button class="btn-dark">GET STARTED</button>
+      <div class="button-demo-label">Dark Solid</div>
     </div>
     <div class="button-demo">
-      <button class="btn-dark">LEARN MORE</button>
-      <div class="button-demo-label">White Solid</div>
+      <button class="btn-cream">LEARN MORE</button>
+      <div class="button-demo-label">Cream Surface</div>
     </div>
     <div class="button-demo">
       <button class="btn-ghost">SECONDARY</button>
@@ -727,19 +726,19 @@
 
   <div class="card-grid">
     <div class="card card-standard">
-      <div class="card-label">DARK SURFACE</div>
-      <h3>Standard Dark Card</h3>
-      <p>Standard content card on dark surface with sharp architectural corners. Containers defined by background color shifts rather than borders.</p>
+      <div class="card-label">CREAM SURFACE</div>
+      <h3>Warm Cream Card</h3>
+      <p>Standard content card on cream background with sharp architectural corners. Containers defined by background color, not borders. The warm void breathes naturally.</p>
     </div>
     <div class="card card-golden">
       <div class="card-label">GOLDEN FLOAT</div>
       <h3>Golden Shadow Card</h3>
-      <p>Elevated card with the signature five-layer warm amber shadow system. The golden glow radiates warmly against the dark background.</p>
+      <p>Elevated card with the signature five-layer warm amber shadow system. The golden hour lighting effect makes content feel bathed in afternoon sunlight.</p>
     </div>
-    <div class="card card-bordered">
-      <div class="card-label">BORDERED SURFACE</div>
-      <h3>Bordered Dark Card</h3>
-      <p>Elevated dark card with subtle golden border. Used for distinguishing content areas within dark sections.</p>
+    <div class="card card-white">
+      <div class="card-label">WHITE SURFACE</div>
+      <h3>Pure White Card</h3>
+      <p>Maximum contrast card on pure white with subtle golden border. Used for popover surfaces and moments requiring the highest visual clarity.</p>
     </div>
   </div>
 </section>
@@ -777,7 +776,7 @@
 
   <div class="radius-row">
     <div class="radius-item"><div class="radius-box" style="border-radius: 0px;"></div><div class="radius-label">0px</div><div class="radius-context">Sharp (default)</div></div>
-    <div class="radius-item"><div class="radius-box" style="border-radius: 0px; background: #333; border: 2px solid var(--color-sunshine-700);"></div><div class="radius-label">0px</div><div class="radius-context">Accent sharp</div></div>
+    <div class="radius-item"><div class="radius-box" style="border-radius: 0px; background: var(--color-cream); border: 2px solid var(--color-sunshine-700);"></div><div class="radius-label">0px</div><div class="radius-context">Accent sharp</div></div>
     <div class="radius-item"><div class="radius-box" style="border-radius: 0px; box-shadow: var(--golden-shadow);"></div><div class="radius-label">0px</div><div class="radius-context">Elevated sharp</div></div>
   </div>
 </section>
@@ -793,14 +792,14 @@
     <div class="elevation-card elevation-flat">
       <div>
         <div class="elevation-name">Flat</div>
-        <div class="elevation-desc">No shadow, no border. Dark page backgrounds and inline text blocks sitting directly on the Mistral Black canvas.</div>
+        <div class="elevation-desc">No shadow, no border. Page backgrounds and inline text blocks sitting directly on the warm ivory canvas.</div>
       </div>
       <div class="elevation-level">LEVEL 0</div>
     </div>
     <div class="elevation-card elevation-golden">
       <div>
         <div class="elevation-name">Golden Float</div>
-        <div class="elevation-desc">Five-layer cascading warm shadow with amber-tinted transparency. The golden glow radiates warmly even against the dark background.</div>
+        <div class="elevation-desc">Five-layer cascading warm shadow with amber-tinted transparency. The signature golden hour lighting effect unique to Mistral.</div>
       </div>
       <div class="elevation-level">LEVEL 1</div>
     </div>

@@ -1,6 +1,6 @@
-# HashiCorp Inspired Design System
+# Mistral AI Inspired Design System
 
-[DESIGN.md](https://github.com/VoltAgent/awesome-design-md/blob/main/design-md/hashicorp/DESIGN.md) extracted from the public [HashiCorp](https://hashicorp.com/) website. This is not the official design system. Colors, fonts, and spacing may not be 100% accurate. But it's a good starting point for building something similar.
+[DESIGN.md](https://github.com/VoltAgent/awesome-design-md/blob/main/design-md/mistral.ai/DESIGN.md) extracted from the public [Mistral](https://mistral.ai/) website. This is not the official design system. Colors, fonts, and spacing may not be 100% accurate. But it's a good starting point for building something similar.
 
 ## Files
 
@@ -11,14 +11,14 @@
 | `preview-dark.html` | Interactive design token catalog (dark) |
 
 
-Use [DESIGN.md](https://github.com/VoltAgent/awesome-design-md/blob/main/design-md/hashicorp/DESIGN.md) to use as a reference for AI agents (Claude, Cursor, Stitch) to generate UI that looks like the HashiCorp design language.
+Use [DESIGN.md](https://github.com/VoltAgent/awesome-design-md/blob/main/design-md/mistral.ai/DESIGN.md) to use as a reference for AI agents (Claude, Cursor, Stitch) to generate UI that looks like the Mistral AI design language.
 
 ## Preview
 
 A sample landing page built with DESIGN.md. It shows the actual colors, typography, buttons, cards, spacing, and elevation, all in one page.
 
 ### Dark Mode
-![HashiCorp Design System — Dark Mode](https://pub-2e4ecbcbc9b24e7b93f1a6ab5b2bc71f.r2.dev/designs/hashicorp/preview-dark-screenshot.png)
+![Mistral AI Design System — Dark Mode](https://pub-2e4ecbcbc9b24e7b93f1a6ab5b2bc71f.r2.dev/designs/mistral.ai/preview-dark-screenshot.png)
 
 ### Light Mode
-![HashiCorp Design System — Light Mode](https://pub-2e4ecbcbc9b24e7b93f1a6ab5b2bc71f.r2.dev/designs/hashicorp/preview-screenshot.png)
+![Mistral AI Design System — Light Mode](https://pub-2e4ecbcbc9b24e7b93f1a6ab5b2bc71f.r2.dev/designs/mistral.ai/preview-screenshot.png)

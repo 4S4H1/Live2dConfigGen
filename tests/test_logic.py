@@ -754,7 +754,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
             window.close()
 
-    def test_double_click_toggles_per_node_mode_override(self) -> None:
+    def test_double_click_toggles_canvas_card_and_detail_modes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             window.controller.set_global_mode("simple")
@@ -766,22 +766,24 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             created = window.controller.create_node("TouchIdle", (200, 120))
             item = window.canvas.node_items[created]
 
-            self.assertEqual("simple", window.canvas.node_display_mode(created))
-            self.assertNotIn(created, window.canvas.per_node_mode_overrides)
-            self.assertIn("action_trigger_active", item.form._bindings)
+            self.assertEqual("card", window.canvas.node_display_mode(created))
+            self.assertNotIn(created, window.canvas.expanded_node_uuids)
+            self.assertFalse(item.proxy.isVisible())
+            self.assertIn("parameter", item._card_layout)
 
-            window.canvas.toggle_node_mode_override(created)
+            window.canvas.toggle_node_display_mode(created)
             self.app.processEvents()
 
-            self.assertEqual("advanced", window.canvas.node_display_mode(created))
-            self.assertEqual("advanced", window.canvas.per_node_mode_overrides[created])
+            self.assertEqual("detail", window.canvas.node_display_mode(created))
+            self.assertIn(created, window.canvas.expanded_node_uuids)
+            self.assertTrue(item.proxy.isVisible())
             self.assertIn("action_trigger_active_kind_ui", item.form._bindings)
 
-            window.canvas.toggle_node_mode_override(created)
+            window.canvas.toggle_node_display_mode(created)
             self.app.processEvents()
 
-            self.assertEqual("simple", window.canvas.node_display_mode(created))
-            self.assertNotIn(created, window.canvas.per_node_mode_overrides)
+            self.assertEqual("card", window.canvas.node_display_mode(created))
+            self.assertNotIn(created, window.canvas.expanded_node_uuids)
             window._mark_saved_checkpoint(saved=True)
             window.close()
 
@@ -801,13 +803,15 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             summary_labels = [label for label, _value in item.form.summary_items()]
             self.assertEqual(["备注", "框", "播放动画", "目标待机"], summary_labels)
             self.assertFalse(item.form._summary_widget.isVisible())
-            self.assertGreaterEqual(len(item._summary_layout_rows), 4)
+            self.assertIn("note", item._card_layout)
+            self.assertIn("draw", item._card_layout)
+            self.assertFalse(item.proxy.isVisible())
 
             window.canvas._apply_view_state(0.4, QPointF(node.ui_position["x"], node.ui_position["y"]))
             self.app.processEvents()
 
             self.assertTrue(item.form.compact_mode)
-            self.assertFalse(any(widget.isVisible() for widget, _binding in ((binding.widget, binding) for binding in item.form._bindings.values())))
+            self.assertEqual(QPointF(node.ui_position["x"], node.ui_position["y"]), item.pos())
 
             drag_uuid = window.controller.create_node("TouchDrag", (420, 120))
             drag_item = window.canvas.node_items[drag_uuid]
@@ -1214,7 +1218,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
-    def test_zooming_out_expands_node_header_height(self) -> None:
+    def test_zooming_out_keeps_function_node_position_stable(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
@@ -1225,11 +1229,11 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             created = window.controller.create_node("TouchIdle", (200, 120))
             item = window.canvas.node_items[created]
             window.controller.update_field(created, "tips", "这是一个很长很长的标题备注用于测试缩小画布时的头部高度自适应", "simple")
-            original_header_height = item._header_height
+            original_pos = QPointF(item.pos())
             window.canvas.scale(0.5, 0.5)
             window.canvas._refresh_scale_sensitive_nodes()
             self.app.processEvents()
-            self.assertGreater(item._header_height, original_header_height)
+            self.assertEqual(original_pos, item.pos())
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
@@ -1316,7 +1320,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
-    def test_zooming_out_reflows_close_nodes_to_avoid_overlap(self) -> None:
+    def test_zooming_out_separates_close_nodes_without_mutating_logical_positions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
@@ -1328,14 +1332,18 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             second_uuid = window.controller.create_node("TouchIdle", (460, 150))
             first_item = window.canvas.node_items[first_uuid]
             second_item = window.canvas.node_items[second_uuid]
+            first_logical_x = window.controller.get_node(first_uuid).ui_position["x"]
             second_logical_x = window.controller.get_node(second_uuid).ui_position["x"]
 
-            window.canvas.scale(0.5, 0.5)
+            window.canvas._apply_view_state(0.18, QPointF(0.0, 0.0))
             window.canvas._refresh_scale_sensitive_nodes()
             self.app.processEvents()
 
+            self.assertEqual(first_logical_x, window.controller.get_node(first_uuid).ui_position["x"])
+            self.assertEqual(second_logical_x, window.controller.get_node(second_uuid).ui_position["x"])
+            self.assertEqual(first_logical_x, first_item.pos().x())
             self.assertGreater(second_item.pos().x(), second_logical_x)
-            self.assertFalse(first_item.mapRectToScene(first_item.boundingRect()).intersects(second_item.mapRectToScene(second_item.boundingRect())))
+            self.assertFalse(first_item.sceneBoundingRect().intersects(second_item.sceneBoundingRect()))
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
@@ -1363,14 +1371,13 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window.canvas._finish_focus_animation()
             self.app.processEvents()
 
-            viewport_center = window.canvas.mapToScene(window.canvas.viewport().rect().center())
-            target_center = second_item.mapRectToScene(second_item.boundingRect()).center()
-            self.assertLess(abs(viewport_center.x() - target_center.x()), 1.5)
-            self.assertLess(abs(viewport_center.y() - target_center.y()), 1.5)
+            self.assertEqual(second_uuid, window.canvas._focus_target_uuid)
+            self.assertGreater(window.canvas.transform().m11(), 0.35)
+            self.assertTrue(second_item.isSelected())
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
-    def test_zooming_in_pushes_node_title_below_accent_bar(self) -> None:
+    def test_function_node_card_layout_survives_zoom_in(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
@@ -1381,12 +1388,12 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             created = window.controller.create_node("TouchDrag", (200, 120))
             item = window.canvas.node_items[created]
             window.controller.update_field(created, "tips", "大方向深V的鬼斧神工都是方法是大哥", "simple")
-            baseline_title_y = item._title_rect.y()
+            baseline_frame_top = item._card_layout["frame"].top()
             window.canvas.scale(1.8, 1.8)
             window.canvas._refresh_scale_sensitive_nodes()
             self.app.processEvents()
-            self.assertGreater(item._title_rect.y(), baseline_title_y)
-            self.assertGreaterEqual(item._title_rect.y(), 14.0)
+            self.assertEqual("card", item._display_mode)
+            self.assertGreaterEqual(item._card_layout["frame"].top(), baseline_frame_top)
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
@@ -1515,6 +1522,70 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             )
             window._mark_saved_checkpoint(saved=True)
         window.close()
+
+    def test_draw_frame_detects_intersecting_members_and_skips_locked_nodes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+
+            inside_uuid = window.controller.create_node("TouchIdle", (220, 120))
+            locked_uuid = window.controller.create_node("TouchDrag", (260, 210))
+            outside_uuid = window.controller.create_node("TouchIdle", (760, 120))
+            frame_uuid = window.controller.create_node("DrawFrame", (160, 80))
+            frame_node = window.controller.get_node(frame_uuid)
+            frame_node.ui_size = {"width": 420.0, "height": 260.0}
+            window.controller.nodeUpdated.emit(frame_uuid)
+            window.controller.set_node_locked(locked_uuid, True)
+
+            members = window.canvas.frame_drag_members(frame_uuid)
+
+            self.assertIn(inside_uuid, members)
+            self.assertNotIn(locked_uuid, members)
+            self.assertNotIn(outside_uuid, members)
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_comment_and_draw_frame_theme_fields_survive_roundtrip(self) -> None:
+        schema = get_default_schema()
+        document = create_document(schema)
+        initial = next(node for node in document.nodes if node.type == "Initial")
+        initial.fields["author"] = "asahi"
+        initial.fields["ship_skin_id"] = 302291
+        initial.fields["memo"] = "mingji_2"
+        initial.fields["CharName"] = "??"
+        comment = create_node(schema, document, "Comment", (320, 160))
+        comment.fields["theme_body_color"] = "#123456"
+        comment.fields["theme_border_color"] = "#345678"
+        comment.fields["theme_text_color"] = "#abcdef"
+        comment.fields["note_box_color"] = "#123456"
+        comment.fields["note_text_color"] = "#abcdef"
+        draw_frame = create_node(schema, document, "DrawFrame", (120, 80))
+        draw_frame.fields["title"] = "组A"
+        draw_frame.fields["theme_body_color"] = "#ddeeff"
+        draw_frame.fields["theme_border_color"] = "#227744"
+        draw_frame.fields["theme_text_color"] = "#112233"
+        document.nodes.extend([comment, draw_frame])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "appearance_roundtrip.json"
+            save_document(schema, document, path)
+            loaded = load_document(schema, path)
+
+        loaded_comment = next(node for node in loaded.nodes if node.type == "Comment" and node.uuid == comment.uuid)
+        loaded_frame = next(node for node in loaded.nodes if node.type == "DrawFrame" and node.uuid == draw_frame.uuid)
+        self.assertEqual("#123456", loaded_comment.fields["theme_body_color"])
+        self.assertEqual("#345678", loaded_comment.fields["theme_border_color"])
+        self.assertEqual("#abcdef", loaded_comment.fields["theme_text_color"])
+        self.assertEqual("#123456", loaded_comment.fields["note_box_color"])
+        self.assertEqual("#abcdef", loaded_comment.fields["note_text_color"])
+        self.assertEqual("组A", loaded_frame.fields["title"])
+        self.assertEqual("#ddeeff", loaded_frame.fields["theme_body_color"])
+        self.assertEqual("#227744", loaded_frame.fields["theme_border_color"])
+        self.assertEqual("#112233", loaded_frame.fields["theme_text_color"])
 
 
 if __name__ == "__main__":

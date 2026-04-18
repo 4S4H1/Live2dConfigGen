@@ -57,6 +57,18 @@ TEMPLATE_CSV_COLUMN_ALIASES = {
 }
 
 
+NODE_THEME_FIELD_KEYS = ("theme_body_color", "theme_border_color", "theme_text_color")
+COMMENT_LEGACY_APPEARANCE_KEYS = (
+    "note_box_color",
+    "note_box_alpha",
+    "note_text_color",
+    "note_text_alpha",
+    "note_font_size",
+)
+DEFAULT_THEME_TEXT_COLOR = "#f7f8fa"
+DRAWFRAME_DEFAULT_SIZE = {"width": 520.0, "height": 320.0}
+
+
 @lru_cache(maxsize=2)
 def get_default_schema(schema_path: str | None = None) -> EditorSchema:
     return load_editor_schema(schema_path)
@@ -91,6 +103,69 @@ def is_editor_document_file(path: str | Path) -> bool:
 def default_fields(schema: EditorSchema, node_type: str) -> dict[str, Any]:
     definition = schema.nodes[node_type]
     return {field.key: field.default for field in definition.fields}
+
+
+def _valid_color_or_none(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", text):
+        return text.lower()
+    return None
+
+
+def default_node_theme(schema: EditorSchema, node: NodeRecord) -> dict[str, str]:
+    definition = schema.nodes[node.type]
+    if node.type == "Comment":
+        body = _valid_color_or_none(node.fields.get("note_box_color")) or "#76808d"
+        border = _valid_color_or_none(node.fields.get("note_box_color")) or "#69b070"
+        text = _valid_color_or_none(node.fields.get("note_text_color")) or "#f3f5f8"
+        return {
+            "theme_body_color": body,
+            "theme_border_color": border,
+            "theme_text_color": text,
+        }
+    return {
+        "theme_body_color": _valid_color_or_none(definition.body_color) or "#27384d",
+        "theme_border_color": _valid_color_or_none(definition.accent_color) or "#78b1ff",
+        "theme_text_color": DEFAULT_THEME_TEXT_COLOR,
+    }
+
+
+def apply_node_appearance_defaults(schema: EditorSchema, node: NodeRecord) -> None:
+    defaults = default_node_theme(schema, node)
+    for key, value in defaults.items():
+        if not _valid_color_or_none(node.fields.get(key)):
+            node.fields[key] = value
+    if node.type == "Comment":
+        if not _valid_color_or_none(node.fields.get("note_box_color")):
+            node.fields["note_box_color"] = node.fields["theme_body_color"]
+        if not _valid_color_or_none(node.fields.get("note_text_color")):
+            node.fields["note_text_color"] = node.fields["theme_text_color"]
+        try:
+            node.fields["note_box_alpha"] = int(node.fields.get("note_box_alpha", 62))
+        except (TypeError, ValueError):
+            node.fields["note_box_alpha"] = 62
+        try:
+            node.fields["note_text_alpha"] = int(node.fields.get("note_text_alpha", 96))
+        except (TypeError, ValueError):
+            node.fields["note_text_alpha"] = 96
+        try:
+            node.fields["note_font_size"] = int(node.fields.get("note_font_size", 15))
+        except (TypeError, ValueError):
+            node.fields["note_font_size"] = 15
+
+
+def sync_comment_legacy_appearance(node: NodeRecord) -> None:
+    if node.type != "Comment":
+        return
+    body = _valid_color_or_none(node.fields.get("theme_body_color"))
+    text = _valid_color_or_none(node.fields.get("theme_text_color"))
+    border = _valid_color_or_none(node.fields.get("theme_border_color"))
+    if body:
+        node.fields["note_box_color"] = body
+    elif border:
+        node.fields["note_box_color"] = border
+    if text:
+        node.fields["note_text_color"] = text
 
 
 def function_node_types(schema: EditorSchema) -> tuple[str, ...]:
@@ -491,6 +566,8 @@ def display_value_for_field(schema: EditorSchema, node: NodeRecord, key: str, ra
 
 
 def normalize_field_input(schema: EditorSchema, node: NodeRecord, key: str, display_value: Any) -> Any:
+    if key in NODE_THEME_FIELD_KEYS:
+        return _valid_color_or_none(display_value) or default_node_theme(schema, node)[key]
     if key == "action_trigger":
         if not _text(display_value).strip():
             return ""
@@ -753,7 +830,15 @@ def create_node(
         type=node_type,
         fields=fields,
         ui_position={"x": float(position[0]), "y": float(position[1])},
-        ui_size=dict(base_node.ui_size) if base_node and base_node.ui_size else ({"width": 360.0, "height": 180.0} if node_type == "Comment" else None),
+        ui_size=(
+            dict(base_node.ui_size)
+            if base_node and base_node.ui_size
+            else (
+                {"width": 360.0, "height": 180.0}
+                if node_type == "Comment"
+                else (dict(DRAWFRAME_DEFAULT_SIZE) if node_type == "DrawFrame" else None)
+            )
+        ),
         sequence_no=_next_sequence_no(document, node_type),
         type_slot=base_node.type_slot if base_node and node_type not in function_node_types(schema) else None,
         export_slot=base_node.export_slot if base_node and node_type not in function_node_types(schema) else None,
@@ -782,6 +867,8 @@ def create_node(
         node.fields["target_idle"] = 0
         node.manual_fields.discard("action_trigger")
         _refresh_trigger_interface_fields(node)
+    apply_node_appearance_defaults(schema, node)
+    sync_comment_legacy_appearance(node)
     return node
 
 
@@ -870,6 +957,9 @@ def node_title(schema: EditorSchema, node: NodeRecord) -> str:
         content = _text(node.fields.get("content", "")).strip().splitlines()
         first_line = content[0][:24] if content else ""
         return f"{definition.title}-{first_line}" if first_line else definition.title
+    if node.type == "DrawFrame":
+        title = _text(node.fields.get("title", "")).strip()
+        return f"{definition.title}-{title}" if title else definition.title
     tips = _text(node.fields.get("tips", "")).strip()
     return f"{definition.title}-{tips}" if tips else definition.title
 
@@ -1022,6 +1112,8 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
                 else False
             ),
         )
+        apply_node_appearance_defaults(schema, node)
+        sync_comment_legacy_appearance(node)
         infer_manual_fields(schema, node, document)
         apply_auto_rules(schema, document, node, source_mode="advanced", force_generated=False)
         document.nodes.append(node)

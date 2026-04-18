@@ -1929,6 +1929,58 @@
         }
       ]
     },
+    "DrawFrame": {
+      "title": "画框",
+      "category": "group",
+      "copyable": true,
+      "quick_create": true,
+      "resizable": true,
+      "header_color": "#69b070",
+      "body_color": "#dfeada",
+      "accent_color": "#69b070",
+      "fields": [
+        {
+          "key": "title",
+          "label": "标题",
+          "editor": "text",
+          "default": "",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "theme_body_color",
+          "label": "主体颜色",
+          "editor": "color",
+          "default": "#dfeada",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "theme_border_color",
+          "label": "边框颜色",
+          "editor": "color",
+          "default": "#69b070",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "theme_text_color",
+          "label": "字体颜色",
+          "editor": "color",
+          "default": "#ffffff",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        }
+      ]
+    },
     "Comment": {
       "title": "备注节点",
       "category": "comment",
@@ -1984,6 +2036,36 @@
           "label": "字体大小",
           "editor": "int",
           "default": 15,
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "theme_body_color",
+          "label": "主体颜色",
+          "editor": "color",
+          "default": "#76808d",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "theme_border_color",
+          "label": "边框颜色",
+          "editor": "color",
+          "default": "#69b070",
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "theme_text_color",
+          "label": "字体颜色",
+          "editor": "color",
+          "default": "#f3f5f8",
           "show_in_modes": [
             "simple",
             "advanced"

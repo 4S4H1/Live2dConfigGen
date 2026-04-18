@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QMenu,
 )
 
-from .logic import node_title
+from .logic import DRAWFRAME_DEFAULT_SIZE, default_node_theme, display_value_for_field, function_node_types, node_title
 from .schema import EditorSchema
 from .widgets import NodeFormWidget
 
@@ -110,6 +110,8 @@ class NodeItem(QGraphicsObject):
     PIN_HIT_PADDING = 9.0
     SIMPLE_WIDTH = 420
     ADVANCED_WIDTH = 460
+    CARD_BASE_WIDTH = 560
+    CARD_BASE_HEIGHT = 360
     RESIZE_MIN_WIDTH = 360.0
     MIN_VISIBLE_WIDTH = 340.0
     MIN_VISIBLE_WIDTH_COMPACT = 300.0
@@ -148,6 +150,11 @@ class NodeItem(QGraphicsObject):
         self._resize_initial = (360.0, 180.0)
         self._drag_start_pos = QPointF()
         self._drag_start_logical_pos = QPointF()
+        self._display_mode = "detail"
+        self._card_layout: dict[str, QRectF] = {}
+        self._group_drag_targets: dict[str, QPointF] = {}
+        self._group_drag_origin = QPointF()
+        self._group_drag_active = False
         self._rect = QRectF(0.0, 0.0, 380.0, 180.0)
         self.setFlags(
             QGraphicsItem.GraphicsItemFlag.ItemIsMovable
@@ -176,9 +183,13 @@ class NodeItem(QGraphicsObject):
         return QRectF(center.x() - radius, center.y() - radius, radius * 2.0, radius * 2.0)
 
     def input_pin_scene_pos(self) -> QPointF:
+        if not self._supports_connections():
+            return self.sceneBoundingRect().center()
         return self.mapToScene(self._pin_center("input"))
 
     def output_pin_scene_pos(self) -> QPointF:
+        if not self._supports_connections():
+            return self.sceneBoundingRect().center()
         return self.mapToScene(self._pin_center("output"))
 
     def input_pin_rect(self) -> QRectF:
@@ -202,7 +213,21 @@ class NodeItem(QGraphicsObject):
                 return view
         return None
 
+    def _is_function_node(self) -> bool:
+        return self.node.type in function_node_types(self.schema)
+
+    def _uses_compact_card(self) -> bool:
+        return self._is_function_node() and self._display_mode == "card"
+
+    def _is_draw_frame(self) -> bool:
+        return self.node.type == "DrawFrame"
+
+    def _supports_connections(self) -> bool:
+        return self.node.type not in {"Comment", "DrawFrame"}
+
     def pin_hit(self, scene_pos: QPointF) -> str | None:
+        if not self._supports_connections():
+            return None
         local = self.mapFromScene(scene_pos)
         input_hit = self._pin_rect("input", self._pin_radius + self.PIN_HIT_PADDING)
         output_hit = self._pin_rect("output", self._pin_radius + self.PIN_HIT_PADDING)
@@ -217,16 +242,14 @@ class NodeItem(QGraphicsObject):
         self.node = node
         definition = self.schema.nodes[node.type]
         view = self._canvas_view()
-        effective_mode = view.node_display_mode(node.uuid) if view else self.controller.preferences.global_mode
+        self._display_mode = view.node_display_mode(node.uuid) if view else ("card" if self._is_function_node() else "detail")
         compact_mode = view.should_render_thumbnail_nodes() if view else False
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, not node.locked)
-        self.form.set_node(
-            node,
-            effective_mode,
-            self.controller.preferences.debug_json_field_names,
-            compact_mode=compact_mode,
-        )
-        base_content_width = self.SIMPLE_WIDTH if effective_mode == "simple" else self.ADVANCED_WIDTH
+        form_mode = "advanced" if self._display_mode == "detail" else self.controller.preferences.global_mode
+        self.form.set_node(node, form_mode, self.controller.preferences.debug_json_field_names, compact_mode=compact_mode)
+        base_content_width = self.SIMPLE_WIDTH if form_mode == "simple" else self.ADVANCED_WIDTH
+        if self._uses_compact_card():
+            base_content_width = self.CARD_BASE_WIDTH
         content_width = base_content_width
         if definition.resizable and node.ui_size:
             content_width = max(content_width, int(node.ui_size.get("width", content_width)) - self._margin * 2)
@@ -234,25 +257,86 @@ class NodeItem(QGraphicsObject):
         base_width = max(content_width + self._margin * 2, persisted_width)
         self._font_scale_floor = self._text_scale_floor(base_width, compact_mode)
         width = max(base_width, self._adaptive_width(base_width, compact_mode))
-        self._recompute_header_layout(width)
+        if self._uses_compact_card():
+            height = self._recompute_compact_card_layout(width)
+            self._rect = QRectF(0.0, 0.0, width, height)
+            self.proxy.setVisible(False)
+        elif self._is_draw_frame():
+            width = max(self.RESIZE_MIN_WIDTH, persisted_width or DRAWFRAME_DEFAULT_SIZE["width"])
+            height = max(180.0, float(node.ui_size.get("height", DRAWFRAME_DEFAULT_SIZE["height"])) if node.ui_size else DRAWFRAME_DEFAULT_SIZE["height"])
+            self._header_height = 42.0
+            self._content_top_gap = 0.0
+            self._card_layout = {}
+            self._rect = QRectF(0.0, 0.0, width, height)
+            self.proxy.setVisible(False)
+        else:
+            self._recompute_header_layout(width)
         final_content_width = int(width - self._margin * 2)
         content_top_gap = 0.0 if compact_mode else self._content_top_gap
-        self.form.setFixedWidth(final_content_width)
-        self.form.ensurePolished()
-        content_height = 0 if compact_mode else self.form.content_height_hint()
-        self.form.setFixedHeight(content_height)
-        self.form.updateGeometry()
-        height = content_height + self._margin * 2 + self._header_height + content_top_gap
-        if definition.resizable and node.ui_size and not compact_mode:
-            height = max(height, float(node.ui_size.get("height", height)))
-        min_height = 90.0 if compact_mode else 120.0
-        self._rect = QRectF(0.0, 0.0, width, max(min_height, height))
-        self.proxy.setVisible(not compact_mode)
-        self.proxy.setPos(self._margin, self._header_height + content_top_gap)
-        self.proxy.resize(final_content_width, content_height)
+        if not self._uses_compact_card() and not self._is_draw_frame():
+            self.form.setFixedWidth(final_content_width)
+            self.form.ensurePolished()
+            content_height = 0 if compact_mode else self.form.content_height_hint()
+            self.form.setFixedHeight(content_height)
+            self.form.updateGeometry()
+            height = content_height + self._margin * 2 + self._header_height + content_top_gap
+            if definition.resizable and node.ui_size and not compact_mode:
+                height = max(height, float(node.ui_size.get("height", height)))
+            min_height = 90.0 if compact_mode else 120.0
+            self._rect = QRectF(0.0, 0.0, width, max(min_height, height))
+            self.proxy.setVisible(not compact_mode)
+            self.proxy.setPos(self._margin, self._header_height + content_top_gap)
+            self.proxy.resize(final_content_width, content_height)
         self.setToolTip(self._full_title_text())
         self.update()
         self.geometryChanged.emit(self.node.uuid)
+
+    @staticmethod
+    def _safe_color(value: str, fallback: str) -> QColor:
+        color = QColor(str(value or "").strip())
+        return color if color.isValid() else QColor(fallback)
+
+    def _resolved_theme_colors(self) -> tuple[QColor, QColor, QColor]:
+        defaults = default_node_theme(self.schema, self.node)
+        body = self._safe_color(str(self.node.fields.get("theme_body_color") or defaults["theme_body_color"]), defaults["theme_body_color"])
+        border = self._safe_color(str(self.node.fields.get("theme_border_color") or defaults["theme_border_color"]), defaults["theme_border_color"])
+        text = self._safe_color(str(self.node.fields.get("theme_text_color") or defaults["theme_text_color"]), defaults["theme_text_color"])
+        return body, border, text
+
+    def _card_field_text(self, key: str) -> str:
+        value = display_value_for_field(self.schema, self.node, key, self.node.fields.get(key))
+        return "" if value is None else str(value).strip()
+
+    def _recompute_compact_card_layout(self, width: float) -> float:
+        outer_margin = 18.0
+        title_height = 34.0
+        canvas_top = title_height + 16.0
+        inner_width = width - outer_margin * 2.0
+        note_text = self._card_field_text("tips") or "empty"
+        note_font = QFont(self.form.font())
+        note_font.setBold(True)
+        note_font.setPointSizeF(11.0)
+        note_metrics = QFontMetrics(note_font)
+        note_width = min(max(132.0, float(note_metrics.horizontalAdvance(note_text) + 26)), inner_width * 0.58)
+        frame_rect = QRectF(outer_margin, canvas_top, inner_width, self.CARD_BASE_HEIGHT - 26.0)
+        top_box = QRectF(frame_rect.center().x() - 120.0, frame_rect.top() + 24.0, 240.0, 58.0)
+        left_arrow = QRectF(frame_rect.left() + 26.0, frame_rect.top() + 116.0, 238.0, 118.0)
+        right_capsule = QRectF(frame_rect.right() - 266.0, frame_rect.top() + 96.0, 246.0, 146.0)
+        bottom_capsule = QRectF(frame_rect.center().x() - 118.0, frame_rect.bottom() - 74.0, 236.0, 54.0)
+        self._card_layout = {
+            "note": QRectF(frame_rect.left(), 8.0, note_width, title_height),
+            "frame": frame_rect,
+            "draw": top_box,
+            "action": left_arrow,
+            "target_idle": right_capsule,
+            "parameter": bottom_capsule,
+        }
+        self._header_height = 0.0
+        self._content_top_gap = 0.0
+        return frame_rect.bottom() + 18.0
+
+    def _draw_frame_title_rect(self) -> QRectF:
+        return QRectF(18.0, 12.0, max(120.0, self._rect.width() - 70.0), 28.0)
 
     def set_warnings(self, warnings: list[str]) -> None:
         self._warnings = warnings
@@ -280,50 +364,66 @@ class NodeItem(QGraphicsObject):
         self._attention_strength = 0.0
         self.update()
 
-    @staticmethod
-    def _node_shell_colors(definition) -> tuple[QColor, QColor, QColor, QColor]:
-        accent = QColor(definition.accent_color)
+    def _node_shell_colors(self) -> tuple[QColor, QColor, QColor, QColor, QColor]:
+        body_seed, border_seed, text_color = self._resolved_theme_colors()
+        accent = QColor(border_seed)
         accent.setAlpha(230)
-        body_color = QColor(definition.body_color)
+        body_color = QColor(body_seed)
         body_color = body_color.darker(118)
         body_color.setAlpha(244)
-        header_color = QColor(definition.header_color)
-        header_color = header_color.darker(155)
+        header_color = QColor(body_seed)
+        header_color = header_color.lighter(118)
         header_color.setAlpha(248)
-        border_color = QColor(definition.accent_color)
-        border_color = border_color.darker(185)
+        border_color = QColor(border_seed)
+        border_color = border_color.darker(132)
         border_color.setAlpha(225)
-        return body_color, header_color, border_color, accent
+        return body_color, header_color, border_color, accent, text_color
 
-    def _comment_colors(self) -> tuple[QColor, QColor, QColor, QColor]:
-        accent = QColor(str(self.node.fields.get("note_box_color") or "#76808d"))
-        if not accent.isValid():
-            accent = QColor("#76808d")
+    def _comment_colors(self) -> tuple[QColor, QColor, QColor, QColor, QColor]:
+        body_seed, border_seed, text_color = self._resolved_theme_colors()
         try:
             alpha_percent = max(0, min(100, int(self.node.fields.get("note_box_alpha", 62))))
         except (TypeError, ValueError):
             alpha_percent = 62
         opacity = max(0.34, min(0.9, alpha_percent / 100.0))
-        body_color = QColor(accent)
+        body_color = QColor(body_seed)
         body_color = body_color.darker(255)
         body_color.setAlphaF(opacity * 0.9)
-        header_color = QColor(accent)
+        header_color = QColor(body_seed)
         header_color = header_color.darker(185)
         header_color.setAlphaF(min(1.0, opacity + 0.16))
-        border_color = QColor(accent)
+        border_color = QColor(border_seed)
         border_color = border_color.darker(125)
         border_color.setAlphaF(min(1.0, opacity + 0.08))
-        accent_bar = QColor(accent)
+        accent_bar = QColor(border_seed)
         accent_bar.setAlphaF(min(1.0, opacity + 0.18))
-        return body_color, header_color, border_color, accent_bar
+        try:
+            text_alpha = max(0, min(100, int(self.node.fields.get("note_text_alpha", 100))))
+        except (TypeError, ValueError):
+            text_alpha = 100
+        text_color = QColor(text_color)
+        text_color.setAlphaF(text_alpha / 100.0)
+        return body_color, header_color, border_color, accent_bar, text_color
+
+    def _paint_lock_badge(self, painter: QPainter) -> None:
+        lock_fill = QColor("#20242c" if self.node.locked else "#14181f")
+        painter.setBrush(lock_fill)
+        painter.setPen(QPen(QColor("#d4d9e6" if self.node.locked else "#758098"), 1.0))
+        painter.drawRoundedRect(self.lock_rect(), 4, 4)
+        shackle = QPainterPath()
+        shackle.moveTo(self.lock_rect().left() + 5.5, self.lock_rect().top() + 8.0)
+        shackle.arcTo(self.lock_rect().left() + 4.0, self.lock_rect().top() + 3.0, 10.0, 10.0, 180.0, -180.0)
+        painter.drawPath(shackle)
+        body_rect = QRectF(self.lock_rect().left() + 4.5, self.lock_rect().top() + 8.5, 9.0, 6.5)
+        painter.drawRoundedRect(body_rect, 2, 2)
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
         del option, widget
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        definition = self.schema.nodes[self.node.type]
-        body_color, header_color, type_border, accent = self._node_shell_colors(definition)
         if self.node.type == "Comment":
-            body_color, header_color, type_border, accent = self._comment_colors()
+            body_color, header_color, type_border, accent, text_color = self._comment_colors()
+        else:
+            body_color, header_color, type_border, accent, text_color = self._node_shell_colors()
         border = QColor(type_border)
         if self._warnings:
             border = QColor("#c85a5a")
@@ -337,6 +437,111 @@ class NodeItem(QGraphicsObject):
         painter.setBrush(shadow_color)
         painter.drawRoundedRect(self._rect.adjusted(0, 4, 0, 4), 10, 10)
 
+        if self._uses_compact_card():
+            note_rect = self._card_layout["note"]
+            frame_rect = self._card_layout["frame"]
+            draw_rect = self._card_layout["draw"]
+            action_rect = self._card_layout["action"]
+            target_rect = self._card_layout["target_idle"]
+            parameter_rect = self._card_layout["parameter"]
+
+            frame_fill = QColor(body_color).lighter(260)
+            frame_fill.setAlpha(220)
+            frame_inner_fill = QColor(frame_fill).lighter(104)
+            frame_inner_fill.setAlpha(236)
+            painter.setPen(QPen(border, 3.0))
+            painter.setBrush(frame_fill)
+            painter.drawRoundedRect(frame_rect, 6, 6)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(frame_inner_fill)
+            painter.drawRoundedRect(frame_rect.adjusted(8, 8, -8, -8), 4, 4)
+
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#69b070"))
+            painter.drawRoundedRect(note_rect, 6, 6)
+            painter.setPen(QColor("#ffffff"))
+            note_font = QFont(self.form.font())
+            note_font.setBold(True)
+            note_font.setPointSizeF(11.0)
+            painter.setFont(note_font)
+            painter.drawText(note_rect.adjusted(10, 0, -10, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self._card_field_text("tips") or "empty")
+
+            painter.setPen(QPen(QColor("#3f6fdc"), 2.0))
+            painter.setBrush(QColor("#4f7df0"))
+            painter.drawRoundedRect(draw_rect, 14, 14)
+            block_font = QFont(self.form.font())
+            block_font.setPointSizeF(16.0)
+            painter.setFont(block_font)
+            painter.setPen(QColor("#ffffff"))
+            painter.drawText(draw_rect.adjusted(12, 0, -12, 0), Qt.AlignmentFlag.AlignCenter, self._card_field_text("draw_able_name") or "empty")
+
+            arrow_path = QPainterPath()
+            arrow_path.moveTo(action_rect.left(), action_rect.top() + 16.0)
+            arrow_path.lineTo(action_rect.left() + action_rect.width() - 62.0, action_rect.top() + 16.0)
+            arrow_path.lineTo(action_rect.left() + action_rect.width() - 62.0, action_rect.top())
+            arrow_path.lineTo(action_rect.right(), action_rect.center().y())
+            arrow_path.lineTo(action_rect.left() + action_rect.width() - 62.0, action_rect.bottom())
+            arrow_path.lineTo(action_rect.left() + action_rect.width() - 62.0, action_rect.bottom() - 16.0)
+            arrow_path.lineTo(action_rect.left(), action_rect.bottom() - 16.0)
+            arrow_path.closeSubpath()
+            painter.setPen(QPen(QColor("#8c5bff"), 3.0))
+            painter.setBrush(QColor("#f3e9ff"))
+            painter.drawPath(arrow_path)
+            painter.setPen(QColor("#262132"))
+            painter.drawText(action_rect.adjusted(18, 0, -40, 0), Qt.AlignmentFlag.AlignCenter, self._card_field_text("action_trigger") or "empty")
+
+            painter.setPen(QPen(QColor("#bfc2cb"), 3.0))
+            painter.setBrush(QColor("#efefef"))
+            painter.drawRoundedRect(target_rect, target_rect.height() / 2.0, target_rect.height() / 2.0)
+            target_font = QFont(self.form.font())
+            target_font.setPointSizeF(22.0)
+            painter.setFont(target_font)
+            painter.setPen(QColor("#262932"))
+            painter.drawText(target_rect, Qt.AlignmentFlag.AlignCenter, self._card_field_text("action_trigger_active") or "empty")
+
+            painter.setPen(QPen(QColor("#ffa338"), 3.0))
+            painter.setBrush(QColor("#fff0de"))
+            painter.drawRoundedRect(parameter_rect, parameter_rect.height() / 2.0, parameter_rect.height() / 2.0)
+            painter.setFont(block_font)
+            painter.setPen(QColor("#2d2f37"))
+            painter.drawText(parameter_rect, Qt.AlignmentFlag.AlignCenter, self._card_field_text("parameter") or "empty")
+
+            self._paint_lock_badge(painter)
+            if self._attention_strength > 0.001:
+                flash_fill = QColor(255, 255, 255, int(118 * self._attention_strength))
+                painter.setBrush(flash_fill)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawRoundedRect(self._rect, 10, 10)
+            if self._warnings:
+                painter.setBrush(QColor("#c85a5a"))
+                painter.drawRoundedRect(QRectF(self._rect.width() - 44, 8, 30, 18), 6, 6)
+                painter.setPen(QColor("#ffffff"))
+                painter.drawText(QRectF(self._rect.width() - 44, 8, 30, 18), Qt.AlignmentFlag.AlignCenter, str(len(self._warnings)))
+            return
+
+        if self._is_draw_frame():
+            frame_fill = QColor(body_color)
+            frame_fill.setAlpha(28)
+            painter.setPen(QPen(border, 2.5))
+            painter.setBrush(frame_fill)
+            painter.drawRoundedRect(self._rect, 8, 8)
+            title_rect = self._draw_frame_title_rect()
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(border))
+            painter.drawRoundedRect(title_rect.adjusted(0, 0, 0, 2), 6, 6)
+            painter.setPen(text_color)
+            title_font = QFont(self.form.font())
+            title_font.setBold(True)
+            title_font.setPointSizeF(11.5)
+            painter.setFont(title_font)
+            painter.drawText(title_rect.adjusted(10, 0, -10, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, str(self.node.fields.get("title") or "画框"))
+            self._paint_lock_badge(painter)
+            if self.schema.nodes[self.node.type].resizable:
+                painter.setBrush(QColor("#ffcf25"))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawRect(self.resize_handle_rect())
+            return
+
         border_width = 4.0 if self._warnings else 1.6
         painter.setPen(QPen(border, border_width))
         painter.setBrush(body_color)
@@ -349,16 +554,7 @@ class NodeItem(QGraphicsObject):
         painter.setBrush(accent_bar)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawRoundedRect(QRectF(12, 8, max(52.0, self._rect.width() - 24), 4), 2, 2)
-        lock_fill = QColor("#20242c" if self.node.locked else "#14181f")
-        painter.setBrush(lock_fill)
-        painter.setPen(QPen(QColor("#d4d9e6" if self.node.locked else "#758098"), 1.0))
-        painter.drawRoundedRect(self.lock_rect(), 4, 4)
-        shackle = QPainterPath()
-        shackle.moveTo(self.lock_rect().left() + 5.5, self.lock_rect().top() + 8.0)
-        shackle.arcTo(self.lock_rect().left() + 4.0, self.lock_rect().top() + 3.0, 10.0, 10.0, 180.0, -180.0)
-        painter.drawPath(shackle)
-        body_rect = QRectF(self.lock_rect().left() + 4.5, self.lock_rect().top() + 8.5, 9.0, 6.5)
-        painter.drawRoundedRect(body_rect, 2, 2)
+        self._paint_lock_badge(painter)
         content_rect = QRectF(
             self.proxy.pos().x() - 2,
             self.proxy.pos().y() - 2,
@@ -373,18 +569,9 @@ class NodeItem(QGraphicsObject):
             painter.setBrush(panel_fill)
             painter.setPen(QPen(panel_border, 1.0))
             painter.drawRoundedRect(content_rect, 8, 8)
-        title_color = QColor("#ff7d7d") if self._warnings else QColor("#f7f8fa")
+        title_color = QColor("#ff7d7d") if self._warnings else QColor(text_color)
         if self.node.fields.get("tips") and not self._warnings:
             title_color = QColor("#ffcf25")
-        if self.node.type == "Comment":
-            title_color = QColor(str(self.node.fields.get("note_text_color") or "#fff5d6"))
-            if not title_color.isValid():
-                title_color = QColor("#fff5d6")
-            try:
-                text_alpha = max(0, min(100, int(self.node.fields.get("note_text_alpha", 100))))
-            except (TypeError, ValueError):
-                text_alpha = 100
-            title_color.setAlphaF(text_alpha / 100.0)
         painter.setPen(title_color)
         title_font = self._title_font()
         painter.setFont(title_font)
@@ -407,10 +594,11 @@ class NodeItem(QGraphicsObject):
             painter.setBrush(flash_fill)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawRoundedRect(self._rect, 10, 10)
-        painter.setBrush(accent)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(self.input_pin_rect())
-        painter.drawEllipse(self.output_pin_rect())
+        if self._supports_connections():
+            painter.setBrush(accent)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(self.input_pin_rect())
+            painter.drawEllipse(self.output_pin_rect())
         if self._warnings:
             painter.setBrush(QColor("#c85a5a"))
             painter.drawRoundedRect(QRectF(self._rect.width() - 44, 8, 30, 18), 6, 6)
@@ -445,6 +633,10 @@ class NodeItem(QGraphicsObject):
             view = self._canvas_view()
             if view:
                 view._set_interaction_busy("drag", True)
+                if self._is_draw_frame():
+                    self._group_drag_targets = view.frame_drag_members(self.node.uuid)
+                    self._group_drag_origin = QPointF(self._drag_start_pos)
+                    self._group_drag_active = bool(self._group_drag_targets)
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -457,6 +649,14 @@ class NodeItem(QGraphicsObject):
             event.accept()
             return
         super().mouseMoveEvent(event)
+        if self._group_drag_targets:
+            delta = self.pos() - self._drag_start_pos
+            view = self._canvas_view()
+            if view:
+                for node_uuid, origin in self._group_drag_targets.items():
+                    item = view.node_items.get(node_uuid)
+                    if item:
+                        item.setPos(origin + delta)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if self._resizing:
@@ -478,8 +678,26 @@ class NodeItem(QGraphicsObject):
         if view:
             logical_current = view.logical_position_from_display(self.node.uuid, current)
         else:
-            logical_current = current
+            logical_current = QPointF(current)
         new_pos = (logical_current.x(), logical_current.y())
+        if self._group_drag_targets:
+            positions = {self.node.uuid: new_pos}
+            old_positions = {self.node.uuid: old_pos}
+            for node_uuid, origin in self._group_drag_targets.items():
+                if not view:
+                    continue
+                item = view.node_items.get(node_uuid)
+                if not item:
+                    continue
+                logical_origin = view.logical_position_for_node(node_uuid)
+                logical_position = view.logical_position_from_display(node_uuid, item.pos())
+                old_positions[node_uuid] = (logical_origin.x(), logical_origin.y())
+                positions[node_uuid] = (logical_position.x(), logical_position.y())
+            self._group_drag_targets.clear()
+            self._group_drag_active = False
+            if old_positions != positions:
+                self.controller.move_nodes(positions, label="移动画框")
+            return
         self.controller.move_node(self.node.uuid, old_pos, new_pos)
 
     def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value: Any):
@@ -608,6 +826,9 @@ class NodeCanvasView(QGraphicsView):
     selectionSummaryChanged = pyqtSignal(object, object)
     interactionBusyChanged = pyqtSignal(bool)
     THUMBNAIL_SCALE_THRESHOLD = 0.45
+    DISPLAY_RELAYOUT_THRESHOLD = 0.45
+    DISPLAY_RELAYOUT_ROW_BAND = 150.0
+    DISPLAY_RELAYOUT_GAP_PIXELS = 44.0
 
     def __init__(self, schema: EditorSchema, controller, parent=None) -> None:
         super().__init__(parent)
@@ -626,7 +847,7 @@ class NodeCanvasView(QGraphicsView):
         self.connection_items: dict[tuple[str, str], ConnectionItem] = {}
         self.zoom_wheel_modifier = "ctrl"
         self.horizontal_wheel_modifier = "alt_shift"
-        self.per_node_mode_overrides: dict[str, str] = {}
+        self.expanded_node_uuids: set[str] = set()
         self._display_position_overrides: dict[str, QPointF] = {}
         self._warnings_by_node: dict[str, list[str]] = {}
         self._connecting_from: str | None = None
@@ -668,7 +889,7 @@ class NodeCanvasView(QGraphicsView):
         self.rebuild_scene()
 
     def rebuild_scene(self) -> None:
-        self.per_node_mode_overrides.clear()
+        self.expanded_node_uuids.clear()
         self._display_position_overrides.clear()
         for item in list(self.connection_items.values()):
             self.scene_ref.removeItem(item)
@@ -721,7 +942,12 @@ class NodeCanvasView(QGraphicsView):
         return [(item.from_uuid, item.to_uuid) for item in self.scene_ref.selectedItems() if isinstance(item, ConnectionItem)]
 
     def node_display_mode(self, node_uuid: str) -> str:
-        return self.per_node_mode_overrides.get(node_uuid, self.controller.preferences.global_mode)
+        node = self.controller.get_node(node_uuid)
+        if not node:
+            return "detail"
+        if node.type in function_node_types(self.schema):
+            return "detail" if node_uuid in self.expanded_node_uuids else "card"
+        return "detail"
 
     def should_render_thumbnail_nodes(self) -> bool:
         return float(self.transform().m11()) <= self.THUMBNAIL_SCALE_THRESHOLD
@@ -733,22 +959,41 @@ class NodeCanvasView(QGraphicsView):
         return QPointF(float(node.ui_position["x"]), float(node.ui_position["y"]))
 
     def display_position_for_node(self, node_uuid: str) -> QPointF:
-        return self._display_position_overrides.get(node_uuid, self.logical_position_for_node(node_uuid))
+        return QPointF(self._display_position_overrides.get(node_uuid, self.logical_position_for_node(node_uuid)))
 
     def logical_position_from_display(self, node_uuid: str, display_pos: QPointF) -> QPointF:
         logical_pos = self.logical_position_for_node(node_uuid)
-        display_target = self.display_position_for_node(node_uuid)
-        offset = display_target - logical_pos
-        return QPointF(display_pos.x() - offset.x(), display_pos.y() - offset.y())
+        display_origin = self.display_position_for_node(node_uuid)
+        return QPointF(
+            display_pos.x() - (display_origin.x() - logical_pos.x()),
+            display_pos.y() - (display_origin.y() - logical_pos.y()),
+        )
 
-    def toggle_node_mode_override(self, node_uuid: str) -> None:
-        current = self.node_display_mode(node_uuid)
-        next_mode = "advanced" if current == "simple" else "simple"
-        if next_mode == self.controller.preferences.global_mode:
-            self.per_node_mode_overrides.pop(node_uuid, None)
+    def toggle_node_display_mode(self, node_uuid: str) -> None:
+        node = self.controller.get_node(node_uuid)
+        if not node or node.type not in function_node_types(self.schema):
+            return
+        if node_uuid in self.expanded_node_uuids:
+            self.expanded_node_uuids.discard(node_uuid)
         else:
-            self.per_node_mode_overrides[node_uuid] = next_mode
+            self.expanded_node_uuids.add(node_uuid)
         self._update_node_item(node_uuid)
+
+    def frame_drag_members(self, node_uuid: str) -> dict[str, QPointF]:
+        members: dict[str, QPointF] = {}
+        frame_item = self.node_items.get(node_uuid)
+        if not frame_item:
+            return members
+        frame_rect = frame_item.mapRectToScene(frame_item.boundingRect())
+        for other_uuid, item in self.node_items.items():
+            if other_uuid == node_uuid:
+                continue
+            node = self.controller.get_node(other_uuid)
+            if not node or node.locked or node.type == "DrawFrame":
+                continue
+            if frame_rect.intersects(item.mapRectToScene(item.boundingRect())):
+                members[other_uuid] = QPointF(item.pos())
+        return members
 
     def center_on_node(self, node_uuid: str) -> None:
         item = self.node_items.get(node_uuid)
@@ -856,7 +1101,7 @@ class NodeCanvasView(QGraphicsView):
         if event.button() == Qt.MouseButton.LeftButton:
             node_item = self._node_item_at_view_point(event.position())
             if node_item:
-                self.toggle_node_mode_override(node_item.node.uuid)
+                self.toggle_node_display_mode(node_item.node.uuid)
                 event.accept()
                 return
         super().mouseDoubleClickEvent(event)
@@ -946,6 +1191,8 @@ class NodeCanvasView(QGraphicsView):
         item = NodeItem(self.schema, self.controller, node)
         if node.type == "Comment":
             item.setZValue(-20)
+        elif node.type == "DrawFrame":
+            item.setZValue(-30)
         item.geometryChanged.connect(self._on_node_geometry_changed)
         self.scene_ref.addItem(item)
         self.node_items[node.uuid] = item
@@ -957,23 +1204,24 @@ class NodeCanvasView(QGraphicsView):
             return
         if node_uuid not in self.node_items:
             self._create_item(node)
-        else:
-            self._update_node_item(node_uuid)
+            self._recompute_display_position_overrides()
+            self._apply_display_position_overrides()
+            self._update_connections_for_node(node_uuid)
+            return
+        self._update_node_item(node_uuid)
 
     def _update_node_item(self, node_uuid: str) -> None:
         node = self.controller.get_node(node_uuid)
         item = self.node_items.get(node_uuid)
         if not node or not item:
             return
-        target_pos = self.display_position_for_node(node_uuid)
-        if item.pos() != target_pos:
-            item.setPos(target_pos)
         item.update_node(node)
         item.set_warnings(self._warnings_by_node.get(node_uuid, []))
-        self._update_connections_for_node(node_uuid)
+        self._recompute_display_position_overrides()
+        self._apply_display_position_overrides()
 
     def _remove_node_item(self, node_uuid: str) -> None:
-        self.per_node_mode_overrides.pop(node_uuid, None)
+        self.expanded_node_uuids.discard(node_uuid)
         self._display_position_overrides.pop(node_uuid, None)
         item = self.node_items.pop(node_uuid, None)
         if not item:
@@ -983,6 +1231,8 @@ class NodeCanvasView(QGraphicsView):
             if node_uuid in pair:
                 connection = self.connection_items.pop(pair)
                 self.scene_ref.removeItem(connection)
+        self._recompute_display_position_overrides()
+        self._apply_display_position_overrides()
 
     def _rebuild_connections(self) -> None:
         for item in list(self.connection_items.values()):
@@ -1050,9 +1300,9 @@ class NodeCanvasView(QGraphicsView):
     def _finish_focus_animation(self) -> None:
         self._apply_view_state(self._focus_end_scale, self._focus_end_center)
         if self._focus_target_uuid:
-            corrected_center = self._focus_target_center(self._focus_target_uuid)
-            if corrected_center is not None:
-                self.centerOn(corrected_center)
+            target_item = self.node_items.get(self._focus_target_uuid)
+            if target_item is not None:
+                self.centerOn(target_item)
         self._set_interaction_busy("focus", False)
         self._store_canvas_view()
         if self._focus_target_uuid:
@@ -1125,7 +1375,7 @@ class NodeCanvasView(QGraphicsView):
         movable_nodes = {
             node.uuid: node
             for node in self.controller.document.nodes
-            if node.type != "Comment" and not node.locked
+            if node.type in function_node_types(self.schema) and not node.locked
         }
         edge_pairs = [
             (connection.from_uuid, connection.to_uuid)
@@ -1482,59 +1732,64 @@ class NodeCanvasView(QGraphicsView):
         return item.mapRectToScene(item.boundingRect()).center()
 
     def _recompute_display_position_overrides(self) -> None:
-        self._display_position_overrides.clear()
-        if not self.node_items:
+        self._display_position_overrides = {}
+        scale = max(0.06, float(self.transform().m11()))
+        if scale > self.DISPLAY_RELAYOUT_THRESHOLD:
             return
-        if float(self.transform().m11()) >= 0.999:
+
+        ordered_nodes: list[tuple[str, float, float]] = []
+        for node in self.controller.document.nodes:
+            if node.uuid not in self.node_items:
+                continue
+            if node.type not in function_node_types(self.schema) and node.type != "Comment":
+                continue
+            ordered_nodes.append((node.uuid, float(node.ui_position["x"]), float(node.ui_position["y"])))
+        if len(ordered_nodes) < 2:
             return
-        rows: list[dict[str, object]] = []
-        sorted_nodes = sorted(
-            self.node_items,
-            key=lambda value: (
-                self.controller.get_node(value).ui_position["y"],
-                self.controller.get_node(value).ui_position["x"],
-            ),
-        )
-        for node_uuid in sorted_nodes:
-            logical = self.logical_position_for_node(node_uuid)
-            logical_rect = self._expanded_rect_for(node_uuid, (logical.x(), logical.y()))
-            target_row = None
-            for row in rows:
-                if logical_rect.bottom() >= row["top"] and logical_rect.top() <= row["bottom"]:
-                    target_row = row
-                    break
-            if target_row is None:
-                target_row = {"top": logical_rect.top(), "bottom": logical_rect.bottom(), "nodes": []}
-                rows.append(target_row)
-            target_row["top"] = min(float(target_row["top"]), logical_rect.top())
-            target_row["bottom"] = max(float(target_row["bottom"]), logical_rect.bottom())
-            target_row["nodes"].append(node_uuid)
-        margin = 26.0
-        gap = NodeItem.DISPLAY_ROW_GAP
+
+        rows: list[list[tuple[str, float, float]]] = []
+        row_centers: list[float] = []
+        for node_uuid, x, y in sorted(ordered_nodes, key=lambda entry: (entry[2], entry[1], entry[0])):
+            match_index: int | None = None
+            best_distance: float | None = None
+            for index, center_y in enumerate(row_centers):
+                distance = abs(y - center_y)
+                if distance > self.DISPLAY_RELAYOUT_ROW_BAND:
+                    continue
+                if best_distance is None or distance < best_distance:
+                    best_distance = distance
+                    match_index = index
+            if match_index is None:
+                rows.append([(node_uuid, x, y)])
+                row_centers.append(y)
+                continue
+            rows[match_index].append((node_uuid, x, y))
+            member_count = len(rows[match_index])
+            row_centers[match_index] = ((row_centers[match_index] * (member_count - 1)) + y) / member_count
+
+        display_gap = self.DISPLAY_RELAYOUT_GAP_PIXELS / scale
         for row in rows:
-            previous_rect: QRectF | None = None
-            for node_uuid in sorted(
-                row["nodes"],
-                key=lambda value: (
-                    self.controller.get_node(value).ui_position["x"],
-                    self.controller.get_node(value).ui_position["y"],
-                ),
-            ):
-                logical_pos = self.logical_position_for_node(node_uuid)
-                target_x = float(logical_pos.x())
-                target_y = float(logical_pos.y())
-                candidate_rect = self._expanded_rect_for(node_uuid, (target_x, target_y))
-                if previous_rect is not None and candidate_rect.left() < previous_rect.right() + gap:
-                    target_x = previous_rect.right() + gap + margin
-                    candidate_rect = self._expanded_rect_for(node_uuid, (target_x, target_y))
-                self._display_position_overrides[node_uuid] = QPointF(target_x, target_y)
-                previous_rect = candidate_rect
+            cursor_right: float | None = None
+            for node_uuid, logical_x, logical_y in sorted(row, key=lambda entry: (entry[1], entry[0])):
+                candidate_x = logical_x
+                candidate_rect = self._expanded_rect_for(node_uuid, (candidate_x, logical_y))
+                if cursor_right is not None and candidate_rect.left() < cursor_right + display_gap:
+                    candidate_x += cursor_right + display_gap - candidate_rect.left()
+                    candidate_rect = self._expanded_rect_for(node_uuid, (candidate_x, logical_y))
+                cursor_right = candidate_rect.right()
+                if abs(candidate_x - logical_x) >= 0.5:
+                    self._display_position_overrides[node_uuid] = QPointF(candidate_x, logical_y)
 
     def _apply_display_position_overrides(self) -> None:
+        moved_nodes: list[str] = []
         for node_uuid, item in self.node_items.items():
             target_pos = self.display_position_for_node(node_uuid)
-            if item.pos() != target_pos:
-                item.setPos(target_pos)
+            if item.pos() == target_pos:
+                continue
+            item.setPos(target_pos)
+            moved_nodes.append(node_uuid)
+        for node_uuid in moved_nodes:
+            self._update_connections_for_node(node_uuid)
 
     def _refresh_scale_sensitive_nodes(self) -> None:
         for item in self.node_items.values():

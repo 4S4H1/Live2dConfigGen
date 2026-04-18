@@ -522,6 +522,7 @@ class MainWindow(QMainWindow):
         candidate = Path(path)
         if candidate.is_file():
             self.settings.setValue(self.SETTINGS_LAST_DOCUMENT, str(candidate.resolve()))
+            self.settings.sync()
 
     def _restore_last_opened_document(self) -> bool:
         raw = self.settings.value(self.SETTINGS_LAST_DOCUMENT)
