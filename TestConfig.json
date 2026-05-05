@@ -89,7 +89,7 @@
       "uuid": "b5c3bfa7f5784737abbd10e11bf06976",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 810.7302106992316,
+        "x": 1027.7302106992315,
         "y": 2396.3001613547212
       },
       "type_slot": 2,
@@ -139,8 +139,8 @@
       "uuid": "3f3a5486ec6a4e10b256253910dc14c5",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 1551.6302106992316,
-        "y": 2392.8761874453644
+        "x": 1985.6302106992316,
+        "y": 2396.3001613547212
       },
       "type_slot": 3,
       "export_slot": 3,
@@ -189,7 +189,7 @@
       "uuid": "ed09e9777e4e4bb0aaedfaa5e89f04ea",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 2292.5302106992317,
+        "x": 2943.5302106992317,
         "y": 2396.3001613547212
       },
       "type_slot": 4,
@@ -242,14 +242,14 @@
       "uuid": "6d2369268b6d42de851da510399a2442",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 3033.430210699232,
+        "x": 3901.430210699232,
         "y": 2396.3001613547212
       },
       "type_slot": 5,
       "export_slot": 5,
       "locked": false,
       "numeric_linkage_enabled": false,
-      "tips": "",
+      "tips": "ASDF阿斯蒂芬阿斯蒂芬",
       "desc": "",
       "draw_able_name": "TouchIdle5",
       "parameter": "Paramtouch_idle5",
@@ -292,8 +292,8 @@
       "uuid": "1dbff55c580b497cb31419e2496a197a",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 3774.3302106992314,
-        "y": 2393.999722017609
+        "x": 4859.330210699231,
+        "y": 2396.3001613547212
       },
       "type_slot": 6,
       "export_slot": 6,
@@ -342,8 +342,8 @@
       "uuid": "a105f32b2e2e4e80b1f808b4acb5f86e",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 4187.134764258708,
-        "y": 3073.572747704062
+        "x": 5817.230210699232,
+        "y": 4364.300161354721
       },
       "type_slot": 7,
       "export_slot": 7,
@@ -392,8 +392,8 @@
       "uuid": "0fbdb68dae584d709fef5b196acc6352",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 5242.930968601053,
-        "y": 2969.5243896186266
+        "x": 6775.1302106992325,
+        "y": 4364.300161354721
       },
       "type_slot": 8,
       "export_slot": 8,
@@ -442,8 +442,8 @@
       "uuid": "064955dae82c49aea1bd92258035c619",
       "type": "ParameterTrigger",
       "ui_position": {
-        "x": 5997.030210699232,
-        "y": 2396.3001613547212
+        "x": 7733.030210699232,
+        "y": 4364.300161354721
       },
       "type_slot": 1,
       "export_slot": 9,
@@ -496,8 +496,8 @@
       "uuid": "a4086abffac3443baab1a9d774e3736f",
       "type": "TouchIdle",
       "ui_position": {
-        "x": 6737.930210699233,
-        "y": 2396.3001613547212
+        "x": 8690.930210699233,
+        "y": 4364.300161354721
       },
       "type_slot": 9,
       "export_slot": 10,
@@ -541,6 +541,206 @@
       "theme_body_color": "#1a3550",
       "theme_border_color": "#74b9ff",
       "theme_text_color": "#f3f8ff"
+    },
+    {
+      "uuid": "d89d1bb318104884931577a5079d7684",
+      "type": "TouchIdle",
+      "ui_position": {
+        "x": 5817.230210699232,
+        "y": 3380.3001613547212
+      },
+      "type_slot": 10,
+      "export_slot": 11,
+      "locked": false,
+      "numeric_linkage_enabled": false,
+      "tips": "",
+      "desc": "",
+      "draw_able_name": "TouchIdle10",
+      "parameter": "Paramtouch_idle10",
+      "range": "{0,1}",
+      "control_type": "click",
+      "drag_ui_direction": "",
+      "transition_type": "animated",
+      "action_trigger": "{type = 2 ,action = 'touch_idle10'}",
+      "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 10}",
+      "id": 1111111,
+      "mode": 1,
+      "start_value": 0,
+      "parts_data": "",
+      "ignore_react": 1,
+      "ignore_action": 1,
+      "range_abs": 1,
+      "drag_direct": 0,
+      "react_pos_x": null,
+      "react_pos_y": null,
+      "offset_circle": "",
+      "offset_x": 0,
+      "offset_y": 0,
+      "smooth": 100,
+      "revert_smooth": 100,
+      "revert": -1,
+      "save_parameter": "",
+      "gyro": 0,
+      "gyro_x": 0,
+      "gyro_y": 0,
+      "gyro_z": 0,
+      "limit_time": 1.0,
+      "listener_data": "",
+      "shop_action": 0,
+      "relation_parameter": "",
+      "theme_body_color": "#12283a",
+      "theme_border_color": "#55b3ff",
+      "theme_text_color": "#f8fbff"
+    },
+    {
+      "uuid": "82d46b439a9948e086ccf5abf0b7c790",
+      "type": "TouchIdle",
+      "ui_position": {
+        "x": 5817.230210699232,
+        "y": 2888.3001613547212
+      },
+      "type_slot": 11,
+      "export_slot": 12,
+      "locked": false,
+      "numeric_linkage_enabled": false,
+      "tips": "",
+      "desc": "",
+      "draw_able_name": "TouchIdle11",
+      "parameter": "Paramtouch_idle11",
+      "range": "{0,1}",
+      "control_type": "click",
+      "drag_ui_direction": "",
+      "transition_type": "animated",
+      "action_trigger": "{type = 2 ,action = 'touch_idle11'}",
+      "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 11}",
+      "id": 1111112,
+      "mode": 1,
+      "start_value": 0,
+      "parts_data": "",
+      "ignore_react": 1,
+      "ignore_action": 1,
+      "range_abs": 1,
+      "drag_direct": 0,
+      "react_pos_x": null,
+      "react_pos_y": null,
+      "offset_circle": "",
+      "offset_x": 0,
+      "offset_y": 0,
+      "smooth": 100,
+      "revert_smooth": 100,
+      "revert": -1,
+      "save_parameter": "",
+      "gyro": 0,
+      "gyro_x": 0,
+      "gyro_y": 0,
+      "gyro_z": 0,
+      "limit_time": 1.0,
+      "listener_data": "",
+      "shop_action": 0,
+      "relation_parameter": "",
+      "theme_body_color": "#12283a",
+      "theme_border_color": "#55b3ff",
+      "theme_text_color": "#f8fbff"
+    },
+    {
+      "uuid": "b519d3466f06435ba65b921f9c2013d1",
+      "type": "TouchIdle",
+      "ui_position": {
+        "x": 5817.230210699232,
+        "y": 2396.3001613547212
+      },
+      "type_slot": 12,
+      "export_slot": 13,
+      "locked": false,
+      "numeric_linkage_enabled": false,
+      "tips": "",
+      "desc": "",
+      "draw_able_name": "TouchIdle12",
+      "parameter": "Paramtouch_idle12",
+      "range": "{0,1}",
+      "control_type": "click",
+      "drag_ui_direction": "",
+      "transition_type": "animated",
+      "action_trigger": "{type = 2 ,action = 'touch_idle12'}",
+      "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 12}",
+      "id": 1111113,
+      "mode": 1,
+      "start_value": 0,
+      "parts_data": "",
+      "ignore_react": 1,
+      "ignore_action": 1,
+      "range_abs": 1,
+      "drag_direct": 0,
+      "react_pos_x": null,
+      "react_pos_y": null,
+      "offset_circle": "",
+      "offset_x": 0,
+      "offset_y": 0,
+      "smooth": 100,
+      "revert_smooth": 100,
+      "revert": -1,
+      "save_parameter": "",
+      "gyro": 0,
+      "gyro_x": 0,
+      "gyro_y": 0,
+      "gyro_z": 0,
+      "limit_time": 1.0,
+      "listener_data": "",
+      "shop_action": 0,
+      "relation_parameter": "",
+      "theme_body_color": "#12283a",
+      "theme_border_color": "#55b3ff",
+      "theme_text_color": "#f8fbff"
+    },
+    {
+      "uuid": "c16bf4a9f0aa417283013a22e5436350",
+      "type": "TouchIdle",
+      "ui_position": {
+        "x": 5817.230210699232,
+        "y": 3872.3001613547212
+      },
+      "type_slot": 13,
+      "export_slot": 14,
+      "locked": false,
+      "numeric_linkage_enabled": false,
+      "tips": "",
+      "desc": "",
+      "draw_able_name": "TouchIdle13",
+      "parameter": "Paramtouch_idle13",
+      "range": "{0,1}",
+      "control_type": "click",
+      "drag_ui_direction": "",
+      "transition_type": "animated",
+      "action_trigger": "{type = 2 ,action = 'touch_idle13'}",
+      "action_trigger_active": "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'}},idle = 13}",
+      "id": 1111114,
+      "mode": 1,
+      "start_value": 0,
+      "parts_data": "",
+      "ignore_react": 1,
+      "ignore_action": 1,
+      "range_abs": 1,
+      "drag_direct": 0,
+      "react_pos_x": null,
+      "react_pos_y": null,
+      "offset_circle": "",
+      "offset_x": 0,
+      "offset_y": 0,
+      "smooth": 100,
+      "revert_smooth": 100,
+      "revert": -1,
+      "save_parameter": "",
+      "gyro": 0,
+      "gyro_x": 0,
+      "gyro_y": 0,
+      "gyro_z": 0,
+      "limit_time": 1.0,
+      "listener_data": "",
+      "shop_action": 0,
+      "relation_parameter": "",
+      "theme_body_color": "#12283a",
+      "theme_border_color": "#55b3ff",
+      "theme_text_color": "#f8fbff"
     }
   ],
   "connections": [
@@ -583,12 +783,28 @@
     {
       "from_uuid": "064955dae82c49aea1bd92258035c619",
       "to_uuid": "a4086abffac3443baab1a9d774e3736f"
+    },
+    {
+      "from_uuid": "1dbff55c580b497cb31419e2496a197a",
+      "to_uuid": "d89d1bb318104884931577a5079d7684"
+    },
+    {
+      "from_uuid": "1dbff55c580b497cb31419e2496a197a",
+      "to_uuid": "82d46b439a9948e086ccf5abf0b7c790"
+    },
+    {
+      "from_uuid": "1dbff55c580b497cb31419e2496a197a",
+      "to_uuid": "b519d3466f06435ba65b921f9c2013d1"
+    },
+    {
+      "from_uuid": "1dbff55c580b497cb31419e2496a197a",
+      "to_uuid": "c16bf4a9f0aa417283013a22e5436350"
     }
   ],
   "trash_bin": [],
   "canvas_view": {
-    "scale": 0.5303334803567341,
-    "offset_x": 4631.048370447868,
-    "offset_y": 2884.9772014597875
+    "scale": 0.4346995740628969,
+    "offset_x": 4589.376477537892,
+    "offset_y": 2659.3078737011547
   }
 }

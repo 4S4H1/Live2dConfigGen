@@ -10,6 +10,7 @@ if sys.platform != "win32":
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import QPointF, QSettings, Qt
+from PyQt6.QtGui import QFontMetricsF
 from PyQt6.QtWidgets import QApplication, QMessageBox, QSplitter, QToolBar
 
 from l2d_config_editor.controller import EditorController
@@ -1546,6 +1547,43 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertEqual("card", item._display_mode)
             self.assertFalse(item.proxy.isVisible())
             self.assertGreaterEqual(item._card_layout["frame"].top(), baseline_frame_top)
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_compact_card_text_layout_fits_bounds_when_zoomed_out(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("TouchDrag", (200, 120))
+            item = window.canvas.node_items[created]
+            window.controller.update_field(created, "draw_able_name", "TouchDrag_very_long_compact_title_123456789", "simple")
+            window.controller.update_field(created, "action_trigger", "touch_drag_super_long_compact_action_123456789", "simple")
+            window.controller.update_field(created, "parameter", "parameter_super_long_compact_value_123456789", "simple")
+
+            window.canvas._apply_view_state(0.18, QPointF(0.0, 0.0))
+            window.canvas._refresh_scale_sensitive_nodes()
+            self.app.processEvents()
+
+            for field_key, rect_key, font_getter, min_size, padding in (
+                ("draw_able_name", "draw", item._compact_title_font, item.CARD_TITLE_MIN_POINT_SIZE, (12.0, 4.0)),
+                ("action_trigger", "action", item._compact_action_font, item.CARD_ACTION_MIN_POINT_SIZE, (2.0, 10.0)),
+                ("parameter", "parameter", item._compact_parameter_font, item.CARD_PARAMETER_MIN_POINT_SIZE, (12.0, 4.0)),
+            ):
+                draw_rect, fitted_font, display_text = item._compact_text_layout(
+                    item._card_field_text(field_key),
+                    item._card_layout[rect_key],
+                    font_getter(),
+                    min_point_size=min_size,
+                    horizontal_padding=padding[0],
+                    vertical_padding=padding[1],
+                )
+                metrics = QFontMetricsF(fitted_font)
+                self.assertLessEqual(metrics.height(), draw_rect.height() + 0.5)
+                self.assertLessEqual(metrics.horizontalAdvance(display_text), draw_rect.width() + 0.5)
             window._mark_saved_checkpoint(saved=True)
         window.close()
 

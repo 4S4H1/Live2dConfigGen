@@ -7,7 +7,7 @@ from collections import defaultdict, deque
 from typing import Any
 
 from PyQt6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QLineF, QTimer, QVariantAnimation, pyqtSignal
-from PyQt6.QtGui import QColor, QContextMenuEvent, QFont, QFontMetrics, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen
+from PyQt6.QtGui import QColor, QContextMenuEvent, QFont, QFontMetrics, QFontMetricsF, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (
     QGraphicsItem,
     QGraphicsObject,
@@ -554,6 +554,64 @@ class NodeItem(QGraphicsObject):
             "parameter_text": parameter_text,
         }
 
+    def _compact_text_layout(
+        self,
+        text: str,
+        rect: QRectF,
+        base_font: QFont,
+        *,
+        min_point_size: float,
+        horizontal_padding: float = 0.0,
+        vertical_padding: float = 0.0,
+    ) -> tuple[QRectF, QFont, str]:
+        draw_rect = rect.adjusted(horizontal_padding, vertical_padding, -horizontal_padding, -vertical_padding)
+        draw_rect = QRectF(draw_rect)
+        resolved_text = str(text or "").strip() or "empty"
+        fitted_font = QFont(base_font)
+        point_size = fitted_font.pointSizeF() if fitted_font.pointSizeF() > 0 else float(fitted_font.pointSize())
+        point_size = max(min_point_size, point_size)
+        min_point_size = max(6.0, min_point_size)
+
+        while point_size > min_point_size:
+            fitted_font.setPointSizeF(point_size)
+            metrics = QFontMetricsF(fitted_font)
+            if metrics.height() <= draw_rect.height() + 0.5 and metrics.horizontalAdvance(resolved_text) <= draw_rect.width() + 0.5:
+                break
+            point_size = max(min_point_size, point_size - 0.5)
+            if point_size == min_point_size:
+                fitted_font.setPointSizeF(point_size)
+                break
+
+        metrics = QFontMetrics(fitted_font)
+        available_width = max(1, int(draw_rect.width()))
+        display_text = metrics.elidedText(resolved_text, Qt.TextElideMode.ElideRight, available_width)
+        return draw_rect, fitted_font, display_text
+
+    def _paint_compact_text(
+        self,
+        painter: QPainter,
+        rect: QRectF,
+        text: str,
+        base_font: QFont,
+        color: QColor,
+        alignment: Qt.AlignmentFlag,
+        *,
+        min_point_size: float,
+        horizontal_padding: float = 0.0,
+        vertical_padding: float = 0.0,
+    ) -> None:
+        draw_rect, fitted_font, display_text = self._compact_text_layout(
+            text,
+            rect,
+            base_font,
+            min_point_size=min_point_size,
+            horizontal_padding=horizontal_padding,
+            vertical_padding=vertical_padding,
+        )
+        painter.setFont(fitted_font)
+        painter.setPen(color)
+        painter.drawText(draw_rect, alignment, display_text)
+
     def _paint_lock_badge(self, painter: QPainter) -> None:
         lock_fill = QColor("#20242c" if self.node.locked else "#14181f")
         painter.setBrush(lock_fill)
@@ -617,17 +675,32 @@ class NodeItem(QGraphicsObject):
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(palette["note_fill"])
             painter.drawRoundedRect(note_rect, 6, 6)
-            painter.setPen(palette["note_text"])
-            painter.setFont(self._compact_note_font())
-            painter.drawText(note_rect.adjusted(10, 0, -10, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self._card_field_text("tips") or "empty")
+            self._paint_compact_text(
+                painter,
+                note_rect,
+                self._card_field_text("tips") or "empty",
+                self._compact_note_font(),
+                palette["note_text"],
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                min_point_size=self.CARD_NOTE_MIN_POINT_SIZE,
+                horizontal_padding=10.0,
+            )
 
             painter.setPen(QPen(palette["draw_border"], 2.0))
             painter.setBrush(palette["draw_fill"])
             painter.drawRoundedRect(draw_rect, 14, 14)
             block_font = self._compact_title_font()
-            painter.setFont(block_font)
-            painter.setPen(palette["draw_text"])
-            painter.drawText(draw_rect.adjusted(12, 0, -12, 0), Qt.AlignmentFlag.AlignCenter, self._card_field_text("draw_able_name") or "empty")
+            self._paint_compact_text(
+                painter,
+                draw_rect,
+                self._card_field_text("draw_able_name") or "empty",
+                block_font,
+                palette["draw_text"],
+                Qt.AlignmentFlag.AlignCenter,
+                min_point_size=self.CARD_TITLE_MIN_POINT_SIZE,
+                horizontal_padding=12.0,
+                vertical_padding=4.0,
+            )
 
             arrow_path = QPainterPath()
             arrow_path.moveTo(action_rect.left(), action_rect.top() + 16.0)
@@ -641,23 +714,47 @@ class NodeItem(QGraphicsObject):
             painter.setPen(QPen(palette["action_border"], 2.6))
             painter.setBrush(palette["action_fill"])
             painter.drawPath(arrow_path)
-            painter.setFont(self._compact_action_font())
-            painter.setPen(palette["action_text"])
-            painter.drawText(action_rect.adjusted(18, 0, -40, 0), Qt.AlignmentFlag.AlignCenter, self._card_field_text("action_trigger") or "empty")
+            self._paint_compact_text(
+                painter,
+                action_rect.adjusted(18, 0, -40, 0),
+                self._card_field_text("action_trigger") or "empty",
+                self._compact_action_font(),
+                palette["action_text"],
+                Qt.AlignmentFlag.AlignCenter,
+                min_point_size=self.CARD_ACTION_MIN_POINT_SIZE,
+                horizontal_padding=2.0,
+                vertical_padding=10.0,
+            )
 
             painter.setPen(QPen(palette["target_border"], 2.6))
             painter.setBrush(palette["target_fill"])
             painter.drawRoundedRect(target_rect, target_rect.height() / 2.0, target_rect.height() / 2.0)
-            painter.setFont(self._compact_target_font())
-            painter.setPen(palette["target_text"])
-            painter.drawText(target_rect, Qt.AlignmentFlag.AlignCenter, self._card_field_text("action_trigger_active") or "empty")
+            self._paint_compact_text(
+                painter,
+                target_rect,
+                self._card_field_text("action_trigger_active") or "empty",
+                self._compact_target_font(),
+                palette["target_text"],
+                Qt.AlignmentFlag.AlignCenter,
+                min_point_size=self.CARD_TARGET_MIN_POINT_SIZE,
+                horizontal_padding=18.0,
+                vertical_padding=8.0,
+            )
 
             painter.setPen(QPen(palette["parameter_border"], 2.6))
             painter.setBrush(palette["parameter_fill"])
             painter.drawRoundedRect(parameter_rect, parameter_rect.height() / 2.0, parameter_rect.height() / 2.0)
-            painter.setFont(self._compact_parameter_font())
-            painter.setPen(palette["parameter_text"])
-            painter.drawText(parameter_rect, Qt.AlignmentFlag.AlignCenter, self._card_field_text("parameter") or "empty")
+            self._paint_compact_text(
+                painter,
+                parameter_rect,
+                self._card_field_text("parameter") or "empty",
+                self._compact_parameter_font(),
+                palette["parameter_text"],
+                Qt.AlignmentFlag.AlignCenter,
+                min_point_size=self.CARD_PARAMETER_MIN_POINT_SIZE,
+                horizontal_padding=12.0,
+                vertical_padding=4.0,
+            )
 
             self._paint_connection_pins(painter, accent, border)
             self._paint_lock_badge(painter)
