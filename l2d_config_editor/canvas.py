@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
 
 from .logic import DRAWFRAME_DEFAULT_SIZE, default_node_theme, display_value_for_field, function_node_types, node_title
 from .schema import EditorSchema
-from .widgets import NodeFormWidget
+from .widgets import CommitLineEdit, NodeFormWidget, NumericLineEdit
 
 
 class GridScene(QGraphicsScene):
@@ -114,15 +114,34 @@ class NodeItem(QGraphicsObject):
     CARD_BASE_HEIGHT = 360
     RESIZE_MIN_WIDTH = 360.0
     DISPLAY_ROW_GAP = 28.0
-    TITLE_BASE_POINT_SIZE = 10.4
-    TITLE_MIN_POINT_SIZE = 7.8
-    TITLE_MAX_POINT_SIZE = 16.8
-    SUMMARY_BASE_POINT_SIZE = 8.8
-    SUMMARY_MIN_POINT_SIZE = 6.8
-    SUMMARY_MAX_POINT_SIZE = 12.8
-    DRAWFRAME_TITLE_BASE_POINT_SIZE = 11.5
-    DRAWFRAME_TITLE_MIN_POINT_SIZE = 10.2
-    DRAWFRAME_TITLE_MAX_POINT_SIZE = 18.0
+    TITLE_BASE_POINT_SIZE = 11.8
+    TITLE_MIN_POINT_SIZE = 9.4
+    TITLE_MAX_POINT_SIZE = 80.0
+    SUMMARY_BASE_POINT_SIZE = 9.8
+    SUMMARY_MIN_POINT_SIZE = 7.8
+    SUMMARY_MAX_POINT_SIZE = 56.0
+    DRAWFRAME_TITLE_BASE_POINT_SIZE = 12.6
+    DRAWFRAME_TITLE_MIN_POINT_SIZE = 10.6
+    DRAWFRAME_TITLE_MAX_POINT_SIZE = 72.0
+    CARD_NOTE_BASE_POINT_SIZE = 12.0
+    CARD_NOTE_MIN_POINT_SIZE = 10.0
+    CARD_NOTE_MAX_POINT_SIZE = 48.0
+    CARD_TITLE_BASE_POINT_SIZE = 17.0
+    CARD_TITLE_MIN_POINT_SIZE = 14.0
+    CARD_TITLE_MAX_POINT_SIZE = 72.0
+    CARD_ACTION_BASE_POINT_SIZE = 16.4
+    CARD_ACTION_MIN_POINT_SIZE = 13.0
+    CARD_ACTION_MAX_POINT_SIZE = 56.0
+    CARD_TARGET_BASE_POINT_SIZE = 23.0
+    CARD_TARGET_MIN_POINT_SIZE = 18.0
+    CARD_TARGET_MAX_POINT_SIZE = 84.0
+    CARD_PARAMETER_BASE_POINT_SIZE = 13.0
+    CARD_PARAMETER_MIN_POINT_SIZE = 11.0
+    CARD_PARAMETER_MAX_POINT_SIZE = 44.0
+    TITLE_SCALE_FLOOR = 0.18
+    SUMMARY_SCALE_FLOOR = 0.18
+    DRAWFRAME_TITLE_SCALE_FLOOR = 0.2
+    CARD_TEXT_SCALE_FLOOR = 0.18
 
     def __init__(self, schema: EditorSchema, controller, node, inline_width: int = 340) -> None:
         super().__init__()
@@ -169,6 +188,9 @@ class NodeItem(QGraphicsObject):
         self.form = NodeFormWidget(schema, inline=True)
         self.form.fieldCommitted.connect(self._commit_field)
         self.proxy.setWidget(self.form)
+        self._card_editor_proxy: QGraphicsProxyWidget | None = None
+        self._card_editor_key: str | None = None
+        self._selection_drag_targets: set[str] = set()
         self.update_node(node)
         self.setPos(node.ui_position["x"], node.ui_position["y"])
 
@@ -261,6 +283,21 @@ class NodeItem(QGraphicsObject):
                 return field_key
         return None
 
+    def _card_rect_for_field(self, field_key: str) -> QRectF | None:
+        return {
+            "tips": self._card_layout.get("note"),
+            "draw_able_name": self._card_layout.get("draw"),
+            "action_trigger": self._card_layout.get("action"),
+            "action_trigger_active": self._card_layout.get("target_idle"),
+            "parameter": self._card_layout.get("parameter"),
+        }.get(field_key)
+
+    def _schema_field(self, key: str):
+        definition = self.schema.nodes.get(self.node.type)
+        if not definition:
+            return None
+        return next((field for field in definition.fields if field.key == key), None)
+
     def pin_hit(self, scene_pos: QPointF) -> str | None:
         if not self._supports_connections():
             return None
@@ -279,6 +316,8 @@ class NodeItem(QGraphicsObject):
         definition = self.schema.nodes[node.type]
         view = self._canvas_view()
         self._display_mode = view.node_display_mode(node.uuid) if view else ("card" if self._is_function_node() else "detail")
+        if not self._uses_compact_card() and self._card_editor_proxy:
+            self._discard_card_field_editor()
         compact_mode = False
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, not node.locked)
         form_mode = "advanced" if self._display_mode == "detail" else self.controller.preferences.global_mode
@@ -375,9 +414,7 @@ class NodeItem(QGraphicsObject):
         canvas_top = title_height + 16.0
         inner_width = width - outer_margin * 2.0
         note_text = self._card_field_text("tips") or "empty"
-        note_font = QFont(self.form.font())
-        note_font.setBold(True)
-        note_font.setPointSizeF(11.0)
+        note_font = self._compact_note_font()
         note_metrics = QFontMetrics(note_font)
         note_width = min(max(132.0, float(note_metrics.horizontalAdvance(note_text) + 26)), inner_width * 0.58)
         frame_rect = QRectF(outer_margin, canvas_top, inner_width, self.CARD_BASE_HEIGHT - 26.0)
@@ -440,16 +477,16 @@ class NodeItem(QGraphicsObject):
 
     def _node_shell_colors(self) -> tuple[QColor, QColor, QColor, QColor, QColor]:
         body_seed, border_seed, text_color = self._resolved_theme_colors()
-        slate_base = QColor("#101722")
-        panel_base = QColor("#152232")
-        accent = self._mix_colors(QColor(border_seed), QColor("#d7e7ff"), 0.18)
+        slate_base = QColor("#0f141b")
+        panel_base = QColor("#151b24")
+        accent = self._mix_colors(QColor(border_seed), QColor("#ffffff"), 0.1)
         accent.setAlpha(236)
-        body_color = self._mix_colors(slate_base, QColor(body_seed), 0.42)
-        body_color = self._mix_colors(body_color, panel_base, 0.52)
+        body_color = self._mix_colors(slate_base, QColor(body_seed), 0.48)
+        body_color = self._mix_colors(body_color, panel_base, 0.58)
         body_color.setAlpha(246)
-        header_color = self._mix_colors(body_color, accent, 0.28)
+        header_color = self._mix_colors(body_color, accent, 0.24)
         header_color.setAlpha(250)
-        border_color = self._mix_colors(accent, QColor("#eff6ff"), 0.12)
+        border_color = self._mix_colors(accent, QColor("#f5f7fa"), 0.1)
         border_color.setAlpha(232)
         return body_color, header_color, border_color, accent, text_color
 
@@ -477,6 +514,45 @@ class NodeItem(QGraphicsObject):
         text_color = QColor(text_color)
         text_color.setAlphaF(text_alpha / 100.0)
         return body_color, header_color, border_color, accent_bar, text_color
+
+    def _compact_card_palette(self) -> dict[str, QColor]:
+        body_color, header_color, border_color, accent, text_color = self._node_shell_colors()
+        note_fill = self._mix_colors(QColor("#1e2c25"), accent, 0.42)
+        note_fill.setAlpha(240)
+        note_text = self._mix_colors(QColor("#eefbf4"), QColor(text_color), 0.14)
+        draw_fill = self._mix_colors(header_color, accent, 0.56)
+        draw_fill.setAlpha(244)
+        draw_border = self._mix_colors(accent, QColor("#ffffff"), 0.12)
+        action_border = self._mix_colors(accent, QColor("#ffffff"), 0.16)
+        action_fill = self._mix_colors(QColor("#fbf7ff"), accent, 0.12)
+        action_text = self._mix_colors(QColor("#1e1728"), QColor(text_color), 0.16)
+        target_fill = self._mix_colors(QColor("#f5f7fa"), accent, 0.1)
+        target_border = self._mix_colors(QColor("#ffffff"), accent, 0.24)
+        parameter_fill = self._mix_colors(QColor("#fff3df"), accent, 0.12)
+        parameter_border = self._mix_colors(QColor("#ffbc33"), accent, 0.3)
+        parameter_text = self._mix_colors(QColor("#2d261d"), QColor(text_color), 0.12)
+        frame_fill = self._mix_colors(body_color, QColor("#07080a"), 0.08)
+        frame_fill.setAlpha(232)
+        frame_inner_fill = self._mix_colors(header_color, QColor("#ffffff"), 0.06)
+        frame_inner_fill.setAlpha(244)
+        return {
+            "frame_fill": frame_fill,
+            "frame_inner_fill": frame_inner_fill,
+            "note_fill": note_fill,
+            "note_text": note_text,
+            "draw_fill": draw_fill,
+            "draw_border": draw_border,
+            "draw_text": QColor("#ffffff"),
+            "action_fill": action_fill,
+            "action_border": action_border,
+            "action_text": action_text,
+            "target_fill": target_fill,
+            "target_border": target_border,
+            "target_text": QColor("#1f2530"),
+            "parameter_fill": parameter_fill,
+            "parameter_border": parameter_border,
+            "parameter_text": parameter_text,
+        }
 
     def _paint_lock_badge(self, painter: QPainter) -> None:
         lock_fill = QColor("#20242c" if self.node.locked else "#14181f")
@@ -530,34 +606,27 @@ class NodeItem(QGraphicsObject):
             target_rect = self._card_layout["target_idle"]
             parameter_rect = self._card_layout["parameter"]
 
-            frame_fill = QColor(body_color).lighter(260)
-            frame_fill.setAlpha(220)
-            frame_inner_fill = QColor(frame_fill).lighter(104)
-            frame_inner_fill.setAlpha(236)
-            painter.setPen(QPen(border, 3.0))
-            painter.setBrush(frame_fill)
+            palette = self._compact_card_palette()
+            painter.setPen(QPen(border, 2.4))
+            painter.setBrush(palette["frame_fill"])
             painter.drawRoundedRect(frame_rect, 6, 6)
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(frame_inner_fill)
+            painter.setBrush(palette["frame_inner_fill"])
             painter.drawRoundedRect(frame_rect.adjusted(8, 8, -8, -8), 4, 4)
 
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor("#69b070"))
+            painter.setBrush(palette["note_fill"])
             painter.drawRoundedRect(note_rect, 6, 6)
-            painter.setPen(QColor("#ffffff"))
-            note_font = QFont(self.form.font())
-            note_font.setBold(True)
-            note_font.setPointSizeF(11.0)
-            painter.setFont(note_font)
+            painter.setPen(palette["note_text"])
+            painter.setFont(self._compact_note_font())
             painter.drawText(note_rect.adjusted(10, 0, -10, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self._card_field_text("tips") or "empty")
 
-            painter.setPen(QPen(QColor("#3f6fdc"), 2.0))
-            painter.setBrush(QColor("#4f7df0"))
+            painter.setPen(QPen(palette["draw_border"], 2.0))
+            painter.setBrush(palette["draw_fill"])
             painter.drawRoundedRect(draw_rect, 14, 14)
-            block_font = QFont(self.form.font())
-            block_font.setPointSizeF(16.0)
+            block_font = self._compact_title_font()
             painter.setFont(block_font)
-            painter.setPen(QColor("#ffffff"))
+            painter.setPen(palette["draw_text"])
             painter.drawText(draw_rect.adjusted(12, 0, -12, 0), Qt.AlignmentFlag.AlignCenter, self._card_field_text("draw_able_name") or "empty")
 
             arrow_path = QPainterPath()
@@ -569,26 +638,25 @@ class NodeItem(QGraphicsObject):
             arrow_path.lineTo(action_rect.left() + action_rect.width() - 62.0, action_rect.bottom() - 16.0)
             arrow_path.lineTo(action_rect.left(), action_rect.bottom() - 16.0)
             arrow_path.closeSubpath()
-            painter.setPen(QPen(QColor("#8c5bff"), 3.0))
-            painter.setBrush(QColor("#f3e9ff"))
+            painter.setPen(QPen(palette["action_border"], 2.6))
+            painter.setBrush(palette["action_fill"])
             painter.drawPath(arrow_path)
-            painter.setPen(QColor("#262132"))
+            painter.setFont(self._compact_action_font())
+            painter.setPen(palette["action_text"])
             painter.drawText(action_rect.adjusted(18, 0, -40, 0), Qt.AlignmentFlag.AlignCenter, self._card_field_text("action_trigger") or "empty")
 
-            painter.setPen(QPen(QColor("#bfc2cb"), 3.0))
-            painter.setBrush(QColor("#efefef"))
+            painter.setPen(QPen(palette["target_border"], 2.6))
+            painter.setBrush(palette["target_fill"])
             painter.drawRoundedRect(target_rect, target_rect.height() / 2.0, target_rect.height() / 2.0)
-            target_font = QFont(self.form.font())
-            target_font.setPointSizeF(22.0)
-            painter.setFont(target_font)
-            painter.setPen(QColor("#262932"))
+            painter.setFont(self._compact_target_font())
+            painter.setPen(palette["target_text"])
             painter.drawText(target_rect, Qt.AlignmentFlag.AlignCenter, self._card_field_text("action_trigger_active") or "empty")
 
-            painter.setPen(QPen(QColor("#ffa338"), 3.0))
-            painter.setBrush(QColor("#fff0de"))
+            painter.setPen(QPen(palette["parameter_border"], 2.6))
+            painter.setBrush(palette["parameter_fill"])
             painter.drawRoundedRect(parameter_rect, parameter_rect.height() / 2.0, parameter_rect.height() / 2.0)
-            painter.setFont(block_font)
-            painter.setPen(QColor("#2d2f37"))
+            painter.setFont(self._compact_parameter_font())
+            painter.setPen(palette["parameter_text"])
             painter.drawText(parameter_rect, Qt.AlignmentFlag.AlignCenter, self._card_field_text("parameter") or "empty")
 
             self._paint_connection_pins(painter, accent, border)
@@ -708,9 +776,7 @@ class NodeItem(QGraphicsObject):
             return
         field_key = self._card_field_key_at(event.pos())
         if field_key:
-            view = self._canvas_view()
-            if view:
-                view.focus_node_field(self.node.uuid, field_key)
+            self._begin_card_field_edit(field_key)
             event.accept()
             return
         if self._proxy_contains(event.pos()):
@@ -723,6 +789,12 @@ class NodeItem(QGraphicsObject):
             view = self._canvas_view()
             if view:
                 view._set_interaction_busy("drag", True)
+                selected_ids = [node_uuid for node_uuid in view.selected_node_uuids() if node_uuid != self.node.uuid]
+                self._selection_drag_targets = {
+                    node_uuid
+                    for node_uuid in selected_ids
+                    if node_uuid in view.node_items and not view.node_items[node_uuid].node.locked
+                }
                 if self._is_draw_frame():
                     self._group_drag_targets = view.frame_drag_members(self.node.uuid)
                     self._group_drag_origin = QPointF(self._drag_start_pos)
@@ -772,22 +844,33 @@ class NodeItem(QGraphicsObject):
         new_pos = (logical_current.x(), logical_current.y())
         if self._group_drag_targets:
             positions = {self.node.uuid: new_pos}
-            old_positions = {self.node.uuid: old_pos}
             for node_uuid, origin in self._group_drag_targets.items():
                 if not view:
                     continue
                 item = view.node_items.get(node_uuid)
                 if not item:
                     continue
-                logical_origin = view.logical_position_for_node(node_uuid)
                 logical_position = view.logical_position_from_display(node_uuid, item.pos())
-                old_positions[node_uuid] = (logical_origin.x(), logical_origin.y())
                 positions[node_uuid] = (logical_position.x(), logical_position.y())
             self._group_drag_targets.clear()
             self._group_drag_active = False
-            if old_positions != positions:
-                self.controller.move_nodes(positions, label="移动画框")
+            self._selection_drag_targets.clear()
+            if len(positions) > 1 or positions.get(self.node.uuid) != old_pos:
+                self.controller.move_nodes(positions, label="Move frame with nodes")
             return
+        if view and self._selection_drag_targets:
+            positions = {self.node.uuid: new_pos}
+            for node_uuid in self._selection_drag_targets:
+                item = view.node_items.get(node_uuid)
+                if not item:
+                    continue
+                logical_position = view.logical_position_from_display(node_uuid, item.pos())
+                positions[node_uuid] = (logical_position.x(), logical_position.y())
+            self._selection_drag_targets.clear()
+            if len(positions) > 1 or positions.get(self.node.uuid) != old_pos:
+                self.controller.move_nodes(positions, label="Move selected nodes")
+            return
+        self._selection_drag_targets.clear()
         self.controller.move_node(self.node.uuid, old_pos, new_pos)
 
     def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value: Any):
@@ -817,7 +900,7 @@ class NodeItem(QGraphicsObject):
 
     def _view_scale(self) -> float:
         if self.scene() and self.scene().views():
-            return max(0.06, float(self.scene().views()[0].transform().m11()))
+            return max(0.03, float(self.scene().views()[0].transform().m11()))
         return 1.0
 
     def refresh_view_scale(self) -> None:
@@ -825,16 +908,30 @@ class NodeItem(QGraphicsObject):
 
     def _text_scale_floor(self, base_width: float, compact_mode: bool) -> float:
         del base_width
-        return 0.68 if compact_mode else 0.62
+        return 0.2 if compact_mode else 0.24
 
-    def _scale_compensated_point_size(self, base_size: float, min_size: float, max_size: float) -> float:
-        compensation_scale = max(self._view_scale(), self._font_scale_floor)
+    def _scale_compensated_point_size(
+        self,
+        base_size: float,
+        min_size: float,
+        max_size: float,
+        *,
+        scale_floor: float | None = None,
+    ) -> float:
+        compensation_scale = max(self._view_scale(), scale_floor if scale_floor is not None else self._font_scale_floor)
         return min(max_size, max(min_size, base_size / compensation_scale))
 
     def _title_font(self) -> QFont:
         title_font = QFont(self.form.font())
         title_font.setBold(True)
-        title_font.setPointSizeF(self.TITLE_BASE_POINT_SIZE)
+        title_font.setPointSizeF(
+            self._scale_compensated_point_size(
+                self.TITLE_BASE_POINT_SIZE,
+                self.TITLE_MIN_POINT_SIZE,
+                self.TITLE_MAX_POINT_SIZE,
+                scale_floor=self.TITLE_SCALE_FLOOR,
+            )
+        )
         return title_font
 
     def _summary_font(self) -> QFont:
@@ -845,6 +942,7 @@ class NodeItem(QGraphicsObject):
                 self.SUMMARY_BASE_POINT_SIZE,
                 self.SUMMARY_MIN_POINT_SIZE,
                 self.SUMMARY_MAX_POINT_SIZE,
+                scale_floor=self.SUMMARY_SCALE_FLOOR,
             )
         )
         return summary_font
@@ -857,9 +955,148 @@ class NodeItem(QGraphicsObject):
                 self.DRAWFRAME_TITLE_BASE_POINT_SIZE,
                 self.DRAWFRAME_TITLE_MIN_POINT_SIZE,
                 self.DRAWFRAME_TITLE_MAX_POINT_SIZE,
+                scale_floor=self.DRAWFRAME_TITLE_SCALE_FLOOR,
             )
         )
         return title_font
+
+    def _compact_note_font(self) -> QFont:
+        font = QFont(self.form.font())
+        font.setBold(True)
+        font.setPointSizeF(
+            self._scale_compensated_point_size(
+                self.CARD_NOTE_BASE_POINT_SIZE,
+                self.CARD_NOTE_MIN_POINT_SIZE,
+                self.CARD_NOTE_MAX_POINT_SIZE,
+                scale_floor=self.CARD_TEXT_SCALE_FLOOR,
+            )
+        )
+        return font
+
+    def _compact_title_font(self) -> QFont:
+        font = QFont(self.form.font())
+        font.setBold(True)
+        font.setPointSizeF(
+            self._scale_compensated_point_size(
+                self.CARD_TITLE_BASE_POINT_SIZE,
+                self.CARD_TITLE_MIN_POINT_SIZE,
+                self.CARD_TITLE_MAX_POINT_SIZE,
+                scale_floor=self.CARD_TEXT_SCALE_FLOOR,
+            )
+        )
+        return font
+
+    def _compact_action_font(self) -> QFont:
+        font = QFont(self.form.font())
+        font.setBold(True)
+        font.setPointSizeF(
+            self._scale_compensated_point_size(
+                self.CARD_ACTION_BASE_POINT_SIZE,
+                self.CARD_ACTION_MIN_POINT_SIZE,
+                self.CARD_ACTION_MAX_POINT_SIZE,
+                scale_floor=self.CARD_TEXT_SCALE_FLOOR,
+            )
+        )
+        return font
+
+    def _compact_target_font(self) -> QFont:
+        font = QFont(self.form.font())
+        font.setBold(True)
+        font.setPointSizeF(
+            self._scale_compensated_point_size(
+                self.CARD_TARGET_BASE_POINT_SIZE,
+                self.CARD_TARGET_MIN_POINT_SIZE,
+                self.CARD_TARGET_MAX_POINT_SIZE,
+                scale_floor=self.CARD_TEXT_SCALE_FLOOR,
+            )
+        )
+        return font
+
+    def _compact_parameter_font(self) -> QFont:
+        font = QFont(self.form.font())
+        font.setBold(True)
+        font.setPointSizeF(
+            self._scale_compensated_point_size(
+                self.CARD_PARAMETER_BASE_POINT_SIZE,
+                self.CARD_PARAMETER_MIN_POINT_SIZE,
+                self.CARD_PARAMETER_MAX_POINT_SIZE,
+                scale_floor=self.CARD_TEXT_SCALE_FLOOR,
+            )
+        )
+        return font
+
+    def has_card_field_editor(self) -> bool:
+        return self._card_editor_proxy is not None
+
+    def _discard_card_field_editor(self) -> None:
+        proxy = self._card_editor_proxy
+        self._card_editor_proxy = None
+        self._card_editor_key = None
+        if not proxy:
+            return
+        widget = proxy.widget()
+        if widget is not None:
+            widget.blockSignals(True)
+            proxy.setWidget(None)
+            widget.deleteLater()
+        if self.scene():
+            self.scene().removeItem(proxy)
+        proxy.deleteLater()
+
+    def _begin_card_field_edit(self, field_key: str) -> bool:
+        if self.node.locked or not self._uses_compact_card():
+            return False
+        field_rect = self._card_rect_for_field(field_key)
+        if field_rect is None:
+            return False
+        self.setSelected(True)
+        self.controller.set_selected_node(self.node.uuid)
+        if self._card_editor_key == field_key and self._card_editor_proxy:
+            widget = self._card_editor_proxy.widget()
+            if widget is not None:
+                widget.setFocus(Qt.FocusReason.MouseFocusReason)
+                if hasattr(widget, "selectAll"):
+                    widget.selectAll()
+            return True
+        self._discard_card_field_editor()
+        editor = NumericLineEdit("nullable_int") if field_key == "action_trigger_active" else CommitLineEdit()
+        schema_field = self._schema_field(field_key)
+        if schema_field and schema_field.placeholder:
+            editor.setPlaceholderText(schema_field.placeholder)
+        editor.setText(self._card_field_text(field_key))
+        editor.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        editor.setStyleSheet(
+            "QLineEdit {"
+            " background: rgba(9, 11, 16, 0.94);"
+            " color: #f9f9f9;"
+            " border: 1px solid rgba(255, 255, 255, 0.18);"
+            " border-radius: 10px;"
+            " padding: 4px 10px;"
+            " font-weight: 600;"
+            "}"
+            "QLineEdit:focus {"
+            " border: 2px solid #55b3ff;"
+            "}"
+        )
+        proxy = QGraphicsProxyWidget(self)
+        proxy.setZValue(24)
+        proxy.setWidget(editor)
+        inset = 8.0 if field_key != "tips" else 4.0
+        edit_rect = field_rect.adjusted(inset, 4.0, -inset, -4.0)
+        proxy.setPos(edit_rect.topLeft())
+        editor.setFixedSize(max(120, int(edit_rect.width())), max(28, int(edit_rect.height())))
+        editor.committed.connect(lambda value, key=field_key, target=editor: self._commit_card_field_edit(key, value, target))
+        self._card_editor_proxy = proxy
+        self._card_editor_key = field_key
+        editor.setFocus(Qt.FocusReason.MouseFocusReason)
+        editor.selectAll()
+        return True
+
+    def _commit_card_field_edit(self, field_key: str, value: Any, editor) -> None:
+        if not self._card_editor_proxy or self._card_editor_proxy.widget() is not editor:
+            return
+        self._discard_card_field_editor()
+        self.controller.update_field(self.node.uuid, field_key, value, "simple")
 
     @staticmethod
     def _summary_text_color(color: str) -> QColor:
@@ -1217,6 +1454,8 @@ class NodeCanvasView(QGraphicsView):
                 if node_item._proxy_contains(local_pos):
                     super().mouseDoubleClickEvent(event)
                     return
+                if node_item.has_card_field_editor():
+                    node_item._discard_card_field_editor()
                 self.toggle_node_display_mode(node_item.node.uuid)
                 event.accept()
                 return

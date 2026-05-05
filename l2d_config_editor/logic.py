@@ -115,12 +115,12 @@ def _valid_color_or_none(value: Any) -> str | None:
 def default_node_theme(schema: EditorSchema, node: NodeRecord) -> dict[str, str]:
     definition = schema.nodes[node.type]
     palette_by_type = {
-        "Initial": {"body": "#1d3a34", "border": "#5bd3b3", "text": "#ecfffb"},
-        "TouchIdle": {"body": "#1a3550", "border": "#74b9ff", "text": "#f3f8ff"},
-        "TouchDrag": {"body": "#33264f", "border": "#b59cff", "text": "#f7f1ff"},
-        "ParameterTrigger": {"body": "#4a3319", "border": "#ffb766", "text": "#fff8ef"},
-        "DrawFrame": {"body": "#d8e4f2", "border": "#7aa2d6", "text": "#18324d"},
-        "Comment": {"body": "#6c5a38", "border": "#e0b66b", "text": "#fff8eb"},
+        "Initial": {"body": "#13251f", "border": "#5fc992", "text": "#f3fcf7"},
+        "TouchIdle": {"body": "#12283a", "border": "#55b3ff", "text": "#f8fbff"},
+        "TouchDrag": {"body": "#2a1f24", "border": "#ff6363", "text": "#fff6f7"},
+        "ParameterTrigger": {"body": "#332714", "border": "#ffbc33", "text": "#fff8ef"},
+        "DrawFrame": {"body": "#12191f", "border": "#7aa6c2", "text": "#d9e8f3"},
+        "Comment": {"body": "#2f2618", "border": "#e2b86a", "text": "#fff8eb"},
     }
     palette = palette_by_type.get(node.type)
     if node.type == "Comment":

@@ -833,6 +833,38 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
             window.close()
 
+    def test_card_field_inline_edit_keeps_compact_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            window.controller.set_global_mode("simple")
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            item = window.canvas.node_items[created]
+
+            self.assertEqual("card", window.canvas.node_display_mode(created))
+            self.assertFalse(item.proxy.isVisible())
+            self.assertTrue(item._begin_card_field_edit("parameter"))
+            self.app.processEvents()
+
+            self.assertEqual("card", window.canvas.node_display_mode(created))
+            self.assertFalse(item.proxy.isVisible())
+            self.assertIsNotNone(item._card_editor_proxy)
+
+            editor = item._card_editor_proxy.widget()
+            editor.setText("Paramtouch_idle99")
+            item._commit_card_field_edit("parameter", editor.text(), editor)
+            self.app.processEvents()
+
+            self.assertEqual("Paramtouch_idle99", item._card_field_text("parameter"))
+            self.assertEqual("card", window.canvas.node_display_mode(created))
+            self.assertFalse(item.proxy.isVisible())
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
     def test_inline_summary_order_and_zoom_out_keeps_card_mode(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
@@ -1313,7 +1345,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
-    def test_zooming_out_keeps_title_stable_but_scales_summary_for_visibility(self) -> None:
+    def test_zooming_out_compensates_title_and_summary_fonts_for_visibility(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
@@ -1357,14 +1389,14 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             shrunk_title_size = title_screen_size()
             shrunk_summary_size = summary_screen_size()
 
-            self.assertAlmostEqual(stable_title_point_size, baseline_title_point_size, delta=0.01)
+            self.assertGreater(stable_title_point_size, baseline_title_point_size)
             self.assertGreater(stable_summary_point_size, baseline_summary_point_size)
-            self.assertAlmostEqual(shrunk_title_point_size, baseline_title_point_size, delta=0.01)
+            self.assertGreater(shrunk_title_point_size, stable_title_point_size)
             self.assertGreaterEqual(shrunk_summary_point_size, stable_summary_point_size)
-            self.assertLess(stable_title_size, baseline_title_size)
-            self.assertLess(stable_summary_size, baseline_summary_size)
-            self.assertLess(shrunk_title_size, stable_title_size)
-            self.assertLess(shrunk_summary_size, stable_summary_size)
+            self.assertAlmostEqual(stable_title_size, baseline_title_size, delta=1.0)
+            self.assertAlmostEqual(stable_summary_size, baseline_summary_size, delta=1.0)
+            self.assertAlmostEqual(shrunk_title_size, baseline_title_size, delta=1.6)
+            self.assertAlmostEqual(shrunk_summary_size, baseline_summary_size, delta=1.6)
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
