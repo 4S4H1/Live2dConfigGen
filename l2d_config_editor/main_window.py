@@ -53,6 +53,7 @@ from .logic import (
     load_template_csv_rows,
     save_document,
 )
+from .perf_tools import PerformanceToolDialog
 from .widgets import (
     ColorFieldWidget,
     CommitComboBox,
@@ -445,6 +446,7 @@ class MainWindow(QMainWindow):
         self.delete_button = self.file_directory_dialog.delete_button
         self.trash_dialog: TrashDialog | None = None
         self.node_directory_dialog: NodeDirectoryDialog | None = None
+        self.performance_dialog: PerformanceToolDialog | None = None
         self._auto_save_timer = QTimer(self)
         self._auto_save_timer.setSingleShot(True)
         self._auto_save_timer.timeout.connect(self._run_auto_save)
@@ -986,6 +988,10 @@ class MainWindow(QMainWindow):
         template_create_action.triggered.connect(self._create_templates_from_csv_dialog)
         tools_menu.addAction(template_create_action)
         self._register_shortcut_action("template_create", template_create_action, QKeySequence())
+        performance_action = QAction("性能测试工具", self)
+        performance_action.triggered.connect(self._open_performance_tool)
+        tools_menu.addAction(performance_action)
+        self._register_shortcut_action("performance_tool", performance_action, QKeySequence("Ctrl+Shift+P"))
 
         reload_schema_action = QAction("\u91cd\u8f7d\u5b57\u6bb5\u914d\u7f6e", self)
         reload_schema_action.triggered.connect(self._reload_schema)
@@ -1684,6 +1690,14 @@ class MainWindow(QMainWindow):
         self.csv_dialog.show()
         self.csv_dialog.raise_()
         self.csv_dialog.activateWindow()
+
+    def _open_performance_tool(self) -> None:
+        if self.performance_dialog is None:
+            self.performance_dialog = PerformanceToolDialog(self, self)
+        self.performance_dialog.refresh_display()
+        self.performance_dialog.show()
+        self.performance_dialog.raise_()
+        self.performance_dialog.activateWindow()
 
     def _show_export_csv_dialog(self) -> None:
         files = [(relative_path, self._read_file_display_meta(self.workdir / relative_path)[1]) for relative_path in self.controller.file_list()]

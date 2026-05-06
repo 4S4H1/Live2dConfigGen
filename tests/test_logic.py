@@ -1472,7 +1472,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
-    def test_zooming_out_separates_close_nodes_without_mutating_logical_positions(self) -> None:
+    def test_zooming_out_does_not_reposition_close_nodes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
@@ -1494,8 +1494,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertEqual(first_logical_x, window.controller.get_node(first_uuid).ui_position["x"])
             self.assertEqual(second_logical_x, window.controller.get_node(second_uuid).ui_position["x"])
             self.assertEqual(first_logical_x, first_item.pos().x())
-            self.assertGreater(second_item.pos().x(), second_logical_x)
-            self.assertFalse(first_item.sceneBoundingRect().intersects(second_item.sceneBoundingRect()))
+            self.assertEqual(second_logical_x, second_item.pos().x())
             window._mark_saved_checkpoint(saved=True)
         window.close()
 

@@ -20,11 +20,16 @@ from PyQt6.QtWidgets import (
 )
 
 from .logic import DRAWFRAME_DEFAULT_SIZE, default_node_theme, display_value_for_field, function_node_types, node_title
+from .perf_tools import get_performance_recorder
 from .schema import EditorSchema
 from .widgets import CommitLineEdit, NodeFormWidget, NumericLineEdit
 
+performance_recorder = get_performance_recorder()
+
 
 class GridScene(QGraphicsScene):
+    GRID_TARGET_PIXEL_SPACING = 10.0
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setSceneRect(-1_000_000, -1_000_000, 2_000_000, 2_000_000)
@@ -34,27 +39,49 @@ class GridScene(QGraphicsScene):
         self.bottom_right_hint = "按住中键平移 / 滚轮缩放 / Delete 删除"
 
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
-        painter.fillRect(rect, QColor("#15181e"))
-        left = int(rect.left()) - (int(rect.left()) % self.minor_grid)
-        top = int(rect.top()) - (int(rect.top()) % self.minor_grid)
+        with performance_recorder.measure(
+            "canvas.draw_background",
+            "canvas",
+            {"width": round(rect.width(), 1), "height": round(rect.height(), 1)},
+        ):
+            painter.fillRect(rect, QColor("#15181e"))
+            view = self.views()[0] if self.views() else None
+            scale = max(0.001, float(view.transform().m11())) if view else 1.0
 
-        minor_lines = []
-        major_lines = []
-        x = left
-        while x < int(rect.right()):
-            target = major_lines if x % self.major_grid == 0 else minor_lines
-            target.append(QLineF(x, rect.top(), x, rect.bottom()))
-            x += self.minor_grid
-        y = top
-        while y < int(rect.bottom()):
-            target = major_lines if y % self.major_grid == 0 else minor_lines
-            target.append(QLineF(rect.left(), y, rect.right(), y))
-            y += self.minor_grid
+            minor_step = self.minor_grid
+            if minor_step * scale < self.GRID_TARGET_PIXEL_SPACING:
+                stride = max(1, math.ceil(self.GRID_TARGET_PIXEL_SPACING / max(minor_step * scale, 0.001)))
+                minor_step *= stride
 
-        painter.setPen(QPen(QColor("#20242c"), 1))
-        painter.drawLines(minor_lines)
-        painter.setPen(QPen(QColor("#2a3039"), 1))
-        painter.drawLines(major_lines)
+            major_step = self.major_grid
+            if major_step * scale < self.GRID_TARGET_PIXEL_SPACING:
+                stride = max(1, math.ceil(self.GRID_TARGET_PIXEL_SPACING / max(major_step * scale, 0.001)))
+                major_step *= stride
+
+            left = int(rect.left()) - (int(rect.left()) % minor_step)
+            top = int(rect.top()) - (int(rect.top()) % minor_step)
+            right = int(rect.right())
+            bottom = int(rect.bottom())
+
+            minor_lines = []
+            major_lines = []
+            x = left
+            while x < right:
+                target = major_lines if x % major_step == 0 else minor_lines
+                target.append(QLineF(x, rect.top(), x, rect.bottom()))
+                x += minor_step
+            y = top
+            while y < bottom:
+                target = major_lines if y % major_step == 0 else minor_lines
+                target.append(QLineF(rect.left(), y, rect.right(), y))
+                y += minor_step
+
+            if minor_lines:
+                painter.setPen(QPen(QColor("#20242c"), 1))
+                painter.drawLines(minor_lines)
+            painter.setPen(QPen(QColor("#2a3039"), 1))
+            if major_lines:
+                painter.drawLines(major_lines)
 
     def drawForeground(self, painter: QPainter, rect: QRectF) -> None:
         del rect
@@ -934,10 +961,7 @@ class NodeItem(QGraphicsObject):
             self.setCursor(Qt.CursorShape.OpenHandCursor)
         current = self.pos()
         old_pos = (self._drag_start_logical_pos.x(), self._drag_start_logical_pos.y())
-        if view:
-            logical_current = view.logical_position_from_display(self.node.uuid, current)
-        else:
-            logical_current = QPointF(current)
+        logical_current = QPointF(current)
         new_pos = (logical_current.x(), logical_current.y())
         if self._group_drag_targets:
             positions = {self.node.uuid: new_pos}
@@ -947,7 +971,7 @@ class NodeItem(QGraphicsObject):
                 item = view.node_items.get(node_uuid)
                 if not item:
                     continue
-                logical_position = view.logical_position_from_display(node_uuid, item.pos())
+                logical_position = QPointF(item.pos())
                 positions[node_uuid] = (logical_position.x(), logical_position.y())
             self._group_drag_targets.clear()
             self._group_drag_active = False
@@ -961,7 +985,7 @@ class NodeItem(QGraphicsObject):
                 item = view.node_items.get(node_uuid)
                 if not item:
                     continue
-                logical_position = view.logical_position_from_display(node_uuid, item.pos())
+                logical_position = QPointF(item.pos())
                 positions[node_uuid] = (logical_position.x(), logical_position.y())
             self._selection_drag_targets.clear()
             if len(positions) > 1 or positions.get(self.node.uuid) != old_pos:
@@ -1258,9 +1282,6 @@ class NodeCanvasView(QGraphicsView):
     selectionSummaryChanged = pyqtSignal(object, object)
     interactionBusyChanged = pyqtSignal(bool)
     THUMBNAIL_SCALE_THRESHOLD = 0.45
-    DISPLAY_RELAYOUT_THRESHOLD = 0.45
-    DISPLAY_RELAYOUT_ROW_BAND = 150.0
-    DISPLAY_RELAYOUT_GAP_PIXELS = 44.0
 
     def __init__(self, schema: EditorSchema, controller, parent=None) -> None:
         super().__init__(parent)
@@ -1280,7 +1301,6 @@ class NodeCanvasView(QGraphicsView):
         self.zoom_wheel_modifier = "ctrl"
         self.horizontal_wheel_modifier = "alt_shift"
         self.expanded_node_uuids: set[str] = set()
-        self._display_position_overrides: dict[str, QPointF] = {}
         self._warnings_by_node: dict[str, list[str]] = {}
         self._connecting_from: str | None = None
         self._connecting_moved = False
@@ -1321,24 +1341,29 @@ class NodeCanvasView(QGraphicsView):
         self.rebuild_scene()
 
     def rebuild_scene(self) -> None:
-        self.expanded_node_uuids.clear()
-        self._display_position_overrides.clear()
-        for item in list(self.connection_items.values()):
-            self.scene_ref.removeItem(item)
-        for item in list(self.node_items.values()):
-            self.scene_ref.removeItem(item)
-        self.connection_items.clear()
-        self.node_items.clear()
-        for node in self.controller.document.nodes:
-            self._create_item(node)
-        self._rebuild_connections()
-        self.resetTransform()
-        scale = self.controller.document.canvas_view.scale
-        if scale != 1.0:
-            self.scale(scale, scale)
-        self._refresh_scale_sensitive_nodes()
-        self.centerOn(self.controller.document.canvas_view.offset_x, self.controller.document.canvas_view.offset_y)
-        self._refresh_hint_overlay()
+        with performance_recorder.measure(
+            "canvas.rebuild_scene",
+            "canvas",
+            {"node_count": len(self.controller.document.nodes), "connection_count": len(self.controller.document.connections)},
+        ):
+            self.expanded_node_uuids.clear()
+            for item in list(self.connection_items.values()):
+                self.scene_ref.removeItem(item)
+            for item in list(self.node_items.values()):
+                self.scene_ref.removeItem(item)
+            self.connection_items.clear()
+            self.node_items.clear()
+            with performance_recorder.measure("canvas.create_node_items", "canvas", {"node_count": len(self.controller.document.nodes)}):
+                for node in self.controller.document.nodes:
+                    self._create_item(node)
+            self._rebuild_connections()
+            self.resetTransform()
+            scale = self.controller.document.canvas_view.scale
+            if scale != 1.0:
+                self.scale(scale, scale)
+            self._refresh_scale_sensitive_nodes()
+            self.centerOn(self.controller.document.canvas_view.offset_x, self.controller.document.canvas_view.offset_y)
+            self._refresh_hint_overlay()
 
     def _set_interaction_busy(self, flag: str, busy: bool) -> None:
         before = bool(self._interaction_flags)
@@ -1383,23 +1408,6 @@ class NodeCanvasView(QGraphicsView):
 
     def should_render_thumbnail_nodes(self) -> bool:
         return False
-
-    def logical_position_for_node(self, node_uuid: str) -> QPointF:
-        node = self.controller.get_node(node_uuid)
-        if not node:
-            return QPointF()
-        return QPointF(float(node.ui_position["x"]), float(node.ui_position["y"]))
-
-    def display_position_for_node(self, node_uuid: str) -> QPointF:
-        return QPointF(self._display_position_overrides.get(node_uuid, self.logical_position_for_node(node_uuid)))
-
-    def logical_position_from_display(self, node_uuid: str, display_pos: QPointF) -> QPointF:
-        logical_pos = self.logical_position_for_node(node_uuid)
-        display_origin = self.display_position_for_node(node_uuid)
-        return QPointF(
-            display_pos.x() - (display_origin.x() - logical_pos.x()),
-            display_pos.y() - (display_origin.y() - logical_pos.y()),
-        )
 
     def toggle_node_display_mode(self, node_uuid: str) -> None:
         node = self.controller.get_node(node_uuid)
@@ -1501,25 +1509,27 @@ class NodeCanvasView(QGraphicsView):
         if not delta:
             event.accept()
             return
-        self._set_interaction_busy("wheel", True)
-        self._wheel_busy_timer.start(180)
-        modifiers = event.modifiers()
-        if self._matches_wheel_modifier(self.zoom_wheel_modifier, modifiers):
-            factor = 1.22 ** (delta / 120.0)
-            current_scale = max(0.001, float(self.transform().m11()))
-            target_scale = current_scale * factor
-            if 0.03 <= target_scale <= 8.0:
-                self.scale(factor, factor)
-                self._refresh_scale_sensitive_nodes()
-                self._store_canvas_view()
-        else:
-            step = 60 if delta > 0 else -60
-            if self._matches_wheel_modifier(self.horizontal_wheel_modifier, modifiers):
-                self.horizontalScrollBar().setValue(int(self.horizontalScrollBar().value() - step))
+        mode = "zoom" if self._matches_wheel_modifier(self.zoom_wheel_modifier, event.modifiers()) else "scroll"
+        with performance_recorder.measure("canvas.wheel_event", "canvas", {"mode": mode, "delta": delta}):
+            self._set_interaction_busy("wheel", True)
+            self._wheel_busy_timer.start(180)
+            modifiers = event.modifiers()
+            if self._matches_wheel_modifier(self.zoom_wheel_modifier, modifiers):
+                factor = 1.22 ** (delta / 120.0)
+                current_scale = max(0.001, float(self.transform().m11()))
+                target_scale = current_scale * factor
+                if 0.03 <= target_scale <= 8.0:
+                    self.scale(factor, factor)
+                    self._refresh_scale_sensitive_nodes()
+                    self._store_canvas_view()
             else:
-                self.verticalScrollBar().setValue(int(self.verticalScrollBar().value() - step))
-            self._store_canvas_view()
-        event.accept()
+                step = 60 if delta > 0 else -60
+                if self._matches_wheel_modifier(self.horizontal_wheel_modifier, modifiers):
+                    self.horizontalScrollBar().setValue(int(self.horizontalScrollBar().value() - step))
+                else:
+                    self.verticalScrollBar().setValue(int(self.verticalScrollBar().value() - step))
+                self._store_canvas_view()
+            event.accept()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.MiddleButton:
@@ -1656,8 +1666,6 @@ class NodeCanvasView(QGraphicsView):
             return
         if node_uuid not in self.node_items:
             self._create_item(node)
-            self._recompute_display_position_overrides()
-            self._apply_display_position_overrides()
             self._update_connections_for_node(node_uuid)
             return
         self._update_node_item(node_uuid)
@@ -1667,14 +1675,12 @@ class NodeCanvasView(QGraphicsView):
         item = self.node_items.get(node_uuid)
         if not node or not item:
             return
-        item.update_node(node)
-        item.set_warnings(self._warnings_by_node.get(node_uuid, []))
-        self._recompute_display_position_overrides()
-        self._apply_display_position_overrides()
+        with performance_recorder.measure("canvas.update_node_item", "canvas", {"node_type": node.type}):
+            item.update_node(node)
+            item.set_warnings(self._warnings_by_node.get(node_uuid, []))
 
     def _remove_node_item(self, node_uuid: str) -> None:
         self.expanded_node_uuids.discard(node_uuid)
-        self._display_position_overrides.pop(node_uuid, None)
         item = self.node_items.pop(node_uuid, None)
         if not item:
             return
@@ -1683,21 +1689,24 @@ class NodeCanvasView(QGraphicsView):
             if node_uuid in pair:
                 connection = self.connection_items.pop(pair)
                 self.scene_ref.removeItem(connection)
-        self._recompute_display_position_overrides()
-        self._apply_display_position_overrides()
 
     def _rebuild_connections(self) -> None:
-        for item in list(self.connection_items.values()):
-            self.scene_ref.removeItem(item)
-        self.connection_items.clear()
-        for connection in self.controller.document.connections:
-            from_item = self.node_items.get(connection.from_uuid)
-            to_item = self.node_items.get(connection.to_uuid)
-            if not from_item or not to_item:
-                continue
-            item = ConnectionItem(from_item, to_item)
-            self.connection_items[(connection.from_uuid, connection.to_uuid)] = item
-            self.scene_ref.addItem(item)
+        with performance_recorder.measure(
+            "canvas.rebuild_connections",
+            "canvas",
+            {"connection_count": len(self.controller.document.connections)},
+        ):
+            for item in list(self.connection_items.values()):
+                self.scene_ref.removeItem(item)
+            self.connection_items.clear()
+            for connection in self.controller.document.connections:
+                from_item = self.node_items.get(connection.from_uuid)
+                to_item = self.node_items.get(connection.to_uuid)
+                if not from_item or not to_item:
+                    continue
+                item = ConnectionItem(from_item, to_item)
+                self.connection_items[(connection.from_uuid, connection.to_uuid)] = item
+                self.scene_ref.addItem(item)
 
     def _update_connections_for_node(self, node_uuid: str) -> None:
         for pair, item in self.connection_items.items():
@@ -2183,68 +2192,11 @@ class NodeCanvasView(QGraphicsView):
             return None
         return item.mapRectToScene(item.boundingRect()).center()
 
-    def _recompute_display_position_overrides(self) -> None:
-        self._display_position_overrides = {}
-        scale = max(0.06, float(self.transform().m11()))
-        if scale > self.DISPLAY_RELAYOUT_THRESHOLD:
-            return
-
-        ordered_nodes: list[tuple[str, float, float]] = []
-        for node in self.controller.document.nodes:
-            if node.uuid not in self.node_items:
-                continue
-            if node.type not in function_node_types(self.schema) and node.type != "Comment":
-                continue
-            ordered_nodes.append((node.uuid, float(node.ui_position["x"]), float(node.ui_position["y"])))
-        if len(ordered_nodes) < 2:
-            return
-
-        rows: list[list[tuple[str, float, float]]] = []
-        row_centers: list[float] = []
-        for node_uuid, x, y in sorted(ordered_nodes, key=lambda entry: (entry[2], entry[1], entry[0])):
-            match_index: int | None = None
-            best_distance: float | None = None
-            for index, center_y in enumerate(row_centers):
-                distance = abs(y - center_y)
-                if distance > self.DISPLAY_RELAYOUT_ROW_BAND:
-                    continue
-                if best_distance is None or distance < best_distance:
-                    best_distance = distance
-                    match_index = index
-            if match_index is None:
-                rows.append([(node_uuid, x, y)])
-                row_centers.append(y)
-                continue
-            rows[match_index].append((node_uuid, x, y))
-            member_count = len(rows[match_index])
-            row_centers[match_index] = ((row_centers[match_index] * (member_count - 1)) + y) / member_count
-
-        display_gap = self.DISPLAY_RELAYOUT_GAP_PIXELS / scale
-        for row in rows:
-            cursor_right: float | None = None
-            for node_uuid, logical_x, logical_y in sorted(row, key=lambda entry: (entry[1], entry[0])):
-                candidate_x = logical_x
-                candidate_rect = self._expanded_rect_for(node_uuid, (candidate_x, logical_y))
-                if cursor_right is not None and candidate_rect.left() < cursor_right + display_gap:
-                    candidate_x += cursor_right + display_gap - candidate_rect.left()
-                    candidate_rect = self._expanded_rect_for(node_uuid, (candidate_x, logical_y))
-                cursor_right = candidate_rect.right()
-                if abs(candidate_x - logical_x) >= 0.5:
-                    self._display_position_overrides[node_uuid] = QPointF(candidate_x, logical_y)
-
-    def _apply_display_position_overrides(self) -> None:
-        moved_nodes: list[str] = []
-        for node_uuid, item in self.node_items.items():
-            target_pos = self.display_position_for_node(node_uuid)
-            if item.pos() == target_pos:
-                continue
-            item.setPos(target_pos)
-            moved_nodes.append(node_uuid)
-        for node_uuid in moved_nodes:
-            self._update_connections_for_node(node_uuid)
-
     def _refresh_scale_sensitive_nodes(self) -> None:
-        for item in self.node_items.values():
-            item.refresh_view_scale()
-        self._recompute_display_position_overrides()
-        self._apply_display_position_overrides()
+        with performance_recorder.measure(
+            "canvas.refresh_scale_sensitive_nodes",
+            "canvas",
+            {"node_count": len(self.node_items), "scale": round(float(self.transform().m11()), 3)},
+        ):
+            for item in self.node_items.values():
+                item.refresh_view_scale()

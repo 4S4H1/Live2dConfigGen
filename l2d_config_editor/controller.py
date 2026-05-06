@@ -43,7 +43,10 @@ from .logic import (
     document_to_csv_rows,
 )
 from .models import ConnectionRecord, DocumentModel, EditorPreferences, NodeRecord
+from .perf_tools import get_performance_recorder
 from .schema import load_editor_schema
+
+performance_recorder = get_performance_recorder()
 
 
 class EditorController(QObject):
@@ -76,16 +79,24 @@ class EditorController(QObject):
         self._workspace_root: Path | None = None
         self.refresh_derived()
 
+    def _perf_document_meta(self) -> dict[str, Any]:
+        return {
+            "node_count": len(self.document.nodes),
+            "connection_count": len(self.document.connections),
+            "global_mode": self.preferences.global_mode,
+        }
+
     def set_workspace_root(self, path: str | Path) -> None:
         """Root directory for listing editor JSON files (must stay in sync with MainWindow.workdir)."""
         self._workspace_root = Path(path).resolve()
 
     def reload_schema(self, schema_path: str | None = None) -> None:
-        path = schema_path or self.preferences.schema_path
-        self.schema = load_editor_schema(path)
-        self.preferences.schema_path = str(path) if path else None
-        self.refresh_derived()
-        self.schemaChanged.emit()
+        with performance_recorder.measure("controller.reload_schema", "controller"):
+            path = schema_path or self.preferences.schema_path
+            self.schema = load_editor_schema(path)
+            self.preferences.schema_path = str(path) if path else None
+            self.refresh_derived()
+            self.schemaChanged.emit()
 
     def set_global_mode(self, mode: str) -> None:
         if mode == self.preferences.global_mode:
@@ -147,45 +158,59 @@ class EditorController(QObject):
         self.undo_stack.push(UpdateNodeLockCommand(self, node_uuid, node.locked, bool(locked)))
 
     def new_document(self) -> None:
-        self.undo_stack.clear()
-        self.document = create_document(self.schema)
-        self.preferences.global_mode = self.document.global_mode
-        self.selected_node_uuid = None
-        self.globalModeChanged.emit(self.preferences.global_mode)
-        self.documentLoaded.emit()
-        self.pathChanged.emit(None)
-        self.refresh_derived()
+        with performance_recorder.measure("controller.new_document", "controller"):
+            self.undo_stack.clear()
+            self.document = create_document(self.schema)
+            self.preferences.global_mode = self.document.global_mode
+            self.selected_node_uuid = None
+            self.globalModeChanged.emit(self.preferences.global_mode)
+            self.documentLoaded.emit()
+            self.pathChanged.emit(None)
+            self.refresh_derived()
 
     def open_document(self, path: str | Path) -> None:
-        self.undo_stack.clear()
-        self.document = load_document(self.schema, path)
-        self.preferences.global_mode = self.document.global_mode
-        self.selected_node_uuid = None
-        self.globalModeChanged.emit(self.preferences.global_mode)
-        self.documentLoaded.emit()
-        self.pathChanged.emit(str(path))
-        self.refresh_derived()
+        with performance_recorder.measure("controller.open_document", "controller", {"path": str(path)}):
+            self.undo_stack.clear()
+            self.document = load_document(self.schema, path)
+            self.preferences.global_mode = self.document.global_mode
+            self.selected_node_uuid = None
+            self.globalModeChanged.emit(self.preferences.global_mode)
+            self.documentLoaded.emit()
+            self.pathChanged.emit(str(path))
+            self.refresh_derived()
 
     def save_document(self, path: str | None = None) -> str | None:
         target = path or self.document.path
         if not target:
             return None
-        self.document.global_mode = self.preferences.global_mode
-        save_document(self.schema, self.document, target)
-        self.pathChanged.emit(str(target))
-        self.documentSaved.emit(str(target))
-        self.refresh_derived()
-        return str(target)
+        with performance_recorder.measure("controller.save_document", "controller", {"path": str(target)}):
+            self.document.global_mode = self.preferences.global_mode
+            save_document(self.schema, self.document, target)
+            self.pathChanged.emit(str(target))
+            self.documentSaved.emit(str(target))
+            self.refresh_derived()
+            return str(target)
 
     def refresh_derived(self) -> None:
-        reassign_function_ids(self.schema, self.document)
-        for node in self.document.nodes:
-            self.nodeUpdated.emit(node.uuid)
-        self.validationChanged.emit(validate_document(self.schema, self.document))
-        self.csvPreviewChanged.emit(document_to_csv_rows(self.schema, self.document))
-        self.documentStateChanged.emit(self.document.state)
-        self.trashBinChanged.emit(list(self.document.trash_bin))
-        self.editorSettingsChanged.emit(self.document.editor_settings)
+        with performance_recorder.measure("controller.refresh_derived", "controller", self._perf_document_meta()):
+            with performance_recorder.measure("controller.reassign_function_ids", "controller", self._perf_document_meta()):
+                reassign_function_ids(self.schema, self.document)
+            with performance_recorder.measure(
+                "controller.emit_node_updates",
+                "controller",
+                {**self._perf_document_meta(), "emit_count": len(self.document.nodes)},
+            ):
+                for node in self.document.nodes:
+                    self.nodeUpdated.emit(node.uuid)
+            with performance_recorder.measure("controller.validate_document", "controller", self._perf_document_meta()):
+                validation_issues = validate_document(self.schema, self.document)
+            self.validationChanged.emit(validation_issues)
+            with performance_recorder.measure("controller.build_csv_preview", "controller", self._perf_document_meta()):
+                csv_rows = document_to_csv_rows(self.schema, self.document)
+            self.csvPreviewChanged.emit(csv_rows)
+            self.documentStateChanged.emit(self.document.state)
+            self.trashBinChanged.emit(list(self.document.trash_bin))
+            self.editorSettingsChanged.emit(self.document.editor_settings)
 
     def get_node(self, node_uuid: str) -> NodeRecord | None:
         return next((node for node in self.document.nodes if node.uuid == node_uuid), None)
@@ -313,12 +338,13 @@ class EditorController(QObject):
             self.undo_stack.push(RemoveConnectionCommand(self, target))
 
     def search(self, text: str):
-        return search_document(
-            self.schema,
-            self.document,
-            text,
-            use_json_field_names=self.preferences.debug_json_field_names,
-        )
+        with performance_recorder.measure("controller.search_document", "controller", {"query_length": len(text or "")}):
+            return search_document(
+                self.schema,
+                self.document,
+                text,
+                use_json_field_names=self.preferences.debug_json_field_names,
+            )
 
     def serialize_selection(self, node_uuids: list[str]) -> bytes | None:
         selected_nodes = [
