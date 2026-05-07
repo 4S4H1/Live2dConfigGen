@@ -5,10 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from PyQt6.QtCore import QDate, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QDate, QPoint, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFocusEvent, QFont, QKeyEvent, QKeySequence, QRegularExpressionValidator
 from PyQt6.QtCore import QRegularExpression
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QColorDialog,
@@ -22,6 +23,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMainWindow,
     QPlainTextEdit,
     QPushButton,
     QSizePolicy,
@@ -32,6 +34,100 @@ from PyQt6.QtWidgets import (
 
 from .logic import display_value_for_field
 from .schema import EditorSchema, FieldSchema, field_visible
+
+
+def _dialog_parent_widget(widget: QWidget | None) -> QWidget | None:
+    current = widget
+    while current is not None:
+        if current.isWindow() and current.isVisible():
+            return current
+        current = current.parentWidget()
+    active = QApplication.activeWindow()
+    if isinstance(active, QWidget) and active.isVisible():
+        return active
+    main_windows: list[QWidget] = []
+    titled_candidates: list[QWidget] = []
+    fallback_candidates: list[QWidget] = []
+    for top_level in QApplication.topLevelWidgets():
+        if not isinstance(top_level, QWidget) or not top_level.isWindow() or top_level is widget:
+            continue
+        if isinstance(top_level, QMainWindow):
+            main_windows.append(top_level)
+            continue
+        if top_level.windowTitle():
+            titled_candidates.append(top_level)
+        else:
+            fallback_candidates.append(top_level)
+    if main_windows:
+        return main_windows[-1]
+    if titled_candidates:
+        return titled_candidates[-1]
+    if fallback_candidates:
+        return fallback_candidates[-1]
+    return widget
+
+
+def _global_anchor_for_widget(widget: QWidget) -> QPoint:
+    return widget.mapToGlobal(widget.rect().bottomLeft())
+
+
+def _move_dialog_near_anchor(dialog: QDialog, anchor_global_pos: QPoint | None) -> None:
+    if anchor_global_pos is None:
+        return
+    dialog.ensurePolished()
+    dialog.adjustSize()
+    frame = dialog.frameGeometry()
+    width = max(frame.width(), dialog.sizeHint().width())
+    height = max(frame.height(), dialog.sizeHint().height())
+    screen = QApplication.screenAt(anchor_global_pos) or QApplication.primaryScreen()
+    if screen is None:
+        dialog.move(anchor_global_pos)
+        return
+    available = screen.availableGeometry()
+    x = anchor_global_pos.x() + 12
+    y = anchor_global_pos.y() + 12
+    if x + width > available.right():
+        x = max(available.left(), anchor_global_pos.x() - width - 12)
+    if y + height > available.bottom():
+        y = max(available.top(), anchor_global_pos.y() - height - 12)
+    dialog.move(x, y)
+
+
+class AnchoredColorPickerDialog(QDialog):
+    def __init__(
+        self,
+        initial_color: QColor,
+        *,
+        anchor_global_pos: QPoint | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._anchor_global_pos = anchor_global_pos
+        self._initial_color = QColor(initial_color if initial_color.isValid() else QColor("#ffffff"))
+        self.setWindowTitle("选择颜色")
+        self.setModal(True)
+        self.setWindowFlag(Qt.WindowType.Tool, True)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+        self.picker = QColorDialog(self._initial_color, self)
+        self.picker.setOption(QColorDialog.ColorDialogOption.DontUseNativeDialog, True)
+        self.picker.setOption(QColorDialog.ColorDialogOption.NoButtons, True)
+        self.picker.setOption(QColorDialog.ColorDialogOption.ShowAlphaChannel, False)
+        self.picker.setCurrentColor(self._initial_color)
+        layout.addWidget(self.picker)
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def selected_color(self) -> QColor:
+        color = self.picker.currentColor()
+        return color if color.isValid() else QColor(self._initial_color)
+
+    def exec(self) -> int:
+        _move_dialog_near_anchor(self, self._anchor_global_pos)
+        return super().exec()
 
 
 class CommitLineEdit(QLineEdit):
@@ -133,7 +229,14 @@ class ColorFieldWidget(QWidget):
 
     def _pick_color(self) -> None:
         current = QColor(self.edit.text().strip() or "#ffffff")
-        color = QColorDialog.getColor(current, self, "选择颜色")
+        dialog = AnchoredColorPickerDialog(
+            current,
+            anchor_global_pos=_global_anchor_for_widget(self.button),
+            parent=_dialog_parent_widget(self),
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        color = dialog.selected_color()
         if not color.isValid():
             return
         self.edit.setText(color.name())
@@ -160,13 +263,14 @@ class ColorChoiceButton(QPushButton):
         self._sync_style()
 
     def _pick_color(self) -> None:
-        dialog = QColorDialog(self._color, self)
-        dialog.setOption(QColorDialog.ColorDialogOption.ShowAlphaChannel, False)
-        dialog.setOption(QColorDialog.ColorDialogOption.DontUseNativeDialog, True)
-        dialog.setWindowTitle("选择颜色")
+        dialog = AnchoredColorPickerDialog(
+            self._color,
+            anchor_global_pos=_global_anchor_for_widget(self),
+            parent=_dialog_parent_widget(self),
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        color = dialog.currentColor()
+        color = dialog.selected_color()
         if not color.isValid():
             return
         self._color = color
@@ -231,11 +335,10 @@ class CommentAppearanceDialog(QDialog):
 
 
 class NodeAppearanceDialog(QDialog):
-    def __init__(self, values: dict[str, Any], parent: QWidget | None = None, *, include_font_size: bool = False) -> None:
+    def __init__(self, values: dict[str, Any], parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("节点外观")
-        self.resize(420, 220 if not include_font_size else 250)
-        self._include_font_size = include_font_size
+        self.resize(420, 220)
         layout = QVBoxLayout(self)
         form = QFormLayout()
 
@@ -251,13 +354,6 @@ class NodeAppearanceDialog(QDialog):
         self.text_color_button.set_color(str(values.get("theme_text_color") or values.get("note_text_color") or "#f3f5f8"))
         form.addRow("字体颜色", self.text_color_button)
 
-        self.font_size_spin: QSpinBox | None = None
-        if self._include_font_size:
-            self.font_size_spin = QSpinBox(self)
-            self.font_size_spin.setRange(11, 28)
-            self.font_size_spin.setValue(int(values.get("note_font_size", 15) or 15))
-            form.addRow("字体大小", self.font_size_spin)
-
         layout.addLayout(form)
         button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self)
         button_box.accepted.connect(self.accept)
@@ -270,8 +366,6 @@ class NodeAppearanceDialog(QDialog):
             "theme_border_color": self.border_color_button.color_name(),
             "theme_text_color": self.text_color_button.color_name(),
         }
-        if self._include_font_size and self.font_size_spin is not None:
-            values["note_font_size"] = int(self.font_size_spin.value())
         return values
 
 
@@ -443,8 +537,9 @@ class NodeFormWidget(QFrame):
         layout.addWidget(self._summary_widget)
         layout.addLayout(self._form)
         self.setFrameShape(QFrame.Shape.NoFrame)
+        self._appearance_button: QPushButton | None = None
         if inline:
-            self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+            self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
     def set_node(
         self,
@@ -496,6 +591,7 @@ class NodeFormWidget(QFrame):
             self._form.removeRow(0)
         self._bindings.clear()
         self._form_row_widgets.clear()
+        self._appearance_button = None
 
     def _sync_header(self) -> None:
         if not self.node:
@@ -567,11 +663,12 @@ class NodeFormWidget(QFrame):
             return
         button = QPushButton("外观设置")
         button.setProperty("accentButton", True)
-        button.clicked.connect(self._show_appearance_dialog)
+        button.clicked.connect(lambda: self.open_appearance_dialog())
         button.setEnabled(not bool(self.node and self.node.locked))
         label = QLabel("外观")
         self._form.addRow(label, button)
         self._form_row_widgets.append((label, button))
+        self._appearance_button = button
 
     @staticmethod
     def _field_role(field: FieldSchema) -> str:
@@ -581,15 +678,25 @@ class NodeFormWidget(QFrame):
             return "diagnostic"
         return "standard"
 
-    def _show_appearance_dialog(self) -> None:
+    def _appearance_anchor_global_pos(self) -> QPoint | None:
+        if self._appearance_button is not None and self._appearance_button.isVisible():
+            return _global_anchor_for_widget(self._appearance_button)
+        return None
+
+    def open_appearance_dialog(self, anchor_global_pos: QPoint | None = None) -> bool:
         if not self.node:
-            return
-        dialog = NodeAppearanceDialog(self.node.fields, self, include_font_size=self.node.type == "Comment")
+            return False
+        if isinstance(anchor_global_pos, bool):
+            anchor_global_pos = None
+        dialog_parent = _dialog_parent_widget(self)
+        dialog = NodeAppearanceDialog(self.node.fields, dialog_parent)
+        _move_dialog_near_anchor(dialog, anchor_global_pos or self._appearance_anchor_global_pos())
         if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
+            return False
         for key, value in dialog.values().items():
             if self.node.fields.get(key) != value:
                 self.fieldCommitted.emit(key, value)
+        return True
 
     def content_height_hint(self) -> int:
         layout = self.layout()
@@ -864,5 +971,7 @@ class NodeFormWidget(QFrame):
         self.setStyleSheet(
             f"QLabel {{ color: {rgba}; }}"
             f" QPlainTextEdit {{ color: {rgba}; font-size: {font_size}px; }}"
-            f" QLineEdit {{ color: {rgba}; }}"
+            f" QLineEdit {{ color: {rgba}; font-size: {font_size}px; }}"
+            f" QComboBox {{ color: {rgba}; font-size: {font_size}px; }}"
+            f" QDateEdit {{ color: {rgba}; font-size: {font_size}px; }}"
         )

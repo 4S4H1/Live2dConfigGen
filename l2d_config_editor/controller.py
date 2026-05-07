@@ -29,6 +29,7 @@ from .logic import (
     create_node,
     sync_comment_legacy_appearance,
     export_document_dict,
+    function_node_types,
     infer_manual_fields,
     is_editor_document_file,
     load_document,
@@ -54,6 +55,7 @@ class EditorController(QObject):
     nodeAdded = pyqtSignal(str)
     nodeRemoved = pyqtSignal(str)
     nodeUpdated = pyqtSignal(str)
+    nodeMoved = pyqtSignal(str)
     connectionsChanged = pyqtSignal()
     validationChanged = pyqtSignal(object)
     csvPreviewChanged = pyqtSignal(object)
@@ -582,6 +584,14 @@ class EditorController(QObject):
         self.document.editor_settings.numeric_linkage_enabled = bool(settings.get("numeric_linkage_enabled", False))
         self.document.editor_settings.trash_enabled = bool(settings.get("trash_enabled", False))
         self.document.trash_bin = list(trash_bin)
+        linkage_enabled = self.document.editor_settings.numeric_linkage_enabled
+        for node in self.document.nodes:
+            if node.type not in function_node_types(self.schema):
+                continue
+            node.numeric_linkage_enabled = linkage_enabled
+            infer_manual_fields(self.schema, node, self.document)
+            apply_auto_rules(self.schema, self.document, node, source_mode=self.preferences.global_mode, force_generated=False)
+            self.nodeUpdated.emit(node.uuid)
         self.refresh_derived()
 
     def _move_node(self, node_uuid: str, position: tuple[float, float]) -> None:
@@ -589,7 +599,7 @@ class EditorController(QObject):
         if not node:
             return
         node.ui_position = {"x": float(position[0]), "y": float(position[1])}
-        self.nodeUpdated.emit(node_uuid)
+        self.nodeMoved.emit(node_uuid)
 
     def _move_nodes(self, positions: dict[str, tuple[float, float]]) -> None:
         for node_uuid, position in positions.items():
@@ -597,7 +607,7 @@ class EditorController(QObject):
             if not node:
                 continue
             node.ui_position = {"x": float(position[0]), "y": float(position[1])}
-            self.nodeUpdated.emit(node_uuid)
+            self.nodeMoved.emit(node_uuid)
 
     def _add_connection(self, connection: ConnectionRecord) -> None:
         self.document.connections.append(connection)

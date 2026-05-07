@@ -9,9 +9,9 @@ from unittest.mock import patch
 if sys.platform != "win32":
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import QPointF, QSettings, Qt
-from PyQt6.QtGui import QFontMetricsF
-from PyQt6.QtWidgets import QApplication, QMessageBox, QSplitter, QToolBar
+from PyQt6.QtCore import QPoint, QPointF, QSettings, Qt
+from PyQt6.QtGui import QContextMenuEvent, QFontMetricsF
+from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox, QSplitter, QToolBar
 
 from l2d_config_editor.controller import EditorController
 from l2d_config_editor.logic import (
@@ -506,7 +506,7 @@ class LogicTests(unittest.TestCase):
         self.assertIn("touch_idle11", node.fields["action_trigger"])
         self.assertIn("idle = 11", node.fields["action_trigger_active"])
 
-    def test_numeric_linkage_toggle_only_affects_future_nodes(self) -> None:
+    def test_numeric_linkage_toggle_applies_to_existing_nodes_globally(self) -> None:
         controller = EditorController()
         controller.document.editor_settings.numeric_linkage_enabled = True
         initial = next(node for node in controller.document.nodes if node.type == "Initial")
@@ -521,12 +521,15 @@ class LogicTests(unittest.TestCase):
 
         controller.update_field(first_uuid, "action_trigger_active", 5, "simple")
         first = controller.get_node(first_uuid)
-        self.assertEqual("TouchIdle5", first.fields["draw_able_name"])
-        self.assertEqual("Paramtouch_idle5", first.fields["parameter"])
-        self.assertIn("touch_idle5", first.fields["action_trigger"])
+        self.assertFalse(first.numeric_linkage_enabled)
+        self.assertEqual("TouchIdle1", first.fields["draw_able_name"])
+        self.assertEqual("Paramtouch_idle1", first.fields["parameter"])
+        self.assertIn("touch_idle1", first.fields["action_trigger"])
+        self.assertIn("idle = 5", first.fields["action_trigger_active"])
 
         controller.update_field(second_uuid, "action_trigger_active", 7, "simple")
         second = controller.get_node(second_uuid)
+        self.assertFalse(second.numeric_linkage_enabled)
         self.assertEqual("TouchIdle2", second.fields["draw_able_name"])
         self.assertEqual("Paramtouch_idle2", second.fields["parameter"])
         self.assertIn("touch_idle2", second.fields["action_trigger"])
@@ -800,6 +803,8 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertIn(created, window.canvas.expanded_node_uuids)
             self.assertTrue(item.proxy.isVisible())
             self.assertIn("action_trigger_active_kind_ui", item.form._bindings)
+            self.assertGreater(item.proxy.geometry().height(), 200.0)
+            self.assertAlmostEqual(item.proxy.geometry().height(), float(item.form.content_height_hint()), delta=4.0)
             window.canvas.toggle_node_display_mode(created)
             self.app.processEvents()
             self.assertEqual("card", window.canvas.node_display_mode(created))
@@ -856,6 +861,8 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertIsNotNone(item._card_editor_proxy)
 
             editor = item._card_editor_proxy.widget()
+            self.assertIn("font-size:", editor.styleSheet())
+            self.assertGreater(editor.fontMetrics().height(), 12)
             editor.setText("Paramtouch_idle99")
             item._commit_card_field_edit("parameter", editor.text(), editor)
             self.app.processEvents()
@@ -863,6 +870,53 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertEqual("Paramtouch_idle99", item._card_field_text("parameter"))
             self.assertEqual("card", window.canvas.node_display_mode(created))
             self.assertFalse(item.proxy.isVisible())
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
+    def test_right_click_node_opens_appearance_dialog(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            window.controller.set_global_mode("simple")
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            item = window.canvas.node_items[created]
+            scene_center = item.mapRectToScene(item.boundingRect()).center()
+            view_pos = window.canvas.mapFromScene(scene_center)
+            event = QContextMenuEvent(
+                QContextMenuEvent.Reason.Mouse,
+                view_pos,
+                window.canvas.viewport().mapToGlobal(view_pos),
+            )
+
+            with patch.object(item, "open_appearance_dialog", return_value=True) as open_dialog:
+                window.canvas.contextMenuEvent(event)
+
+            open_dialog.assert_called_once()
+            self.assertIsInstance(open_dialog.call_args.args[0], QPoint)
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
+    def test_inline_form_appearance_dialog_uses_main_window_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            item = window.canvas.node_items[created]
+
+            with patch("l2d_config_editor.widgets.NodeAppearanceDialog") as dialog_cls:
+                dialog_instance = dialog_cls.return_value
+                dialog_instance.exec.return_value = QDialog.DialogCode.Rejected
+                item.form.open_appearance_dialog()
+
+            self.assertIsInstance(dialog_cls.call_args.args[1], MainWindow)
             window._mark_saved_checkpoint(saved=True)
             window.close()
 
@@ -1650,6 +1704,20 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertTrue(changed)
             self.assertEqual(isolated_before, window.controller.get_node(isolated).ui_position)
             self.assertEqual(1, len(window.controller.document.connections))
+            self.assertEqual(
+                QPointF(
+                    window.controller.get_node(first).ui_position["x"],
+                    window.controller.get_node(first).ui_position["y"],
+                ),
+                window.canvas.node_items[first].pos(),
+            )
+            self.assertEqual(
+                QPointF(
+                    window.controller.get_node(second).ui_position["x"],
+                    window.controller.get_node(second).ui_position["y"],
+                ),
+                window.canvas.node_items[second].pos(),
+            )
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
@@ -1709,6 +1777,47 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
                 second_before != window.controller.get_node(second).ui_position
                 or third_before != window.controller.get_node(third).ui_position
             )
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_optimize_layout_reserves_rows_for_branch_subtrees(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+
+            root = window.controller.create_node("TouchIdle", (120, 260))
+            branch_a = window.controller.create_node("TouchIdle", (520, 100))
+            branch_a_top = window.controller.create_node("TouchIdle", (920, 80))
+            branch_a_bottom = window.controller.create_node("TouchIdle", (920, 260))
+            branch_b = window.controller.create_node("TouchIdle", (520, 420))
+            branch_b_child = window.controller.create_node("TouchIdle", (920, 460))
+
+            window.controller.add_connection(root, branch_a)
+            window.controller.add_connection(branch_a, branch_a_top)
+            window.controller.add_connection(branch_a, branch_a_bottom)
+            window.controller.add_connection(root, branch_b)
+            window.controller.add_connection(branch_b, branch_b_child)
+
+            changed = window.canvas.optimize_connection_layout()
+
+            self.assertTrue(changed)
+            root_node = window.controller.get_node(root)
+            branch_a_node = window.controller.get_node(branch_a)
+            branch_a_top_node = window.controller.get_node(branch_a_top)
+            branch_a_bottom_node = window.controller.get_node(branch_a_bottom)
+            branch_b_node = window.controller.get_node(branch_b)
+            branch_b_child_node = window.controller.get_node(branch_b_child)
+
+            self.assertAlmostEqual(root_node.ui_position["y"], branch_a_node.ui_position["y"], delta=1.0)
+            self.assertAlmostEqual(branch_a_node.ui_position["y"], branch_a_top_node.ui_position["y"], delta=1.0)
+            self.assertGreater(branch_a_bottom_node.ui_position["y"], branch_a_top_node.ui_position["y"] + 50.0)
+            self.assertGreater(branch_b_node.ui_position["y"], branch_a_bottom_node.ui_position["y"] + 50.0)
+            self.assertAlmostEqual(branch_b_node.ui_position["y"], branch_b_child_node.ui_position["y"], delta=1.0)
+            self.assertLess(branch_a_node.ui_position["x"] - root_node.ui_position["x"], 850.0)
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
