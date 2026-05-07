@@ -183,6 +183,17 @@ def sync_comment_legacy_appearance(node: NodeRecord) -> None:
         node.fields["note_text_color"] = text
 
 
+def sync_comment_theme_appearance(node: NodeRecord) -> None:
+    if node.type != "Comment":
+        return
+    body = _valid_color_or_none(node.fields.get("note_box_color"))
+    text = _valid_color_or_none(node.fields.get("note_text_color"))
+    if body:
+        node.fields["theme_body_color"] = body
+    if text:
+        node.fields["theme_text_color"] = text
+
+
 def function_node_types(schema: EditorSchema) -> tuple[str, ...]:
     return tuple(type_name for type_name, node in schema.nodes.items() if node.category == "function")
 

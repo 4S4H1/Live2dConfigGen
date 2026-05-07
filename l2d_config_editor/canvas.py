@@ -481,14 +481,19 @@ class NodeItem(QGraphicsObject):
 
     def _resolved_theme_colors(self) -> tuple[QColor, QColor, QColor]:
         defaults = default_node_theme(self.schema, self.node)
+        theme_text_value = str(self.node.fields.get("theme_text_color") or "").strip()
+        custom_text_value = theme_text_value
+        if self.node.type == "Comment":
+            comment_text_value = str(self.node.fields.get("note_text_color") or "").strip()
+            custom_text_value = comment_text_value if QColor(comment_text_value).isValid() else theme_text_value
         if self._uses_legacy_theme_defaults():
             body_value = defaults["theme_body_color"]
             border_value = defaults["theme_border_color"]
-            text_value = defaults["theme_text_color"]
+            text_value = custom_text_value or defaults["theme_text_color"]
         else:
             body_value = str(self.node.fields.get("theme_body_color") or defaults["theme_body_color"])
             border_value = str(self.node.fields.get("theme_border_color") or defaults["theme_border_color"])
-            text_value = str(self.node.fields.get("theme_text_color") or defaults["theme_text_color"])
+            text_value = custom_text_value or defaults["theme_text_color"]
         body = self._safe_color(body_value, defaults["theme_body_color"])
         border = self._safe_color(border_value, defaults["theme_border_color"])
         text = self._safe_color(text_value, defaults["theme_text_color"])

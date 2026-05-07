@@ -36,7 +36,7 @@ from l2d_config_editor.logic import (
 from l2d_config_editor.main_window import MainWindow
 from l2d_config_editor.models import ConnectionRecord
 from l2d_config_editor.schema import load_editor_schema
-from l2d_config_editor.widgets import NodeFormWidget
+from l2d_config_editor.widgets import ColorChoiceButton, ColorSchemePicker, CommentAppearanceDialog, NodeAppearanceDialog, NodeFormWidget
 
 
 def _close_top_level_widgets(app: QApplication) -> None:
@@ -919,6 +919,167 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertIsInstance(dialog_cls.call_args.args[1], MainWindow)
             window._mark_saved_checkpoint(saved=True)
             window.close()
+
+    def test_legacy_theme_nodes_keep_custom_text_color(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            node = window.controller.get_node(created)
+            item = window.canvas.node_items[created]
+
+            node.fields["theme_body_color"] = "#27384d"
+            node.fields["theme_border_color"] = "#78b1ff"
+            node.fields["theme_text_color"] = "#ff00aa"
+            item.update_node(node)
+
+            self.assertEqual("#ff00aa", item._resolved_theme_colors()[2].name())
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
+    def test_comment_appearance_dialog_updates_comment_and_theme_colors(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("Comment", (200, 120))
+            node = window.controller.get_node(created)
+            item = window.canvas.node_items[created]
+
+            with patch("l2d_config_editor.widgets._move_dialog_near_anchor"), patch(
+                "l2d_config_editor.widgets.CommentAppearanceDialog"
+            ) as comment_dialog_cls, patch("l2d_config_editor.widgets.NodeAppearanceDialog") as node_dialog_cls:
+                dialog_instance = comment_dialog_cls.return_value
+                dialog_instance.exec.return_value = QDialog.DialogCode.Accepted
+                dialog_instance.values.return_value = {
+                    "note_box_color": "#112233",
+                    "theme_border_color": "#334455",
+                    "note_box_alpha": 70,
+                    "note_text_color": "#ddeeff",
+                    "note_text_alpha": 85,
+                    "note_font_size": 18,
+                }
+                self.assertTrue(item.form.open_appearance_dialog())
+
+            node_dialog_cls.assert_not_called()
+            self.assertEqual("#112233", node.fields["note_box_color"])
+            self.assertEqual("#112233", node.fields["theme_body_color"])
+            self.assertEqual("#334455", node.fields["theme_border_color"])
+            self.assertEqual("#ddeeff", node.fields["note_text_color"])
+            self.assertEqual("#ddeeff", node.fields["theme_text_color"])
+            self.assertEqual(70, node.fields["note_box_alpha"])
+            self.assertEqual(85, node.fields["note_text_alpha"])
+            self.assertEqual(18, node.fields["note_font_size"])
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
+    def test_color_choice_button_accepts_manual_hex_input(self) -> None:
+        widget = ColorChoiceButton("选择颜色")
+        changes: list[str] = []
+        widget.colorChanged.connect(changes.append)
+
+        widget.edit.setText("#123abc")
+        widget.edit._emit_commit()
+
+        self.assertEqual("#123abc", widget.color_name())
+        self.assertEqual(["#123abc"], changes)
+
+    def test_color_choice_button_uses_inline_palette(self) -> None:
+        widget = ColorChoiceButton("选择颜色")
+        changes: list[str] = []
+        widget.colorChanged.connect(changes.append)
+        widget.show()
+        self.app.processEvents()
+
+        self.assertFalse(widget.palette.isVisible())
+        widget.button.click()
+        self.app.processEvents()
+        self.assertTrue(widget.palette.isVisible())
+        widget.palette.colorSelected.emit("#55b3ff")
+
+        self.assertFalse(widget.palette.isVisible())
+        self.assertEqual("#55b3ff", widget.color_name())
+        self.assertEqual(["#55b3ff"], changes)
+
+    def test_color_scheme_picker_applies_complete_preset(self) -> None:
+        widget = ColorSchemePicker()
+        changes: list[dict[str, str]] = []
+        widget.schemeChanged.connect(changes.append)
+
+        widget.select_preset("amber")
+
+        expected = {"body": "#15302f", "border": "#f5c84b", "text": "#fff6d6"}
+        self.assertEqual(expected, widget.selected_colors())
+        self.assertEqual([expected], changes)
+
+    def test_node_appearance_dialog_uses_single_color_scheme(self) -> None:
+        dialog = NodeAppearanceDialog(
+            {
+                "theme_body_color": "#12283a",
+                "theme_border_color": "#55b3ff",
+                "theme_text_color": "#f8fbff",
+            }
+        )
+
+        dialog.color_scheme_picker.select_preset("coral")
+
+        self.assertEqual(
+            {
+                "theme_body_color": "#3a170f",
+                "theme_border_color": "#ff7a45",
+                "theme_text_color": "#fff3ed",
+            },
+            dialog.values(),
+        )
+
+    def test_node_appearance_dialog_accepts_when_scheme_is_selected(self) -> None:
+        dialog = NodeAppearanceDialog(
+            {
+                "theme_body_color": "#12283a",
+                "theme_border_color": "#55b3ff",
+                "theme_text_color": "#f8fbff",
+            }
+        )
+        accepted: list[bool] = []
+        dialog.accepted.connect(lambda: accepted.append(True))
+
+        dialog.color_scheme_picker.select_preset("slate")
+
+        self.assertEqual([True], accepted)
+        self.assertEqual(QDialog.DialogCode.Accepted, dialog.result())
+
+    def test_comment_appearance_dialog_uses_single_color_scheme(self) -> None:
+        dialog = CommentAppearanceDialog(
+            {
+                "note_box_color": "#12283a",
+                "theme_border_color": "#55b3ff",
+                "note_text_color": "#f8fbff",
+                "note_box_alpha": 70,
+                "note_text_alpha": 80,
+                "note_font_size": 18,
+            }
+        )
+
+        dialog.color_scheme_picker.select_preset("paper")
+
+        self.assertEqual(
+            {
+                "note_box_color": "#3a2a17",
+                "theme_border_color": "#d6a15a",
+                "note_text_color": "#fff1d3",
+                "note_box_alpha": 70,
+                "note_text_alpha": 80,
+                "note_font_size": 18,
+            },
+            dialog.values(),
+        )
 
     def test_inline_summary_order_and_zoom_out_keeps_card_mode(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

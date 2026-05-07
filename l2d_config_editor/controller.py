@@ -28,6 +28,7 @@ from .logic import (
     create_document,
     create_node,
     sync_comment_legacy_appearance,
+    sync_comment_theme_appearance,
     export_document_dict,
     function_node_types,
     infer_manual_fields,
@@ -557,8 +558,10 @@ class EditorController(QObject):
             return
         node.fields[key] = value
         apply_node_appearance_defaults(self.schema, node)
-        if node.type == "Comment" and key in {"theme_body_color", "theme_border_color", "theme_text_color"}:
+        if node.type == "Comment" and key in {"theme_body_color", "theme_text_color"}:
             sync_comment_legacy_appearance(node)
+        if node.type == "Comment" and key in {"note_box_color", "note_text_color"}:
+            sync_comment_theme_appearance(node)
         if node.type in {"TouchDrag", "ParameterTrigger"} and key in {"action_trigger", "parameter"}:
             node.fields["action_trigger_active"] = ""
             if source_mode == "simple":

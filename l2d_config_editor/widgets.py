@@ -12,12 +12,12 @@ from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
-    QColorDialog,
     QDateEdit,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -93,41 +93,174 @@ def _move_dialog_near_anchor(dialog: QDialog, anchor_global_pos: QPoint | None) 
     dialog.move(x, y)
 
 
-class AnchoredColorPickerDialog(QDialog):
-    def __init__(
-        self,
-        initial_color: QColor,
-        *,
-        anchor_global_pos: QPoint | None = None,
-        parent: QWidget | None = None,
-    ) -> None:
+COLOR_SWATCHES = (
+    "#ffffff",
+    "#f8fbff",
+    "#d9e8f3",
+    "#fff8eb",
+    "#f7f8fa",
+    "#b8c2cc",
+    "#76808d",
+    "#10151f",
+    "#12283a",
+    "#55b3ff",
+    "#2a1f24",
+    "#ff6363",
+    "#332714",
+    "#ffbc33",
+    "#13251f",
+    "#5fc992",
+    "#12191f",
+    "#7aa6c2",
+    "#2f2618",
+    "#e2b86a",
+    "#123456",
+    "#345678",
+    "#abcdef",
+    "#ff00aa",
+)
+
+
+@dataclass(frozen=True)
+class ColorSchemePreset:
+    key: str
+    label: str
+    body: str
+    border: str
+    text: str
+
+
+APPEARANCE_COLOR_SCHEMES = (
+    ColorSchemePreset("ocean", "深海蓝", "#071b2d", "#25b7ff", "#e8f8ff"),
+    ColorSchemePreset("mint", "薄荷绿", "#13251f", "#5fc992", "#f3fcf7"),
+    ColorSchemePreset("amber", "琉璃金", "#15302f", "#f5c84b", "#fff6d6"),
+    ColorSchemePreset("coral", "珊瑚红", "#3a170f", "#ff7a45", "#fff3ed"),
+    ColorSchemePreset("violet", "暮色紫", "#251f38", "#b5a1ff", "#faf7ff"),
+    ColorSchemePreset("slate", "石板灰", "#20242b", "#9aa4b2", "#eef2f7"),
+    ColorSchemePreset("paper", "暖纸张", "#3a2a17", "#d6a15a", "#fff1d3"),
+    ColorSchemePreset("rose", "玫瑰粉", "#351329", "#ff5fa2", "#fff1f8"),
+)
+
+
+class ColorSwatchGrid(QWidget):
+    colorSelected = pyqtSignal(str)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._anchor_global_pos = anchor_global_pos
-        self._initial_color = QColor(initial_color if initial_color.isValid() else QColor("#ffffff"))
-        self.setWindowTitle("选择颜色")
-        self.setModal(True)
-        self.setWindowFlag(Qt.WindowType.Tool, True)
+        layout = QGridLayout(self)
+        layout.setContentsMargins(0, 6, 0, 0)
+        layout.setHorizontalSpacing(5)
+        layout.setVerticalSpacing(5)
+        for index, value in enumerate(COLOR_SWATCHES):
+            button = QPushButton(self)
+            button.setFixedSize(26, 22)
+            button.setToolTip(value)
+            button.setAccessibleName(value)
+            button.clicked.connect(lambda _checked=False, color=value: self.colorSelected.emit(color))
+            self._style_swatch(button, value)
+            layout.addWidget(button, index // 8, index % 8)
+
+    @staticmethod
+    def _style_swatch(button: QPushButton, value: str) -> None:
+        color = QColor(value)
+        border = "#d7dee8" if color.lightness() < 70 else "#4b5563"
+        button.setStyleSheet(
+            f"QPushButton {{ background-color: {value}; border: 1px solid {border}; border-radius: 4px; }}"
+            "QPushButton:hover { border: 2px solid #f8fafc; }"
+        )
+
+
+class ColorSchemePicker(QWidget):
+    schemeChanged = pyqtSignal(object)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._colors = {
+            "body": APPEARANCE_COLOR_SCHEMES[0].body,
+            "border": APPEARANCE_COLOR_SCHEMES[0].border,
+            "text": APPEARANCE_COLOR_SCHEMES[0].text,
+        }
+        self._selected_key: str | None = APPEARANCE_COLOR_SCHEMES[0].key
+        self._buttons: dict[str, QPushButton] = {}
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
-        self.picker = QColorDialog(self._initial_color, self)
-        self.picker.setOption(QColorDialog.ColorDialogOption.DontUseNativeDialog, True)
-        self.picker.setOption(QColorDialog.ColorDialogOption.NoButtons, True)
-        self.picker.setOption(QColorDialog.ColorDialogOption.ShowAlphaChannel, False)
-        self.picker.setCurrentColor(self._initial_color)
-        layout.addWidget(self.picker)
-        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self)
-        button_box.accepted.connect(self.accept)
-        button_box.rejected.connect(self.reject)
-        layout.addWidget(button_box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self.preview = QLabel(self)
+        self.preview.setMinimumHeight(34)
+        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.preview)
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(8)
+        for index, preset in enumerate(APPEARANCE_COLOR_SCHEMES):
+            button = QPushButton(preset.label, self)
+            button.setCheckable(True)
+            button.setMinimumHeight(36)
+            button.setToolTip(f"主体 {preset.body} / 边框 {preset.border} / 文字 {preset.text}")
+            button.clicked.connect(lambda _checked=False, key=preset.key: self.select_preset(key))
+            self._buttons[preset.key] = button
+            grid.addWidget(button, index // 2, index % 2)
+        layout.addLayout(grid)
+        self._sync_display()
 
-    def selected_color(self) -> QColor:
-        color = self.picker.currentColor()
-        return color if color.isValid() else QColor(self._initial_color)
+    def set_colors(self, body: str, border: str, text: str) -> None:
+        body_color = QColor(str(body or "").strip())
+        border_color = QColor(str(border or "").strip())
+        text_color = QColor(str(text or "").strip())
+        if body_color.isValid():
+            self._colors["body"] = body_color.name()
+        if border_color.isValid():
+            self._colors["border"] = border_color.name()
+        if text_color.isValid():
+            self._colors["text"] = text_color.name()
+        self._selected_key = self._matching_preset_key()
+        self._sync_display()
 
-    def exec(self) -> int:
-        _move_dialog_near_anchor(self, self._anchor_global_pos)
-        return super().exec()
+    def selected_colors(self) -> dict[str, str]:
+        return dict(self._colors)
+
+    def select_preset(self, key: str) -> None:
+        preset = next((item for item in APPEARANCE_COLOR_SCHEMES if item.key == key), None)
+        if preset is None:
+            return
+        self._colors = {"body": preset.body, "border": preset.border, "text": preset.text}
+        self._selected_key = preset.key
+        self._sync_display()
+        self.schemeChanged.emit(self.selected_colors())
+
+    def _matching_preset_key(self) -> str | None:
+        current = (self._colors["body"], self._colors["border"], self._colors["text"])
+        for preset in APPEARANCE_COLOR_SCHEMES:
+            if current == (preset.body, preset.border, preset.text):
+                return preset.key
+        return None
+
+    def _sync_display(self) -> None:
+        label = "当前自定义"
+        for preset in APPEARANCE_COLOR_SCHEMES:
+            if preset.key == self._selected_key:
+                label = preset.label
+                break
+        body = self._colors["body"]
+        border = self._colors["border"]
+        text = self._colors["text"]
+        self.preview.setText(f"{label}  主体 {body}  边框 {border}  文字 {text}")
+        self.preview.setStyleSheet(
+            f"QLabel {{ background-color: {body}; color: {text}; border: 2px solid {border}; "
+            "border-radius: 8px; padding: 7px 10px; font-weight: 700; }}"
+        )
+        for preset in APPEARANCE_COLOR_SCHEMES:
+            button = self._buttons[preset.key]
+            selected = preset.key == self._selected_key
+            button.setChecked(selected)
+            border_width = 3 if selected else 2
+            button.setStyleSheet(
+                f"QPushButton {{ background-color: {preset.body}; color: {preset.text}; "
+                f"border: {border_width}px solid {preset.border}; border-radius: 8px; "
+                "padding: 7px 10px; font-weight: 700; }}"
+                "QPushButton:hover { border-color: #f8fafc; }"
+            )
 
 
 class CommitLineEdit(QLineEdit):
@@ -228,32 +361,44 @@ class ColorFieldWidget(QWidget):
         self.committed.emit(value.strip())
 
     def _pick_color(self) -> None:
-        current = QColor(self.edit.text().strip() or "#ffffff")
-        dialog = AnchoredColorPickerDialog(
-            current,
-            anchor_global_pos=_global_anchor_for_widget(self.button),
-            parent=_dialog_parent_widget(self),
-        )
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        color = dialog.selected_color()
-        if not color.isValid():
-            return
-        self.edit.setText(color.name())
-        self.committed.emit(color.name())
+        swatches = ColorSwatchGrid(self)
+        swatches.setWindowFlag(Qt.WindowType.Popup, True)
+        swatches.colorSelected.connect(lambda color: (self.edit.setText(color), self.committed.emit(color), swatches.close()))
+        swatches.move(_global_anchor_for_widget(self.button))
+        swatches.show()
 
 
-class ColorChoiceButton(QPushButton):
+class ColorChoiceButton(QWidget):
     colorChanged = pyqtSignal(str)
 
     def __init__(self, title: str, parent: QWidget | None = None) -> None:
-        super().__init__(title, parent)
+        super().__init__(parent)
+        self._title = title
         self._color = QColor("#ffffff")
-        self.clicked.connect(self._pick_color)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(6)
+        self.edit = CommitLineEdit(self)
+        self.edit.setPlaceholderText("#ffffff")
+        self.edit.committed.connect(self._commit_text)
+        self.button = QPushButton(title, self)
+        self.button.setObjectName("colorPickButton")
+        self.button.clicked.connect(self._toggle_palette)
+        self.palette = ColorSwatchGrid(self)
+        self.palette.colorSelected.connect(self._select_palette_color)
+        self.palette.hide()
+        top_row.addWidget(self.edit, 1)
+        top_row.addWidget(self.button, 0)
+        layout.addLayout(top_row)
+        layout.addWidget(self.palette)
         self._sync_style()
 
     def color_name(self) -> str:
-        return self._color.name()
+        typed_color = QColor(self.edit.text().strip())
+        return typed_color.name() if typed_color.isValid() else self._color.name()
 
     def set_color(self, value: str) -> None:
         color = QColor(str(value or "").strip())
@@ -262,25 +407,35 @@ class ColorChoiceButton(QPushButton):
         self._color = color
         self._sync_style()
 
-    def _pick_color(self) -> None:
-        dialog = AnchoredColorPickerDialog(
-            self._color,
-            anchor_global_pos=_global_anchor_for_widget(self),
-            parent=_dialog_parent_widget(self),
-        )
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        color = dialog.selected_color()
+    def _commit_text(self, value: str) -> None:
+        color = QColor(str(value or "").strip())
         if not color.isValid():
+            self.edit.setStyleSheet("QLineEdit { border: 1px solid #f87171; }")
             return
         self._color = color
         self._sync_style()
         self.colorChanged.emit(self._color.name())
 
+    def _toggle_palette(self) -> None:
+        self.palette.setVisible(not self.palette.isVisible())
+
+    def _select_palette_color(self, value: str) -> None:
+        color = QColor(value)
+        if not color.isValid():
+            return
+        self._color = color
+        self._sync_style()
+        self.colorChanged.emit(self._color.name())
+        self.palette.hide()
+
     def _sync_style(self) -> None:
         fg = "#10151f" if self._color.lightness() > 130 else "#f3f6fb"
-        self.setText(self._color.name())
-        self.setStyleSheet(
+        previous = self.edit.blockSignals(True)
+        self.edit.setText(self._color.name())
+        self.edit.blockSignals(previous)
+        self.edit.setStyleSheet("")
+        self.button.setText(self._title)
+        self.button.setStyleSheet(
             f"QPushButton {{ background-color: {self._color.name()}; color: {fg}; font-weight: 700; }}"
         )
 
@@ -289,23 +444,24 @@ class CommentAppearanceDialog(QDialog):
     def __init__(self, values: dict[str, Any], parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("备注外观")
-        self.resize(420, 250)
+        self.resize(500, 340)
         layout = QVBoxLayout(self)
         form = QFormLayout()
 
-        self.box_color_button = ColorChoiceButton("选择框体颜色", self)
-        self.box_color_button.set_color(str(values.get("note_box_color") or "#76808d"))
-        form.addRow("框体颜色", self.box_color_button)
+        self.color_scheme_picker = ColorSchemePicker(self)
+        self.color_scheme_picker.set_colors(
+            str(values.get("note_box_color") or values.get("theme_body_color") or "#76808d"),
+            str(values.get("theme_border_color") or values.get("note_box_color") or "#69b070"),
+            str(values.get("note_text_color") or values.get("theme_text_color") or "#f3f5f8"),
+        )
+        self.color_scheme_picker.schemeChanged.connect(lambda _colors: self.accept())
+        form.addRow("颜色方案", self.color_scheme_picker)
 
         self.box_alpha_spin = QSpinBox(self)
         self.box_alpha_spin.setRange(0, 100)
         self.box_alpha_spin.setSuffix("%")
         self.box_alpha_spin.setValue(int(values.get("note_box_alpha", 62) or 62))
         form.addRow("框体透明度", self.box_alpha_spin)
-
-        self.text_color_button = ColorChoiceButton("选择字体颜色", self)
-        self.text_color_button.set_color(str(values.get("note_text_color") or "#f3f5f8"))
-        form.addRow("字体颜色", self.text_color_button)
 
         self.text_alpha_spin = QSpinBox(self)
         self.text_alpha_spin.setRange(0, 100)
@@ -325,10 +481,12 @@ class CommentAppearanceDialog(QDialog):
         layout.addWidget(button_box)
 
     def values(self) -> dict[str, Any]:
+        colors = self.color_scheme_picker.selected_colors()
         return {
-            "note_box_color": self.box_color_button.color_name(),
+            "note_box_color": colors["body"],
+            "theme_border_color": colors["border"],
+            "note_text_color": colors["text"],
             "note_box_alpha": int(self.box_alpha_spin.value()),
-            "note_text_color": self.text_color_button.color_name(),
             "note_text_alpha": int(self.text_alpha_spin.value()),
             "note_font_size": int(self.font_size_spin.value()),
         }
@@ -338,33 +496,27 @@ class NodeAppearanceDialog(QDialog):
     def __init__(self, values: dict[str, Any], parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("节点外观")
-        self.resize(420, 220)
+        self.resize(500, 300)
         layout = QVBoxLayout(self)
         form = QFormLayout()
 
-        self.body_color_button = ColorChoiceButton("选择主体颜色", self)
-        self.body_color_button.set_color(str(values.get("theme_body_color") or values.get("note_box_color") or "#76808d"))
-        form.addRow("主体颜色", self.body_color_button)
-
-        self.border_color_button = ColorChoiceButton("选择边框颜色", self)
-        self.border_color_button.set_color(str(values.get("theme_border_color") or values.get("note_box_color") or "#69b070"))
-        form.addRow("边框颜色", self.border_color_button)
-
-        self.text_color_button = ColorChoiceButton("选择字体颜色", self)
-        self.text_color_button.set_color(str(values.get("theme_text_color") or values.get("note_text_color") or "#f3f5f8"))
-        form.addRow("字体颜色", self.text_color_button)
+        self.color_scheme_picker = ColorSchemePicker(self)
+        self.color_scheme_picker.set_colors(
+            str(values.get("theme_body_color") or values.get("note_box_color") or "#76808d"),
+            str(values.get("theme_border_color") or values.get("note_box_color") or "#69b070"),
+            str(values.get("theme_text_color") or values.get("note_text_color") or "#f3f5f8"),
+        )
+        self.color_scheme_picker.schemeChanged.connect(lambda _colors: self.accept())
+        form.addRow("颜色方案", self.color_scheme_picker)
 
         layout.addLayout(form)
-        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self)
-        button_box.accepted.connect(self.accept)
-        button_box.rejected.connect(self.reject)
-        layout.addWidget(button_box)
 
     def values(self) -> dict[str, Any]:
+        colors = self.color_scheme_picker.selected_colors()
         values = {
-            "theme_body_color": self.body_color_button.color_name(),
-            "theme_border_color": self.border_color_button.color_name(),
-            "theme_text_color": self.text_color_button.color_name(),
+            "theme_body_color": colors["body"],
+            "theme_border_color": colors["border"],
+            "theme_text_color": colors["text"],
         }
         return values
 
@@ -689,7 +841,8 @@ class NodeFormWidget(QFrame):
         if isinstance(anchor_global_pos, bool):
             anchor_global_pos = None
         dialog_parent = _dialog_parent_widget(self)
-        dialog = NodeAppearanceDialog(self.node.fields, dialog_parent)
+        dialog_cls = CommentAppearanceDialog if self.node.type == "Comment" else NodeAppearanceDialog
+        dialog = dialog_cls(self.node.fields, dialog_parent)
         _move_dialog_near_anchor(dialog, anchor_global_pos or self._appearance_anchor_global_pos())
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return False
