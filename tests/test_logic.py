@@ -1582,6 +1582,28 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
+    def test_selected_overlapped_node_is_raised_above_newer_node(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            old_uuid = window.controller.create_node("TouchIdle", (200, 120))
+            new_uuid = window.controller.create_node("TouchDrag", (200, 120))
+            old_item = window.canvas.node_items[old_uuid]
+            new_item = window.canvas.node_items[new_uuid]
+
+            self.assertGreater(new_item.zValue(), old_item.zValue())
+
+            window.controller.set_selected_node(old_uuid)
+            self.app.processEvents()
+
+            self.assertGreater(old_item.zValue(), new_item.zValue())
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
     def test_function_node_card_layout_survives_zoom_in(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)

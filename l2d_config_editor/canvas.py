@@ -136,6 +136,12 @@ class ConnectionItem(QGraphicsPathItem):
 
 class NodeItem(QGraphicsObject):
     geometryChanged = pyqtSignal(str)
+    NORMAL_BASE_Z = 0.0
+    NORMAL_SELECTED_Z = 50.0
+    COMMENT_BASE_Z = -20.0
+    COMMENT_SELECTED_Z = 40.0
+    DRAWFRAME_BASE_Z = -30.0
+    DRAWFRAME_SELECTED_Z = 30.0
     PIN_HIT_PADDING = 9.0
     SIMPLE_WIDTH = 420
     ADVANCED_WIDTH = 460
@@ -221,6 +227,7 @@ class NodeItem(QGraphicsObject):
         self._selection_drag_targets: set[str] = set()
         self.update_node(node)
         self.setPos(node.ui_position["x"], node.ui_position["y"])
+        self.refresh_z_value()
 
     def boundingRect(self) -> QRectF:
         hit_padding = self._pin_radius + self.PIN_HIT_PADDING
@@ -1048,7 +1055,18 @@ class NodeItem(QGraphicsObject):
     def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value: Any):
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
             self.geometryChanged.emit(self.node.uuid)
+        elif change == QGraphicsItem.GraphicsItemChange.ItemSelectedHasChanged:
+            self.refresh_z_value()
         return super().itemChange(change, value)
+
+    def refresh_z_value(self) -> None:
+        active = self.isSelected() or self.controller.selected_node_uuid == self.node.uuid
+        if self.node.type == "DrawFrame":
+            self.setZValue(self.DRAWFRAME_SELECTED_Z if active else self.DRAWFRAME_BASE_Z)
+        elif self.node.type == "Comment":
+            self.setZValue(self.COMMENT_SELECTED_Z if active else self.COMMENT_BASE_Z)
+        else:
+            self.setZValue(self.NORMAL_SELECTED_Z if active else self.NORMAL_BASE_Z)
 
     def hoverMoveEvent(self, event: QGraphicsSceneHoverEvent) -> None:
         if self.lock_rect().contains(event.pos()):
@@ -1416,6 +1434,7 @@ class NodeCanvasView(QGraphicsView):
         controller.nodeMoved.connect(self._move_node_item)
         controller.connectionsChanged.connect(self._rebuild_connections)
         controller.validationChanged.connect(self._apply_validation)
+        controller.selectionChanged.connect(lambda _uuid: self._refresh_node_z_values())
         controller.globalModeChanged.connect(self._handle_mode_changed)
         controller.documentStateChanged.connect(self._handle_document_state_changed)
         controller.nodeUpdated.connect(self._refresh_hint_overlay)
@@ -1522,6 +1541,10 @@ class NodeCanvasView(QGraphicsView):
         item.setSelected(True)
         self.controller.set_selected_node(node_uuid)
         return item.form.focus_field(field_key)
+
+    def _refresh_node_z_values(self) -> None:
+        for item in self.node_items.values():
+            item.refresh_z_value()
 
     def frame_drag_members(self, node_uuid: str) -> dict[str, QPointF]:
         members: dict[str, QPointF] = {}
@@ -1771,10 +1794,7 @@ class NodeCanvasView(QGraphicsView):
 
     def _create_item(self, node) -> None:
         item = NodeItem(self.schema, self.controller, node)
-        if node.type == "Comment":
-            item.setZValue(-20)
-        elif node.type == "DrawFrame":
-            item.setZValue(-30)
+        item.refresh_z_value()
         item.geometryChanged.connect(self._on_node_geometry_changed)
         self.scene_ref.addItem(item)
         self.node_items[node.uuid] = item
@@ -2132,7 +2152,11 @@ class NodeCanvasView(QGraphicsView):
             ),
         ):
             row_index = row_indices.get(node_uuid, 0)
-            desired_y = row_y_positions.get(row_index, anchor_y + row_index * row_stride)
+            desired_y = row_y_positions.get(row_index)
+            if desired_y is None:
+                previous_rows = [row for row in row_y_positions if row < row_index]
+                previous_y = max((row_y_positions[row] for row in previous_rows), default=anchor_y - row_stride)
+                desired_y = max(anchor_y + row_index * row_stride, previous_y + row_stride)
             x = anchor_x + levels.get(node_uuid, 0) * (max_width + column_gap)
             y = self._resolve_non_overlapping_y(node_uuid, x, desired_y, occupied_rects)
             row_y_positions.setdefault(row_index, y)
