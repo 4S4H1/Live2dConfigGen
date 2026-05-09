@@ -33,6 +33,8 @@ from PyQt6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QToolBar,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
     QLineEdit,
@@ -473,6 +475,7 @@ class MainWindow(QMainWindow):
         self.controller.documentLoaded.connect(self._refresh_search_results)
         self.controller.documentLoaded.connect(self._refresh_node_list_panel)
         self.controller.documentLoaded.connect(self._refresh_node_directory_dialog)
+        self.controller.groupsChanged.connect(self._refresh_node_list_panel)
         self.controller.validationChanged.connect(self._store_validation)
         self.controller.documentStateChanged.connect(self._update_document_state)
         self.controller.globalModeChanged.connect(self._handle_global_mode_changed)
@@ -631,6 +634,7 @@ class MainWindow(QMainWindow):
         self.inspector_placeholder = QLabel("请选择一个节点", self._inspector_compat_host)
         self.inspector_form = NodeFormWidget(self.controller.schema, inline=False, parent=self._inspector_compat_host)
         self.inspector_form.fieldCommitted.connect(self._commit_inspector_field)
+        self.inspector_form.fieldsCommitted.connect(self._commit_inspector_fields)
         self.validation_summary = ValidationSummaryWidget(self._inspector_compat_host)
         self.validation_summary.jumpRequested.connect(self._jump_to_validation_node)
         compat_layout.addWidget(self.inspector_meta)
@@ -703,6 +707,9 @@ class MainWindow(QMainWindow):
         self.optimize_layout_button = QPushButton("优化连线")
         self.optimize_layout_button.clicked.connect(self._optimize_connection_layout)
         toolbar.addWidget(self.optimize_layout_button)
+        self.group_selected_button = QPushButton("打组")
+        self.group_selected_button.clicked.connect(self._group_selected_nodes)
+        toolbar.addWidget(self.group_selected_button)
 
         self.trash_button = QPushButton("已删除节点")
         self.trash_button.clicked.connect(self._show_trash_dialog)
@@ -768,10 +775,11 @@ class MainWindow(QMainWindow):
         self.node_search_edit.textChanged.connect(self._refresh_node_list_panel)
         list_layout.addWidget(self.node_search_edit)
 
-        self.node_list = QListWidget()
+        self.node_list = QTreeWidget()
         self.node_list.setObjectName("nodeDirectoryList")
-        self.node_list.itemClicked.connect(self._focus_node_from_list_item)
-        self.node_list.itemActivated.connect(self._focus_node_from_list_item)
+        self.node_list.setHeaderHidden(True)
+        self.node_list.itemClicked.connect(self._focus_node_from_tree_item)
+        self.node_list.itemActivated.connect(self._focus_node_from_tree_item)
         list_layout.addWidget(self.node_list, 1)
         layout.addWidget(list_card, 1)
         panel.setMinimumWidth(290)
@@ -945,6 +953,7 @@ class MainWindow(QMainWindow):
         self.inspector_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.inspector_form = NodeFormWidget(self.controller.schema, inline=False)
         self.inspector_form.fieldCommitted.connect(self._commit_inspector_field)
+        self.inspector_form.fieldsCommitted.connect(self._commit_inspector_fields)
         self.validation_summary = ValidationSummaryWidget()
         inspector_body = QWidget()
         body_layout = QVBoxLayout(inspector_body)
@@ -1061,7 +1070,11 @@ class MainWindow(QMainWindow):
         node_directory_action = QAction("节点目录", self)
         node_directory_action.triggered.connect(self._show_node_directory_dialog)
         view_menu.addAction(node_directory_action)
-        self._register_shortcut_action("node_directory", node_directory_action, QKeySequence("Ctrl+G"))
+        self._register_shortcut_action("node_directory", node_directory_action, QKeySequence("Ctrl+Shift+G"))
+        group_action = QAction("打组", self)
+        group_action.triggered.connect(self._group_selected_nodes)
+        edit_menu.addAction(group_action)
+        self._register_shortcut_action("group_selection", group_action, QKeySequence("Ctrl+G"))
 
         focus_selected_action = QAction("定位当前节点", self)
         focus_selected_action.triggered.connect(self._focus_selected_node)
@@ -1631,10 +1644,26 @@ class MainWindow(QMainWindow):
         for from_uuid, to_uuid in connection_pairs:
             self.controller.remove_connection(from_uuid, to_uuid)
 
+    def _group_selected_nodes(self) -> None:
+        node_uuids = self.canvas.selected_node_uuids()
+        if len(node_uuids) < 2:
+            self._show_status("请先框选或多选至少两个节点后再打组")
+            return
+        group_uuid = self.controller.create_group(node_uuids)
+        if not group_uuid:
+            self._show_status("当前选择无法打组")
+            return
+        self.canvas.focus_on_group(group_uuid)
+
     def _commit_inspector_field(self, key: str, value) -> None:
         node_uuid = self.controller.selected_node_uuid
         if node_uuid:
             self.controller.update_field(node_uuid, key, value, self.controller.preferences.global_mode)
+
+    def _commit_inspector_fields(self, values: dict[str, object]) -> None:
+        node_uuid = self.controller.selected_node_uuid
+        if node_uuid:
+            self.controller.update_fields(node_uuid, values, self.controller.preferences.global_mode, label="应用外观方案")
 
     def _update_inspector(self, node_uuid: str | None) -> None:
         node = self.controller.get_node(node_uuid) if node_uuid else None
@@ -1677,11 +1706,18 @@ class MainWindow(QMainWindow):
             self.search_results.addItem(item)
         self.search_results.setVisible(self.search_results.count() > 0)
 
+    def _select_canvas_target(self, node_uuid: str) -> None:
+        if node_uuid in self.canvas.node_items:
+            self.canvas.node_items[node_uuid].setSelected(True)
+            return
+        table_item = self.canvas.table_row_to_item.get(node_uuid)
+        if table_item:
+            table_item.select_row(node_uuid)
+
     def _jump_to_search_result(self, item: QListWidgetItem) -> None:
         node_uuid = item.data(Qt.ItemDataRole.UserRole)
         self.canvas.focus_on_node(node_uuid, target_scale=1.05, emphasize=False)
-        if node_uuid in self.canvas.node_items:
-            self.canvas.node_items[node_uuid].setSelected(True)
+        self._select_canvas_target(node_uuid)
 
     def _restore_canvas_layout(self) -> None:
         self.canvas.reset_view_layout()
@@ -1817,29 +1853,129 @@ class MainWindow(QMainWindow):
     def _focus_node_from_directory(self, node_uuid: str) -> None:
         if node_uuid:
             self.canvas.focus_on_node(node_uuid, target_scale=1.15, emphasize=True)
-            if node_uuid in self.canvas.node_items:
-                self.canvas.node_items[node_uuid].setSelected(True)
+            self._select_canvas_target(node_uuid)
 
-    def _focus_node_from_list_item(self, item: QListWidgetItem) -> None:
-        node_uuid = item.data(Qt.ItemDataRole.UserRole) if item else None
-        if isinstance(node_uuid, str) and node_uuid:
-            self._focus_node_from_directory(node_uuid)
+    def _focus_node_from_tree_item(self, item: QTreeWidgetItem, _column: int = 0) -> None:
+        payload = item.data(0, Qt.ItemDataRole.UserRole) if item else None
+        if not isinstance(payload, dict):
+            return
+        kind = payload.get("kind")
+        if kind == "node":
+            node_uuid = payload.get("node_uuid")
+            if isinstance(node_uuid, str) and node_uuid:
+                self._focus_node_from_directory(node_uuid)
+        elif kind == "group":
+            group_uuid = payload.get("group_uuid")
+            if isinstance(group_uuid, str) and group_uuid:
+                self.canvas.focus_on_group(group_uuid)
+        elif kind == "table":
+            table_id = payload.get("table_id")
+            if isinstance(table_id, str) and table_id:
+                self.canvas.focus_on_parameter_table(table_id)
 
     def _refresh_node_list_panel(self) -> None:
         if not hasattr(self, "node_list"):
             return
         current_selection = self.controller.selected_node_uuid
         needle = self.node_search_edit.text().strip().lower() if hasattr(self, "node_search_edit") else ""
+        self.node_list.blockSignals(True)
         self.node_list.clear()
-        for node in self.controller.document.nodes:
-            label = self.controller.node_summary(node.uuid)
-            if needle and needle not in label.lower():
+
+        nodes_by_uuid = {node.uuid: node for node in self.controller.document.nodes}
+        groups = self.controller.group_records()
+        tables = self.controller.parameter_tables()
+        table_lookup = {table["table_id"]: table for table in tables}
+        row_to_table = {
+            node_uuid: table["table_id"]
+            for table in tables
+            for node_uuid in table["node_uuids"]
+        }
+        consumed_node_ids: set[str] = set()
+        consumed_table_ids: set[str] = set()
+
+        def _matches(text: str) -> bool:
+            return not needle or needle in text.lower()
+
+        def _make_payload_item(label: str, payload: dict[str, str]) -> QTreeWidgetItem:
+            item = QTreeWidgetItem([label])
+            item.setData(0, Qt.ItemDataRole.UserRole, payload)
+            return item
+
+        def _append_node(parent, node_uuid: str) -> bool:
+            label = self.controller.node_summary(node_uuid)
+            if not _matches(label):
+                return False
+            child = _make_payload_item(label, {"kind": "node", "node_uuid": node_uuid})
+            parent.addChild(child)
+            if current_selection and current_selection == node_uuid:
+                self.node_list.setCurrentItem(child)
+            return True
+
+        def _append_table(parent, table_id: str) -> bool:
+            table = table_lookup.get(table_id)
+            if not table:
+                return False
+            row_ids = [node_uuid for node_uuid in table["node_uuids"] if node_uuid in nodes_by_uuid]
+            if not row_ids:
+                return False
+            title = f"{table['title']} ({len(row_ids)} 行)"
+            matches_title = _matches(title)
+            table_item = _make_payload_item(title, {"kind": "table", "table_id": table_id})
+            row_added = False
+            for row_uuid in row_ids:
+                row_added = _append_node(table_item, row_uuid) or row_added
+            if not matches_title and not row_added:
+                return False
+            parent.addChild(table_item)
+            table_item.setExpanded(True)
+            consumed_table_ids.add(table_id)
+            consumed_node_ids.update(row_ids)
+            return True
+
+        for group in groups:
+            group_item = _make_payload_item(group.title or "分组", {"kind": "group", "group_uuid": group.uuid})
+            added_any = False
+            processed_tables: set[str] = set()
+            for node_uuid in group.node_uuids:
+                node = nodes_by_uuid.get(node_uuid)
+                if node is None:
+                    continue
+                table_id = row_to_table.get(node_uuid)
+                if table_id and table_id not in processed_tables:
+                    table = table_lookup.get(table_id)
+                    row_ids = [value for value in (table or {}).get("node_uuids", []) if value in nodes_by_uuid]
+                    if row_ids and set(row_ids).issubset(set(group.node_uuids)):
+                        added_any = _append_table(group_item, table_id) or added_any
+                        processed_tables.add(table_id)
+                        continue
+                added_any = _append_node(group_item, node_uuid) or added_any
+                consumed_node_ids.add(node_uuid)
+            if added_any or _matches(group.title or "分组"):
+                self.node_list.addTopLevelItem(group_item)
+                group_item.setExpanded(True)
+
+        for table in tables:
+            if table["table_id"] in consumed_table_ids:
                 continue
-            item = QListWidgetItem(label)
-            item.setData(Qt.ItemDataRole.UserRole, node.uuid)
-            self.node_list.addItem(item)
+            container = QTreeWidgetItem()
+            if _append_table(container, table["table_id"]):
+                self.node_list.addTopLevelItem(container.takeChild(0))
+
+        for node in self.controller.document.nodes:
+            if node.uuid in consumed_node_ids:
+                continue
+            if node.uuid in row_to_table:
+                continue
+            label = self.controller.node_summary(node.uuid)
+            if not _matches(label):
+                continue
+            item = _make_payload_item(label, {"kind": "node", "node_uuid": node.uuid})
+            self.node_list.addTopLevelItem(item)
             if current_selection and current_selection == node.uuid:
                 self.node_list.setCurrentItem(item)
+
+        self.node_list.expandAll()
+        self.node_list.blockSignals(False)
 
     def _open_selected_file_from_dialog(self) -> None:
         item = self.file_list.currentItem()
@@ -1915,11 +2051,12 @@ class MainWindow(QMainWindow):
         if not node_uuid:
             return
         self.canvas.focus_on_node(node_uuid, target_scale=1.15, emphasize=True)
-        if node_uuid in self.canvas.node_items:
-            self.canvas.node_items[node_uuid].setSelected(True)
+        self._select_canvas_target(node_uuid)
 
     def _handle_selection_summary(self, node_uuids, connection_pairs) -> None:
         del connection_pairs
+        if hasattr(self, "group_selected_button"):
+            self.group_selected_button.setEnabled(len(node_uuids) >= 2)
         if len(node_uuids) == 1:
             self.controller.set_selected_node(node_uuids[0])
         elif not node_uuids:
@@ -1944,16 +2081,14 @@ class MainWindow(QMainWindow):
 
     def _jump_to_validation_node(self, node_uuid: str) -> None:
         self.canvas.focus_on_node(node_uuid, target_scale=1.25, emphasize=True)
-        if node_uuid in self.canvas.node_items:
-            self.canvas.node_items[node_uuid].setSelected(True)
+        self._select_canvas_target(node_uuid)
 
     def _focus_initial_node_guidance(self, _reason: str = "") -> None:
         initial = next((node for node in self.controller.document.nodes if node.type == "Initial"), None)
         if not initial:
             return
         self.canvas.focus_on_node(initial.uuid, target_scale=1.35, emphasize=True)
-        if initial.uuid in self.canvas.node_items:
-            self.canvas.node_items[initial.uuid].setSelected(True)
+        self._select_canvas_target(initial.uuid)
 
     def _store_validation(self, issues) -> None:
         validation_cache: dict[str, list] = {}

@@ -618,6 +618,7 @@ class ValidationSummaryWidget(QFrame):
 
 class NodeFormWidget(QFrame):
     fieldCommitted = pyqtSignal(str, object)
+    fieldsCommitted = pyqtSignal(object)
     APPEARANCE_KEYS = {
         "theme_body_color",
         "theme_border_color",
@@ -846,9 +847,9 @@ class NodeFormWidget(QFrame):
         _move_dialog_near_anchor(dialog, anchor_global_pos or self._appearance_anchor_global_pos())
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return False
-        for key, value in dialog.values().items():
-            if self.node.fields.get(key) != value:
-                self.fieldCommitted.emit(key, value)
+        updates = {key: value for key, value in dialog.values().items() if self.node.fields.get(key) != value}
+        if updates:
+            self.fieldsCommitted.emit(updates)
         return True
 
     def content_height_hint(self) -> int:

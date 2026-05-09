@@ -31,6 +31,26 @@ class ConnectionRecord:
 
 
 @dataclass
+class GroupRecord:
+    uuid: str
+    title: str = ""
+    node_uuids: list[str] = field(default_factory=list)
+    theme_body_color: str = "#dfeada"
+    theme_border_color: str = "#69b070"
+    theme_text_color: str = "#ffffff"
+
+    def clone(self) -> "GroupRecord":
+        return GroupRecord(
+            uuid=self.uuid,
+            title=self.title,
+            node_uuids=list(self.node_uuids),
+            theme_body_color=self.theme_body_color,
+            theme_border_color=self.theme_border_color,
+            theme_text_color=self.theme_text_color,
+        )
+
+
+@dataclass
 class EditorPreferences:
     global_mode: str = "simple"
     schema_path: str | None = None
@@ -96,6 +116,7 @@ class DocumentModel:
     editor_settings: EditorSettings = field(default_factory=EditorSettings)
     nodes: list[NodeRecord] = field(default_factory=list)
     connections: list[ConnectionRecord] = field(default_factory=list)
+    groups: list[GroupRecord] = field(default_factory=list)
     trash_bin: list[TrashEntry] = field(default_factory=list)
     canvas_view: CanvasViewState = field(default_factory=CanvasViewState)
     state: DocumentState = field(default_factory=DocumentState)

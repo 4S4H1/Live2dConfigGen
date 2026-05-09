@@ -18,6 +18,7 @@ from .models import (
     CsvPreviewRow,
     DocumentModel,
     EditorSettings,
+    GroupRecord,
     MetaRecord,
     NodeRecord,
     SearchHit,
@@ -38,6 +39,12 @@ HIDDEN_NODE_FIELDS = {
     "action_trigger_reserved_ui",
     "action_trigger_active_kind_ui",
     "action_trigger_active_reserved_ui",
+    "_table_id",
+    "_table_title",
+    "_table_order",
+    "_table_body_color",
+    "_table_border_color",
+    "_table_text_color",
 }
 EDITOR_DOCUMENT_SIGNATURE = "l2d_config_editor/v1"
 RESERVED_FIELD_KEYS = (
@@ -67,6 +74,19 @@ COMMENT_LEGACY_APPEARANCE_KEYS = (
 )
 DEFAULT_THEME_TEXT_COLOR = "#f7f8fa"
 DRAWFRAME_DEFAULT_SIZE = {"width": 520.0, "height": 320.0}
+DEFAULT_GROUP_TITLE = "新建分组"
+TABLE_ID_FIELD = "_table_id"
+TABLE_TITLE_FIELD = "_table_title"
+TABLE_ORDER_FIELD = "_table_order"
+TABLE_BODY_COLOR_FIELD = "_table_body_color"
+TABLE_BORDER_COLOR_FIELD = "_table_border_color"
+TABLE_TEXT_COLOR_FIELD = "_table_text_color"
+DEFAULT_PARAMETER_TABLE_TITLE = "参数表"
+DEFAULT_PARAMETER_TABLE_COLORS = {
+    TABLE_BODY_COLOR_FIELD: "#4b2c11",
+    TABLE_BORDER_COLOR_FIELD: "#ffc27a",
+    TABLE_TEXT_COLOR_FIELD: "#fff8ef",
+}
 
 
 @lru_cache(maxsize=2)
@@ -76,6 +96,66 @@ def get_default_schema(schema_path: str | None = None) -> EditorSchema:
 
 def new_uuid() -> str:
     return uuid.uuid4().hex
+
+
+def ensure_parameter_table_metadata(node: NodeRecord) -> None:
+    if node.type != "ParameterTrigger":
+        return
+    if not str(node.fields.get(TABLE_ID_FIELD) or "").strip():
+        node.fields[TABLE_ID_FIELD] = new_uuid()
+    if TABLE_TITLE_FIELD not in node.fields:
+        node.fields[TABLE_TITLE_FIELD] = DEFAULT_PARAMETER_TABLE_TITLE
+    for key, value in DEFAULT_PARAMETER_TABLE_COLORS.items():
+        if not _valid_color_or_none(node.fields.get(key)):
+            node.fields[key] = value
+    try:
+        node.fields[TABLE_ORDER_FIELD] = int(node.fields.get(TABLE_ORDER_FIELD, 0))
+    except (TypeError, ValueError):
+        node.fields[TABLE_ORDER_FIELD] = 0
+
+
+def parameter_table_id(node: NodeRecord) -> str:
+    if node.type != "ParameterTrigger":
+        return ""
+    ensure_parameter_table_metadata(node)
+    return str(node.fields.get(TABLE_ID_FIELD) or "")
+
+
+def parameter_table_title(node: NodeRecord) -> str:
+    if node.type != "ParameterTrigger":
+        return ""
+    ensure_parameter_table_metadata(node)
+    return str(node.fields.get(TABLE_TITLE_FIELD) or DEFAULT_PARAMETER_TABLE_TITLE).strip() or DEFAULT_PARAMETER_TABLE_TITLE
+
+
+def parameter_table_order(node: NodeRecord) -> int:
+    if node.type != "ParameterTrigger":
+        return 0
+    ensure_parameter_table_metadata(node)
+    try:
+        return int(node.fields.get(TABLE_ORDER_FIELD, 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def set_parameter_table_order(node: NodeRecord, order: int) -> None:
+    if node.type != "ParameterTrigger":
+        return
+    ensure_parameter_table_metadata(node)
+    node.fields[TABLE_ORDER_FIELD] = int(order)
+
+
+def parameter_table_colors(node: NodeRecord) -> dict[str, str]:
+    ensure_parameter_table_metadata(node)
+    return {
+        TABLE_BODY_COLOR_FIELD: str(node.fields.get(TABLE_BODY_COLOR_FIELD) or DEFAULT_PARAMETER_TABLE_COLORS[TABLE_BODY_COLOR_FIELD]),
+        TABLE_BORDER_COLOR_FIELD: str(node.fields.get(TABLE_BORDER_COLOR_FIELD) or DEFAULT_PARAMETER_TABLE_COLORS[TABLE_BORDER_COLOR_FIELD]),
+        TABLE_TEXT_COLOR_FIELD: str(node.fields.get(TABLE_TEXT_COLOR_FIELD) or DEFAULT_PARAMETER_TABLE_COLORS[TABLE_TEXT_COLOR_FIELD]),
+    }
+
+
+def clone_group_record(group: GroupRecord) -> GroupRecord:
+    return group.clone()
 
 
 def is_editor_document_payload(payload: Any) -> bool:
@@ -116,8 +196,8 @@ def default_node_theme(schema: EditorSchema, node: NodeRecord) -> dict[str, str]
     definition = schema.nodes[node.type]
     palette_by_type = {
         "Initial": {"body": "#13251f", "border": "#5fc992", "text": "#f3fcf7"},
-        "TouchIdle": {"body": "#12283a", "border": "#55b3ff", "text": "#f8fbff"},
-        "TouchDrag": {"body": "#2a1f24", "border": "#ff6363", "text": "#fff6f7"},
+        "TouchIdle": {"body": "#071b2d", "border": "#25b7ff", "text": "#e8f8ff"},
+        "TouchDrag": {"body": "#251f38", "border": "#b5a1ff", "text": "#faf7ff"},
         "ParameterTrigger": {"body": "#332714", "border": "#ffbc33", "text": "#fff8ef"},
         "DrawFrame": {"body": "#12191f", "border": "#7aa6c2", "text": "#d9e8f3"},
         "Comment": {"body": "#2f2618", "border": "#e2b86a", "text": "#fff8eb"},
@@ -893,8 +973,10 @@ def create_node(
         node.fields["target_idle"] = 0
         node.manual_fields.discard("action_trigger")
         _refresh_trigger_interface_fields(node)
+        ensure_parameter_table_metadata(node)
     apply_node_appearance_defaults(schema, node)
     sync_comment_legacy_appearance(node)
+    ensure_parameter_table_metadata(node)
     return node
 
 
@@ -955,6 +1037,88 @@ def create_document(schema: EditorSchema | None = None) -> DocumentModel:
     reassign_function_ids(active_schema, document)
     recompute_document_state(active_schema, document)
     return document
+
+
+def normalized_document_groups(document: DocumentModel) -> list[GroupRecord]:
+    existing_node_ids = {node.uuid for node in document.nodes}
+    normalized: list[GroupRecord] = []
+    for group in document.groups:
+        member_ids = [node_uuid for node_uuid in group.node_uuids if node_uuid in existing_node_ids]
+        if not member_ids:
+            continue
+        normalized.append(
+            GroupRecord(
+                uuid=group.uuid,
+                title=str(group.title or "").strip(),
+                node_uuids=member_ids,
+                theme_body_color=group.theme_body_color,
+                theme_border_color=group.theme_border_color,
+                theme_text_color=group.theme_text_color,
+            )
+        )
+    return normalized
+
+
+def _legacy_node_rect(node_type: str, ui_position: dict[str, Any], ui_size: dict[str, Any] | None) -> tuple[float, float, float, float]:
+    x = float(ui_position.get("x", 0.0))
+    y = float(ui_position.get("y", 0.0))
+    if ui_size:
+        width = float(ui_size.get("width", 380.0))
+        height = float(ui_size.get("height", 180.0))
+    elif node_type == "Comment":
+        width = 360.0
+        height = 180.0
+    elif node_type == "DrawFrame":
+        width = DRAWFRAME_DEFAULT_SIZE["width"]
+        height = DRAWFRAME_DEFAULT_SIZE["height"]
+    else:
+        width = 380.0
+        height = 180.0
+    return x, y, width, height
+
+
+def groups_from_legacy_drawframes(raw_nodes: list[dict[str, Any]], document: DocumentModel) -> list[GroupRecord]:
+    legacy_frames = [raw for raw in raw_nodes if raw.get("type") == "DrawFrame"]
+    if not legacy_frames:
+        return []
+    groups: list[GroupRecord] = []
+    node_rects: dict[str, tuple[float, float, float, float]] = {
+        node.uuid: _legacy_node_rect(node.type, node.ui_position, node.ui_size)
+        for node in document.nodes
+    }
+    for raw in legacy_frames:
+        frame_x, frame_y, frame_width, frame_height = _legacy_node_rect(
+            "DrawFrame",
+            raw.get("ui_position", {"x": 0.0, "y": 0.0}),
+            raw.get("ui_size"),
+        )
+        member_ids: list[str] = []
+        for node in document.nodes:
+            if node.type == "DrawFrame":
+                continue
+            node_x, node_y, node_width, node_height = node_rects[node.uuid]
+            intersects = not (
+                node_x + node_width < frame_x
+                or node_x > frame_x + frame_width
+                or node_y + node_height < frame_y
+                or node_y > frame_y + frame_height
+            )
+            if intersects:
+                member_ids.append(node.uuid)
+        if not member_ids:
+            continue
+        fields = raw if isinstance(raw, dict) else {}
+        groups.append(
+            GroupRecord(
+                uuid=str(fields.get("uuid") or new_uuid()),
+                title=str(fields.get("title") or ""),
+                node_uuids=member_ids,
+                theme_body_color=str(fields.get("theme_body_color") or "#dfeada"),
+                theme_border_color=str(fields.get("theme_border_color") or "#69b070"),
+                theme_text_color=str(fields.get("theme_text_color") or "#ffffff"),
+            )
+        )
+    return groups
 
 
 def reassign_function_ids(schema: EditorSchema, document: DocumentModel) -> None:
@@ -1045,6 +1209,8 @@ def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[
     function_types = set(function_node_types(schema))
     serialized_nodes = []
     for node in document.nodes:
+        if node.type == "DrawFrame":
+            continue
         payload: dict[str, Any] = {
             "uuid": node.uuid,
             "type": node.type,
@@ -1063,6 +1229,7 @@ def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[
         if _should_persist_target_idle(node):
             payload["target_idle"] = _coerce_int(node.fields.get("target_idle"), 0)
         serialized_nodes.append(payload)
+    serialized_groups = [asdict(group) for group in normalized_document_groups(document)]
     return {
         "editor_signature": EDITOR_DOCUMENT_SIGNATURE,
         "global_mode": document.global_mode,
@@ -1070,6 +1237,7 @@ def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[
         "editor_settings": asdict(document.editor_settings),
         "meta": asdict(document.meta),
         "nodes": serialized_nodes,
+        "groups": serialized_groups,
         "connections": [asdict(connection) for connection in document.connections],
         "trash_bin": [asdict(entry) for entry in document.trash_bin],
         "canvas_view": asdict(document.canvas_view),
@@ -1092,6 +1260,9 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
     settings_payload = payload.get("editor_settings", {})
     if not isinstance(settings_payload, dict):
         settings_payload = {}
+    groups_payload = payload.get("groups", [])
+    if not isinstance(groups_payload, list):
+        groups_payload = []
     meta_keys = set(MetaRecord.__dataclass_fields__.keys())
     document = DocumentModel(
         global_mode=str(payload.get("global_mode", "simple")),
@@ -1108,13 +1279,16 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
     )
     function_types = set(function_node_types(schema))
     sequence_map: dict[str, int] = {}
-    for raw in payload.get("nodes", []):
+    raw_nodes = payload.get("nodes", [])
+    for raw in raw_nodes:
         fields = {
             key: value
             for key, value in raw.items()
             if key not in {"uuid", "type", "ui_position", "ui_size", "mode_variant", "locked", "numeric_linkage_enabled"}
         }
         node_type = raw["type"]
+        if node_type == "DrawFrame":
+            continue
         if node_type == "Initial":
             fields.pop("defaultState", None)
         if "target_idle" not in fields:
@@ -1140,9 +1314,29 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
         )
         apply_node_appearance_defaults(schema, node)
         sync_comment_legacy_appearance(node)
+        ensure_parameter_table_metadata(node)
         infer_manual_fields(schema, node, document)
         apply_auto_rules(schema, document, node, source_mode="advanced", force_generated=False)
         document.nodes.append(node)
+    parsed_groups: list[GroupRecord] = []
+    for raw_group in groups_payload:
+        if not isinstance(raw_group, dict):
+            continue
+        parsed_groups.append(
+            GroupRecord(
+                uuid=str(raw_group.get("uuid") or new_uuid()),
+                title=str(raw_group.get("title") or ""),
+                node_uuids=[str(node_uuid) for node_uuid in raw_group.get("node_uuids", []) if str(node_uuid or "").strip()],
+                theme_body_color=str(raw_group.get("theme_body_color") or "#dfeada"),
+                theme_border_color=str(raw_group.get("theme_border_color") or "#69b070"),
+                theme_text_color=str(raw_group.get("theme_text_color") or "#ffffff"),
+            )
+        )
+    if parsed_groups:
+        document.groups = parsed_groups
+    else:
+        document.groups = groups_from_legacy_drawframes(raw_nodes, document)
+    document.groups = normalized_document_groups(document)
     sync_initial_from_meta(schema, document)
     backfill_slots(schema, document)
     reassign_function_ids(schema, document)
@@ -1304,7 +1498,7 @@ def validate_document(schema: EditorSchema, document: DocumentModel) -> list[Val
     duplicate_parameters: dict[str, list[NodeRecord]] = {}
     for node in function_nodes:
         parameter_value = _display_field_value(schema, node, "parameter")
-        if parameter_value:
+        if parameter_value and parameter_value.lower() != "empty":
             duplicate_parameters.setdefault(parameter_value, []).append(node)
     for group in duplicate_parameters.values():
         if len(group) > 1:

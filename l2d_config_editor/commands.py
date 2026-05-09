@@ -57,6 +57,29 @@ class UpdateFieldCommand(QUndoCommand):
         self.controller._set_field(self.node_uuid, self.key, self.old_value, self.source_mode)
 
 
+class UpdateFieldsCommand(QUndoCommand):
+    def __init__(self, controller, node_uuid, updates, source_mode, label: str = "批量修改字段") -> None:
+        super().__init__(label)
+        self.controller = controller
+        self.node_uuid = node_uuid
+        self.updates = [(key, old_value, new_value) for key, old_value, new_value in updates]
+        self.source_mode = source_mode
+
+    def redo(self) -> None:
+        self.controller._set_fields(
+            self.node_uuid,
+            {key: new_value for key, _old_value, new_value in self.updates},
+            self.source_mode,
+        )
+
+    def undo(self) -> None:
+        self.controller._set_fields(
+            self.node_uuid,
+            {key: old_value for key, old_value, _new_value in self.updates},
+            self.source_mode,
+        )
+
+
 class UpdateNodeLockCommand(QUndoCommand):
     def __init__(self, controller, node_uuid, old_locked, new_locked) -> None:
         super().__init__("切换节点锁定")
@@ -86,6 +109,20 @@ class UpdateEditorSettingsCommand(QUndoCommand):
 
     def undo(self) -> None:
         self.controller._set_editor_settings(self.old_settings, self.old_trash_bin)
+
+
+class SetGroupsCommand(QUndoCommand):
+    def __init__(self, controller, old_groups, new_groups, label: str = "更新分组") -> None:
+        super().__init__(label)
+        self.controller = controller
+        self.old_groups = [group.clone() for group in old_groups]
+        self.new_groups = [group.clone() for group in new_groups]
+
+    def redo(self) -> None:
+        self.controller._set_groups([group.clone() for group in self.new_groups])
+
+    def undo(self) -> None:
+        self.controller._set_groups([group.clone() for group in self.old_groups])
 
 
 class MoveNodeCommand(QUndoCommand):

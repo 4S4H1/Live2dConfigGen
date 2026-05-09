@@ -78,6 +78,17 @@ class LogicTests(unittest.TestCase):
         self.assertIn("TouchIdle", self.schema.nodes)
         self.assertGreater(len(self.schema.csv_columns), 10)
 
+    def test_touchidle_and_touchdrag_default_themes_match_requested_presets(self) -> None:
+        document = self.make_ready_document()
+        idle = create_node(self.schema, document, "TouchIdle")
+        drag = create_node(self.schema, document, "TouchDrag")
+        self.assertEqual("#071b2d", idle.fields["theme_body_color"])
+        self.assertEqual("#25b7ff", idle.fields["theme_border_color"])
+        self.assertEqual("#e8f8ff", idle.fields["theme_text_color"])
+        self.assertEqual("#251f38", drag.fields["theme_body_color"])
+        self.assertEqual("#b5a1ff", drag.fields["theme_border_color"])
+        self.assertEqual("#faf7ff", drag.fields["theme_text_color"])
+
     def test_default_document_contains_initial_and_gate(self) -> None:
         document = create_document(self.schema)
         self.assertEqual(1, len([node for node in document.nodes if node.type == "Initial"]))
@@ -523,7 +534,7 @@ class LogicTests(unittest.TestCase):
         first = controller.get_node(first_uuid)
         self.assertFalse(first.numeric_linkage_enabled)
         self.assertEqual("TouchIdle1", first.fields["draw_able_name"])
-        self.assertEqual("Paramtouch_idle1", first.fields["parameter"])
+        self.assertEqual("empty", first.fields["parameter"])
         self.assertIn("touch_idle1", first.fields["action_trigger"])
         self.assertIn("idle = 5", first.fields["action_trigger_active"])
 
@@ -531,7 +542,7 @@ class LogicTests(unittest.TestCase):
         second = controller.get_node(second_uuid)
         self.assertFalse(second.numeric_linkage_enabled)
         self.assertEqual("TouchIdle2", second.fields["draw_able_name"])
-        self.assertEqual("Paramtouch_idle2", second.fields["parameter"])
+        self.assertEqual("empty", second.fields["parameter"])
         self.assertIn("touch_idle2", second.fields["action_trigger"])
         self.assertIn("idle = 7", second.fields["action_trigger_active"])
 
@@ -679,7 +690,7 @@ class LogicTests(unittest.TestCase):
         new_node = controller.get_node(pasted[0])
         self.assertEqual("TouchIdle", source_node.fields["draw_able_name"])
         self.assertEqual("TouchIdle", new_node.fields["draw_able_name"])
-        self.assertEqual("Paramtouch_idle", new_node.fields["parameter"])
+        self.assertEqual("empty", new_node.fields["parameter"])
         self.assertIn("action = 'touch_idle'", new_node.fields["action_trigger"])
         self.assertIn("idle = 0", new_node.fields["action_trigger_active"])
 
@@ -990,6 +1001,45 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
 
         self.assertEqual("#123abc", widget.color_name())
         self.assertEqual(["#123abc"], changes)
+
+    def test_node_form_batches_appearance_scheme_updates(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            window.controller.set_global_mode("simple")
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            item = window.canvas.node_items[created]
+
+            with patch("l2d_config_editor.widgets.NodeAppearanceDialog") as dialog_cls:
+                dialog_instance = dialog_cls.return_value
+                dialog_instance.exec.return_value = QDialog.DialogCode.Accepted
+                dialog_instance.values.return_value = {
+                    "theme_body_color": "#15302f",
+                    "theme_border_color": "#f5c84b",
+                    "theme_text_color": "#fff6d6",
+                }
+                with patch.object(window.controller, "update_fields") as update_fields, patch.object(
+                    window.controller, "update_field"
+                ) as update_field:
+                    self.assertTrue(item.form.open_appearance_dialog())
+
+            update_field.assert_not_called()
+            update_fields.assert_called_once_with(
+                created,
+                {
+                    "theme_body_color": "#15302f",
+                    "theme_border_color": "#f5c84b",
+                    "theme_text_color": "#fff6d6",
+                },
+                "simple",
+                label="应用外观方案",
+            )
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
 
     def test_color_choice_button_uses_inline_palette(self) -> None:
         widget = ColorChoiceButton("选择颜色")
@@ -1642,7 +1692,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
-    def test_draw_frame_title_font_scales_up_when_zooming_out(self) -> None:
+    def test_create_group_builds_canvas_group_item_and_wraps_members(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
@@ -1650,18 +1700,17 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
             window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
             window.controller.update_field(initial.uuid, "CharName", "??", "simple")
-            frame_uuid = window.controller.create_node("DrawFrame", (260, 180))
-            item = window.canvas.node_items[frame_uuid]
-            node = window.controller.get_node(frame_uuid)
-            center = QPointF(node.ui_position["x"], node.ui_position["y"])
-            baseline_font_size = item._draw_frame_title_font().pointSizeF()
-            baseline_rect_height = item._draw_frame_title_rect().height()
-
-            window.canvas._apply_view_state(0.45, center)
-            self.app.processEvents()
-
-            self.assertGreater(item._draw_frame_title_font().pointSizeF(), baseline_font_size)
-            self.assertGreater(item._draw_frame_title_rect().height(), baseline_rect_height)
+            first_uuid = window.controller.create_node("TouchIdle", (260, 180))
+            second_uuid = window.controller.create_node("TouchDrag", (620, 260))
+            group_uuid = window.controller.create_group([first_uuid, second_uuid])
+            self.assertIsNotNone(group_uuid)
+            self.assertIn(group_uuid, window.canvas.group_items)
+            self.assertNotIn(group_uuid, window.canvas.node_items)
+            group_item = window.canvas.group_items[group_uuid]
+            first_center = window.canvas.node_visual_rect(first_uuid).center()
+            second_center = window.canvas.node_visual_rect(second_uuid).center()
+            self.assertTrue(group_item.focus_rect().contains(first_center))
+            self.assertTrue(group_item.focus_rect().contains(second_center))
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
@@ -2004,7 +2053,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
-    def test_draw_frame_detects_intersecting_members_and_skips_locked_nodes(self) -> None:
+    def test_parameter_trigger_renders_as_table_overlay(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
@@ -2012,25 +2061,17 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
             window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
             window.controller.update_field(initial.uuid, "CharName", "??", "simple")
-
-            inside_uuid = window.controller.create_node("TouchIdle", (220, 120))
-            locked_uuid = window.controller.create_node("TouchDrag", (260, 210))
-            outside_uuid = window.controller.create_node("TouchIdle", (760, 120))
-            frame_uuid = window.controller.create_node("DrawFrame", (160, 80))
-            frame_node = window.controller.get_node(frame_uuid)
-            frame_node.ui_size = {"width": 420.0, "height": 260.0}
-            window.controller.nodeUpdated.emit(frame_uuid)
-            window.controller.set_node_locked(locked_uuid, True)
-
-            members = window.canvas.frame_drag_members(frame_uuid)
-
-            self.assertIn(inside_uuid, members)
-            self.assertNotIn(locked_uuid, members)
-            self.assertNotIn(outside_uuid, members)
+            row_uuid = window.controller.create_node("ParameterTrigger", (220, 120))
+            self.assertNotIn(row_uuid, window.canvas.node_items)
+            table_item = window.canvas.table_row_to_item[row_uuid]
+            self.assertEqual([row_uuid], table_item.row_node_uuids())
+            second_row = window.controller.add_parameter_table_row(table_item.table_id, row_uuid)
+            self.assertIsNotNone(second_row)
+            self.assertEqual(2, len(window.canvas.table_items[table_item.table_id].row_node_uuids()))
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
-    def test_comment_and_draw_frame_theme_fields_survive_roundtrip(self) -> None:
+    def test_comment_and_legacy_draw_frame_roundtrip_to_group(self) -> None:
         schema = get_default_schema()
         document = create_document(schema)
         initial = next(node for node in document.nodes if node.type == "Initial")
@@ -2044,30 +2085,50 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         comment.fields["theme_text_color"] = "#abcdef"
         comment.fields["note_box_color"] = "#123456"
         comment.fields["note_text_color"] = "#abcdef"
+        member_a = create_node(schema, document, "TouchIdle", (180, 120))
+        member_b = create_node(schema, document, "TouchDrag", (380, 160))
         draw_frame = create_node(schema, document, "DrawFrame", (120, 80))
         draw_frame.fields["title"] = "组A"
         draw_frame.fields["theme_body_color"] = "#ddeeff"
         draw_frame.fields["theme_border_color"] = "#227744"
         draw_frame.fields["theme_text_color"] = "#112233"
-        document.nodes.extend([comment, draw_frame])
+        draw_frame.ui_size = {"width": 520.0, "height": 280.0}
+        document.nodes.extend([comment, member_a, member_b, draw_frame])
 
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "appearance_roundtrip.json"
-            save_document(schema, document, path)
+            payload = export_document_dict(schema, document)
+            payload["nodes"].append(
+                {
+                    "uuid": draw_frame.uuid,
+                    "type": "DrawFrame",
+                    "ui_position": dict(draw_frame.ui_position),
+                    "ui_size": dict(draw_frame.ui_size or {"width": 520.0, "height": 280.0}),
+                    "locked": draw_frame.locked,
+                    "title": draw_frame.fields["title"],
+                    "theme_body_color": draw_frame.fields["theme_body_color"],
+                    "theme_border_color": draw_frame.fields["theme_border_color"],
+                    "theme_text_color": draw_frame.fields["theme_text_color"],
+                }
+            )
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             loaded = load_document(schema, path)
 
         loaded_comment = next(node for node in loaded.nodes if node.type == "Comment" and node.uuid == comment.uuid)
-        loaded_frame = next(node for node in loaded.nodes if node.type == "DrawFrame" and node.uuid == draw_frame.uuid)
+        self.assertFalse(any(node.type == "DrawFrame" for node in loaded.nodes))
+        self.assertEqual(1, len(loaded.groups))
+        loaded_group = loaded.groups[0]
+        self.assertEqual("组A", loaded_group.title)
         self.assertEqual("#123456", loaded_comment.fields["theme_body_color"])
         self.assertEqual("#345678", loaded_comment.fields["theme_border_color"])
         self.assertEqual("#abcdef", loaded_comment.fields["theme_text_color"])
         self.assertEqual("#123456", loaded_comment.fields["note_box_color"])
         self.assertEqual("#abcdef", loaded_comment.fields["note_text_color"])
-        self.assertEqual("组A", loaded_frame.fields["title"])
-        self.assertEqual("#ddeeff", loaded_frame.fields["theme_body_color"])
-        self.assertEqual("#227744", loaded_frame.fields["theme_border_color"])
-        self.assertEqual("#112233", loaded_frame.fields["theme_text_color"])
-
+        self.assertEqual("#ddeeff", loaded_group.theme_body_color)
+        self.assertEqual("#227744", loaded_group.theme_border_color)
+        self.assertEqual("#112233", loaded_group.theme_text_color)
+        self.assertIn(member_a.uuid, loaded_group.node_uuids)
+        self.assertIn(member_b.uuid, loaded_group.node_uuids)
 
 if __name__ == "__main__":
     unittest.main()
