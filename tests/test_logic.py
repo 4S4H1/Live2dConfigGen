@@ -1573,7 +1573,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
-    def test_connection_updates_defer_during_zoomed_out_motion_preview(self) -> None:
+    def test_connection_path_updates_during_zoomed_out_drag(self) -> None:
         def path_end(path):
             element = path.elementAt(path.elementCount() - 1)
             return QPointF(element.x, element.y)
@@ -1595,13 +1595,46 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             before = path_end(connection_item.path())
 
             window.canvas._set_interaction_busy("drag", True)
+            self.assertFalse(window.canvas.should_use_motion_preview())
+            second_item = window.canvas.node_items[second]
+            second_item.setPos(second_item.pos() + QPointF(180.0, 40.0))
+            during = path_end(connection_item.path())
+
+            self.assertNotEqual(before, during)
+            self.assertEqual(during, window.canvas.connection_anchor_scene_pos(second, "input"))
+            window.canvas._set_interaction_busy("drag", False)
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_connection_updates_still_defer_during_zoomed_out_resize_preview(self) -> None:
+        def path_end(path):
+            element = path.elementAt(path.elementCount() - 1)
+            return QPointF(element.x, element.y)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            first = window.controller.create_node("TouchIdle", (160, 160))
+            second = window.controller.create_node("TouchDrag", (520, 180))
+            window.controller.add_connection(first, second)
+            for index in range(55):
+                window.controller.create_node("TouchIdle", (900 + index * 260, 120))
+            window.canvas._apply_view_state(0.18, QPointF(0.0, 0.0))
+            connection_item = window.canvas.connection_items[(first, second)]
+            before = path_end(connection_item.path())
+
+            window.canvas._set_interaction_busy("resize", True)
             self.assertTrue(window.canvas.should_use_motion_preview())
             second_item = window.canvas.node_items[second]
             second_item.setPos(second_item.pos() + QPointF(180.0, 40.0))
             during = path_end(connection_item.path())
 
             self.assertEqual(before, during)
-            window.canvas._set_interaction_busy("drag", False)
+            window.canvas._set_interaction_busy("resize", False)
             after = path_end(connection_item.path())
             self.assertNotEqual(before, after)
             self.assertEqual(after, window.canvas.connection_anchor_scene_pos(second, "input"))

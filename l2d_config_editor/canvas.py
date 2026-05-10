@@ -190,14 +190,14 @@ class NodeItem(QGraphicsObject):
     CARD_TITLE_BASE_POINT_SIZE = 24.0
     CARD_TITLE_MIN_POINT_SIZE = 16.0
     CARD_TITLE_MAX_POINT_SIZE = 96.0
-    CARD_ACTION_BASE_POINT_SIZE = 16.4
-    CARD_ACTION_MIN_POINT_SIZE = 13.0
+    CARD_ACTION_BASE_POINT_SIZE = 24.6
+    CARD_ACTION_MIN_POINT_SIZE = 19.5
     CARD_ACTION_MAX_POINT_SIZE = 56.0
-    CARD_TARGET_BASE_POINT_SIZE = 23.0
-    CARD_TARGET_MIN_POINT_SIZE = 18.0
+    CARD_TARGET_BASE_POINT_SIZE = 46.0
+    CARD_TARGET_MIN_POINT_SIZE = 36.0
     CARD_TARGET_MAX_POINT_SIZE = 84.0
-    CARD_PARAMETER_BASE_POINT_SIZE = 13.0
-    CARD_PARAMETER_MIN_POINT_SIZE = 11.0
+    CARD_PARAMETER_BASE_POINT_SIZE = 20.8
+    CARD_PARAMETER_MIN_POINT_SIZE = 17.6
     CARD_PARAMETER_MAX_POINT_SIZE = 44.0
     INITIAL_TITLE_BASE_POINT_SIZE = 13.2
     INITIAL_TITLE_MIN_POINT_SIZE = 11.0
@@ -2220,7 +2220,7 @@ class NodeCanvasView(QGraphicsView):
         item_count = len(self.node_items) + len(self.table_items)
         if item_count <= 50:
             return False
-        if not (self._interaction_flags & {"pan", "wheel", "focus", "drag", "resize"}):
+        if not (self._interaction_flags & {"pan", "wheel", "focus", "resize"}):
             return False
         return float(self.transform().m11()) < 0.5
 
