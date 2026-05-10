@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -588,6 +589,13 @@ class MainWindow(QMainWindow):
         self._auto_save_timer.stop()
         if not self._is_dirty():
             return True
+        close_policy = str(os.environ.get("L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY") or "").strip().lower()
+        if close_policy == "save":
+            if self.controller.document.path:
+                return bool(self._save_current_file(silent=True, allow_incomplete=True))
+            return True
+        if close_policy in {"discard", "ignore"} or os.environ.get("L2D_CONFIG_EDITOR_NO_CLOSE_PROMPT") == "1":
+            return True
         box = QMessageBox(self)
         box.setWindowTitle("保存当前更改")
         box.setText("切换工程目录前，是否保存当前文档的更改？")
@@ -778,6 +786,7 @@ class MainWindow(QMainWindow):
         self.node_list = QTreeWidget()
         self.node_list.setObjectName("nodeDirectoryList")
         self.node_list.setHeaderHidden(True)
+        self.node_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.node_list.itemClicked.connect(self._focus_node_from_tree_item)
         self.node_list.itemActivated.connect(self._focus_node_from_tree_item)
         list_layout.addWidget(self.node_list, 1)
@@ -1585,12 +1594,34 @@ class MainWindow(QMainWindow):
             self._collapsed_groups.add(group_dir)
         self._refresh_file_list()
 
+    def _selected_node_list_uuids(self) -> list[str]:
+        if not hasattr(self, "node_list"):
+            return []
+        result: list[str] = []
+        seen: set[str] = set()
+        for item in self.node_list.selectedItems():
+            payload = item.data(0, Qt.ItemDataRole.UserRole)
+            if not isinstance(payload, dict) or payload.get("kind") != "node":
+                continue
+            node_uuid = payload.get("node_uuid")
+            if isinstance(node_uuid, str) and node_uuid and node_uuid not in seen:
+                seen.add(node_uuid)
+                result.append(node_uuid)
+        return result
+
+    def _active_selected_node_uuids(self) -> list[str]:
+        if hasattr(self, "node_list") and self.node_list.hasFocus():
+            selected = self._selected_node_list_uuids()
+            if selected:
+                return selected
+        return self.canvas.selected_node_uuids()
+
     def _copy_selection(self) -> None:
         focus_widget = self.focusWidget()
         if isinstance(focus_widget, (QLineEdit, QPlainTextEdit)):
             focus_widget.copy()
             return
-        node_uuids = self.canvas.selected_node_uuids()
+        node_uuids = self._active_selected_node_uuids()
         payload = self.controller.serialize_selection(node_uuids)
         if not payload:
             return
@@ -1619,7 +1650,7 @@ class MainWindow(QMainWindow):
         self.controller.paste_payload(payload, position)
 
     def _duplicate_selection(self) -> None:
-        node_uuids = self.canvas.selected_node_uuids()
+        node_uuids = self._active_selected_node_uuids()
         payload = self.controller.serialize_selection(node_uuids)
         if not payload:
             return
@@ -1637,7 +1668,7 @@ class MainWindow(QMainWindow):
         self.controller.paste_payload(payload, position, connect_from=connect_from)
 
     def _delete_selection(self) -> None:
-        node_uuids = self.canvas.selected_node_uuids()
+        node_uuids = self._active_selected_node_uuids()
         connection_pairs = self.canvas.selected_connection_pairs()
         if node_uuids:
             self.controller.remove_nodes(node_uuids)
@@ -1852,7 +1883,7 @@ class MainWindow(QMainWindow):
 
     def _focus_node_from_directory(self, node_uuid: str) -> None:
         if node_uuid:
-            self.canvas.focus_on_node(node_uuid, target_scale=1.15, emphasize=True)
+            self.canvas.focus_on_node(node_uuid, target_scale=None, emphasize=True)
             self._select_canvas_target(node_uuid)
 
     def _focus_node_from_tree_item(self, item: QTreeWidgetItem, _column: int = 0) -> None:
@@ -2216,6 +2247,13 @@ class MainWindow(QMainWindow):
         self._auto_save_timer.stop()
         if not self._is_dirty():
             return True
+        close_policy = str(os.environ.get("L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY") or "").strip().lower()
+        if close_policy == "save":
+            if self.controller.document.path:
+                return bool(self._save_current_file(silent=True, allow_incomplete=True))
+            return True
+        if close_policy in {"discard", "ignore"} or os.environ.get("L2D_CONFIG_EDITOR_NO_CLOSE_PROMPT") == "1":
+            return True
         if target_path is not None:
             if self.controller.document.path:
                 return bool(self._save_current_file(silent=True, allow_incomplete=True))
@@ -2255,6 +2293,13 @@ class MainWindow(QMainWindow):
     def _confirm_safe_to_close(self) -> bool:
         self._auto_save_timer.stop()
         self._commit_pending_editor_changes()
+        close_policy = str(os.environ.get("L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY") or "").strip().lower()
+        if close_policy == "save":
+            if self._is_dirty() and self.controller.document.path:
+                return bool(self._save_current_file(silent=True, allow_incomplete=True))
+            return True
+        if close_policy in {"discard", "ignore"} or os.environ.get("L2D_CONFIG_EDITOR_NO_CLOSE_PROMPT") == "1":
+            return True
         if not self._is_dirty():
             return True
         if not self.controller.document.state.is_meta_ready:

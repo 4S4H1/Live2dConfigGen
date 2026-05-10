@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -17,7 +18,7 @@ def _project_root() -> Path:
 
 
 PROJECT_ROOT = _project_root()
-6
+
 if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
@@ -29,6 +30,19 @@ else:
 
 
 def main() -> int:
+    if "--no-close-prompt" in sys.argv:
+        os.environ["L2D_CONFIG_EDITOR_NO_CLOSE_PROMPT"] = "1"
+        sys.argv.remove("--no-close-prompt")
+    for argument in list(sys.argv):
+        if argument.startswith("--test-close-policy="):
+            os.environ["L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY"] = argument.split("=", 1)[1].strip().lower()
+            sys.argv.remove(argument)
+    if "--auto-discard-on-close" in sys.argv:
+        os.environ["L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY"] = "discard"
+        sys.argv.remove("--auto-discard-on-close")
+    if "--auto-save-on-close" in sys.argv:
+        os.environ["L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY"] = "save"
+        sys.argv.remove("--auto-save-on-close")
     app = QApplication(sys.argv)
     app.setApplicationName("L2D Config Editor")
     app.setStyle("Fusion")

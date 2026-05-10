@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QGraphicsScene,
     QGraphicsView,
     QInputDialog,
+    QDialog,
     QMenu,
 )
 
@@ -31,10 +32,13 @@ from .logic import (
     parameter_table_id,
     parameter_table_order,
     parameter_table_title,
+    TABLE_BODY_COLOR_FIELD,
+    TABLE_BORDER_COLOR_FIELD,
+    TABLE_TEXT_COLOR_FIELD,
 )
 from .perf_tools import get_performance_recorder
 from .schema import EditorSchema, field_visible
-from .widgets import CommitLineEdit, NodeFormWidget, NumericLineEdit
+from .widgets import CommitComboBox, CommitLineEdit, NodeAppearanceDialog, NodeFormWidget, NumericLineEdit
 
 performance_recorder = get_performance_recorder()
 
@@ -139,7 +143,7 @@ class ConnectionItem(QGraphicsPathItem):
         self.setPath(path)
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, not self.view.should_use_fast_rendering())
         color = QColor("#2b89ff") if self.isSelected() else QColor("#7d8aa0")
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(QPen(color, 2.8 if self.isSelected() else 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
@@ -171,12 +175,12 @@ class NodeItem(QGraphicsObject):
     DRAWFRAME_TITLE_BASE_POINT_SIZE = 25.2
     DRAWFRAME_TITLE_MIN_POINT_SIZE = 21.2
     DRAWFRAME_TITLE_MAX_POINT_SIZE = 144.0
-    CARD_NOTE_BASE_POINT_SIZE = 12.0
-    CARD_NOTE_MIN_POINT_SIZE = 10.0
-    CARD_NOTE_MAX_POINT_SIZE = 48.0
-    CARD_TITLE_BASE_POINT_SIZE = 34.0
-    CARD_TITLE_MIN_POINT_SIZE = 28.0
-    CARD_TITLE_MAX_POINT_SIZE = 144.0
+    CARD_NOTE_BASE_POINT_SIZE = 18.0
+    CARD_NOTE_MIN_POINT_SIZE = 13.0
+    CARD_NOTE_MAX_POINT_SIZE = 72.0
+    CARD_TITLE_BASE_POINT_SIZE = 24.0
+    CARD_TITLE_MIN_POINT_SIZE = 16.0
+    CARD_TITLE_MAX_POINT_SIZE = 96.0
     CARD_ACTION_BASE_POINT_SIZE = 16.4
     CARD_ACTION_MIN_POINT_SIZE = 13.0
     CARD_ACTION_MAX_POINT_SIZE = 56.0
@@ -186,10 +190,14 @@ class NodeItem(QGraphicsObject):
     CARD_PARAMETER_BASE_POINT_SIZE = 13.0
     CARD_PARAMETER_MIN_POINT_SIZE = 11.0
     CARD_PARAMETER_MAX_POINT_SIZE = 44.0
+    INITIAL_TITLE_BASE_POINT_SIZE = 13.2
+    INITIAL_TITLE_MIN_POINT_SIZE = 11.0
+    INITIAL_TITLE_MAX_POINT_SIZE = 48.0
     TITLE_SCALE_FLOOR = 0.18
     SUMMARY_SCALE_FLOOR = 0.18
     DRAWFRAME_TITLE_SCALE_FLOOR = 0.2
     CARD_TEXT_SCALE_FLOOR = 0.18
+    LAZY_FORM_NODE_COUNT_THRESHOLD = 50
 
     def __init__(self, schema: EditorSchema, controller, node, inline_width: int = 340) -> None:
         super().__init__()
@@ -373,7 +381,9 @@ class NodeItem(QGraphicsObject):
         compact_mode = False
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, not node.locked)
         form_mode = "advanced" if self._display_mode == "detail" else self.controller.preferences.global_mode
-        self.form.set_node(node, form_mode, self.controller.preferences.debug_json_field_names, compact_mode=compact_mode)
+        build_inline_form = not self._uses_compact_card() or len(self.controller.document.nodes) <= self.LAZY_FORM_NODE_COUNT_THRESHOLD
+        if build_inline_form:
+            self.form.set_node(node, form_mode, self.controller.preferences.debug_json_field_names, compact_mode=compact_mode)
         base_content_width = self.SIMPLE_WIDTH if form_mode == "simple" else self.ADVANCED_WIDTH
         if self._uses_compact_card():
             base_content_width = self.CARD_BASE_WIDTH
@@ -481,7 +491,7 @@ class NodeItem(QGraphicsObject):
             "Initial": ("#2b4139", "#6fc49e"),
             "TouchIdle": ("#27384d", "#78b1ff"),
             "TouchDrag": ("#332b4f", "#b5a1ff"),
-            "ParameterTrigger": ("#4b2c11", "#ffc27a"),
+            "ParameterTrigger": ("#071b2d", "#25b7ff"),
             "DrawFrame": ("#dfeada", "#69b070"),
             "Comment": ("#76808d", "#69b070"),
         }
@@ -520,19 +530,20 @@ class NodeItem(QGraphicsObject):
 
     def _recompute_compact_card_layout(self, width: float) -> float:
         outer_margin = 18.0
-        title_height = 34.0
+        title_height = max(40.0, float(QFontMetrics(self._compact_note_font()).height()) + 12.0)
         canvas_top = title_height + 16.0
         inner_width = width - outer_margin * 2.0
         note_text = self._card_field_text("tips") or "empty"
         note_font = self._compact_note_font()
         note_metrics = QFontMetrics(note_font)
-        note_width = min(max(132.0, float(note_metrics.horizontalAdvance(note_text) + 26)), inner_width * 0.58)
+        note_width = min(max(150.0, float(note_metrics.horizontalAdvance(note_text) + 32)), inner_width * 0.66)
         frame_rect = QRectF(outer_margin, canvas_top, inner_width, self.CARD_BASE_HEIGHT - 26.0)
         top_box = QRectF(frame_rect.center().x() - 120.0, frame_rect.top() + 24.0, 240.0, 58.0)
         left_arrow = QRectF(frame_rect.left() + 26.0, frame_rect.top() + 116.0, 238.0, 118.0)
         right_capsule = QRectF(frame_rect.right() - 266.0, frame_rect.top() + 96.0, 246.0, 146.0)
         bottom_capsule = QRectF(frame_rect.center().x() - 118.0, frame_rect.bottom() - 74.0, 236.0, 54.0)
         if self.node.type == "TouchDrag":
+            left_arrow = QRectF(frame_rect.center().x() - 150.0, frame_rect.top() + 116.0, 300.0, 118.0)
             right_capsule = QRectF(frame_rect.right() - 10.0, frame_rect.top() + 96.0, 0.0, 0.0)
         self._card_layout = {
             "note": QRectF(frame_rect.left(), 8.0, note_width, title_height),
@@ -750,7 +761,8 @@ class NodeItem(QGraphicsObject):
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
         del option, widget
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        fast_render = self._fast_rendering()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, not fast_render)
         if self.node.type == "Comment":
             body_color, header_color, type_border, accent, text_color = self._comment_colors()
         else:
@@ -1153,9 +1165,23 @@ class NodeItem(QGraphicsObject):
         compensation_scale = max(self._view_scale(), scale_floor if scale_floor is not None else self._font_scale_floor)
         return min(max_size, max(min_size, base_size / compensation_scale))
 
+    def _fast_rendering(self) -> bool:
+        view = self._canvas_view()
+        return bool(view and view.should_use_fast_rendering())
+
     def _title_font(self) -> QFont:
         title_font = QFont(self.form.font())
         title_font.setBold(True)
+        if self.node.type == "Initial":
+            title_font.setPointSizeF(
+                self._scale_compensated_point_size(
+                    self.INITIAL_TITLE_BASE_POINT_SIZE,
+                    self.INITIAL_TITLE_MIN_POINT_SIZE,
+                    self.INITIAL_TITLE_MAX_POINT_SIZE,
+                    scale_floor=self.TITLE_SCALE_FLOOR,
+                )
+            )
+            return title_font
         title_font.setPointSizeF(
             self._scale_compensated_point_size(
                 self.TITLE_BASE_POINT_SIZE,
@@ -1333,6 +1359,16 @@ class NodeItem(QGraphicsObject):
             return False
         self.setSelected(True)
         self.controller.set_selected_node(self.node.uuid)
+        if getattr(self.form, "node", None) is not self.node:
+            dialog = NodeAppearanceDialog(self.node.fields, self._canvas_view() or self.form)
+            if anchor_global_pos is not None:
+                dialog.move(anchor_global_pos)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return False
+            updates = {key: value for key, value in dialog.values().items() if self.node.fields.get(key) != value}
+            if updates:
+                self.controller.update_fields(self.node.uuid, updates, self.controller.preferences.global_mode, label="应用外观方案")
+            return True
         return self.form.open_appearance_dialog(anchor_global_pos)
 
     def _card_editor_font(self, field_key: str) -> QFont:
@@ -1362,7 +1398,7 @@ class NodeItem(QGraphicsObject):
         metrics = QFontMetrics(title_font)
         summary_font = self._summary_font()
         summary_metrics = QFontMetrics(summary_font)
-        available_width = max(140, int(width - 60.0))
+        available_width = max(140, int(width - 28.0))
         title_text = self._full_title_text()
         title_bounds = metrics.boundingRect(
             0,
@@ -1389,7 +1425,7 @@ class NodeItem(QGraphicsObject):
                 row_text,
             )
             row_height = max(16.0, float(row_bounds.height()))
-            rect = QRectF(14.0, summary_y, width - 60.0, row_height)
+            rect = QRectF(14.0, summary_y, width - 28.0, row_height)
             self._summary_layout_rows.append((rect, row_text, self._summary_text_color(color)))
             summary_y += row_height + row_gap
         if self._summary_layout_rows:
@@ -1398,7 +1434,7 @@ class NodeItem(QGraphicsObject):
         self._title_rect = QRectF(
             14.0,
             padding_top,
-            width - 60.0,
+            width - 28.0,
             max(24.0, float(title_bounds.height())),
         )
         self._header_height = max(
@@ -1427,6 +1463,7 @@ class GroupItem(QGraphicsObject):
         self._drag_start_scene = QPointF()
         self._drag_start_pos = QPointF()
         self._member_origins: dict[str, QPointF] = {}
+        self._table_origins: dict[str, QPointF] = {}
         self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable | QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges)
         self.setAcceptHoverEvents(True)
         self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -1469,7 +1506,7 @@ class GroupItem(QGraphicsObject):
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
         del option, widget
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, not self.view.should_use_fast_rendering())
         body = QColor(str(getattr(self.group, "theme_body_color", "#dfeada") or "#dfeada"))
         border = QColor(str(getattr(self.group, "theme_border_color", "#69b070") or "#69b070"))
         text = QColor(str(getattr(self.group, "theme_text_color", "#ffffff") or "#ffffff"))
@@ -1506,6 +1543,11 @@ class GroupItem(QGraphicsObject):
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton and self._title_rect.contains(event.pos()):
             self._member_origins = self._movable_member_positions()
+            self._table_origins = {}
+            for node_uuid in self._member_origins:
+                table_item = self.view.table_row_to_item.get(node_uuid)
+                if table_item is not None:
+                    self._table_origins.setdefault(table_item.table_id, QPointF(table_item.pos()))
             if self._member_origins:
                 self.setSelected(True)
                 self._dragging = True
@@ -1521,6 +1563,14 @@ class GroupItem(QGraphicsObject):
         if self._dragging:
             delta = event.scenePos() - self._drag_start_scene
             self.setPos(self._drag_start_pos + delta)
+            for node_uuid, origin in self._member_origins.items():
+                node_item = self.view.node_items.get(node_uuid)
+                if node_item is not None:
+                    node_item.setPos(origin + delta)
+            for table_id, table_origin in self._table_origins.items():
+                table_item = self.view.table_items.get(table_id)
+                if table_item is not None:
+                    table_item.setPos(table_origin + delta)
             event.accept()
             return
         super().mouseMoveEvent(event)
@@ -1536,6 +1586,7 @@ class GroupItem(QGraphicsObject):
                 for node_uuid, origin in self._member_origins.items()
             }
             self._member_origins.clear()
+            self._table_origins.clear()
             if positions:
                 self.controller.move_nodes(positions, label="Move group with nodes")
             event.accept()
@@ -1558,13 +1609,13 @@ class GroupItem(QGraphicsObject):
 class ParameterTableItem(QGraphicsObject):
     BASE_Z = 0.0
     SELECTED_Z = 48.0
-    HEADER_HEIGHT = 38.0
+    HEADER_HEIGHT = 62.0
     ROW_HEIGHT = 54.0
-    ROW_GAP = 6.0
-    PIN_RADIUS = 8.0
-    PIN_HIT_PADDING = 22.0
-    LEFT_GUTTER = 28.0
-    RIGHT_GUTTER = 28.0
+    ROW_GAP = 8.0
+    ROW_TOP_MARGIN = 12.0
+    ROW_BOTTOM_MARGIN = 16.0
+    LEFT_GUTTER = 12.0
+    RIGHT_GUTTER = 12.0
 
     def __init__(self, schema: EditorSchema, controller, view: "NodeCanvasView", table_id: str) -> None:
         super().__init__()
@@ -1574,13 +1625,19 @@ class ParameterTableItem(QGraphicsObject):
         self.table_id = table_id
         self._rows: list[Any] = []
         self._row_rects: dict[str, QRectF] = {}
+        self._cell_rects: dict[tuple[str, str], QRectF] = {}
         self._selected_row_uuid: str | None = None
+        self._selected_row_uuids: set[str] = set()
         self._rect = QRectF(0.0, 0.0, 520.0, 120.0)
         self._header_rect = QRectF(0.0, 0.0, 520.0, self.HEADER_HEIGHT)
+        self._add_button_rect = QRectF()
+        self._remove_button_rect = QRectF()
         self._dragging = False
         self._drag_start_scene = QPointF()
         self._drag_start_pos = QPointF()
         self._row_origins: dict[str, QPointF] = {}
+        self._editor_proxy: QGraphicsProxyWidget | None = None
+        self._editor_target: tuple[str, str] | None = None
         self._columns = self._build_columns()
         self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable | QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges)
         self.setAcceptHoverEvents(True)
@@ -1617,6 +1674,12 @@ class ParameterTableItem(QGraphicsObject):
     def selected_row_uuid(self) -> str | None:
         return self._selected_row_uuid
 
+    def selected_row_uuids(self) -> list[str]:
+        ordered = [row.uuid for row in self._rows if row.uuid in self._selected_row_uuids]
+        if ordered:
+            return ordered
+        return [self._selected_row_uuid] if self._selected_row_uuid else []
+
     def row_node_uuids(self) -> list[str]:
         return [row.uuid for row in self._rows]
 
@@ -1624,6 +1687,7 @@ class ParameterTableItem(QGraphicsObject):
         if node_uuid is not None and node_uuid not in self._row_rects:
             return
         self._selected_row_uuid = node_uuid
+        self._selected_row_uuids = {node_uuid} if node_uuid else set()
         self.setSelected(True)
         if node_uuid:
             self.controller.set_selected_node(node_uuid)
@@ -1635,27 +1699,39 @@ class ParameterTableItem(QGraphicsObject):
         self._rows.sort(key=lambda node: (parameter_table_order(node), node.ui_position["y"], node.ui_position["x"], node.uuid))
         if self._selected_row_uuid not in {row.uuid for row in self._rows}:
             self._selected_row_uuid = self._rows[0].uuid if self._rows else None
+        self._selected_row_uuids.intersection_update({row.uuid for row in self._rows})
+        if self._selected_row_uuid and not self._selected_row_uuids:
+            self._selected_row_uuids.add(self._selected_row_uuid)
         if not self._rows:
             self._row_rects = {}
+            self._cell_rects = {}
             self._rect = QRectF(0.0, 0.0, 520.0, 120.0)
             self._header_rect = QRectF(0.0, 0.0, 520.0, self.HEADER_HEIGHT)
+            self._add_button_rect = QRectF(460.0, 7.0, 24.0, 24.0)
+            self._remove_button_rect = QRectF(488.0, 7.0, 24.0, 24.0)
             self.setPos(0.0, 0.0)
             self.update()
             return
         anchor_x = min(float(row.ui_position["x"]) for row in self._rows)
         anchor_y = min(float(row.ui_position["y"]) for row in self._rows)
         table_width = self.LEFT_GUTTER + self.RIGHT_GUTTER + sum(width for _key, _label, width in self._columns)
-        row_bottom = self.HEADER_HEIGHT + 12.0
+        row_bottom = self.HEADER_HEIGHT + self.ROW_TOP_MARGIN
         self._row_rects = {}
-        for row in self._rows:
-            row_x = float(row.ui_position["x"]) - anchor_x
-            row_y = self.HEADER_HEIGHT + 12.0 + (float(row.ui_position["y"]) - anchor_y)
-            rect = QRectF(self.LEFT_GUTTER + row_x, row_y, table_width - self.LEFT_GUTTER - self.RIGHT_GUTTER, self.ROW_HEIGHT)
+        self._cell_rects = {}
+        for index, row in enumerate(self._rows):
+            row_y = self.HEADER_HEIGHT + self.ROW_TOP_MARGIN + index * (self.ROW_HEIGHT + self.ROW_GAP)
+            rect = QRectF(self.LEFT_GUTTER, row_y, table_width - self.LEFT_GUTTER - self.RIGHT_GUTTER, self.ROW_HEIGHT)
             self._row_rects[row.uuid] = rect
+            cursor_x = rect.left()
+            for field_key, _label, width in self._columns:
+                self._cell_rects[(row.uuid, field_key)] = QRectF(cursor_x, rect.top(), width, rect.height())
+                cursor_x += width
             row_bottom = max(row_bottom, rect.bottom())
         self.setPos(anchor_x, anchor_y)
-        self._rect = QRectF(0.0, 0.0, table_width, row_bottom + 18.0)
+        self._rect = QRectF(0.0, 0.0, table_width, row_bottom + self.ROW_BOTTOM_MARGIN)
         self._header_rect = QRectF(0.0, 0.0, table_width, self.HEADER_HEIGHT)
+        self._remove_button_rect = QRectF(table_width - 62.0, 7.0, 24.0, 24.0)
+        self._add_button_rect = QRectF(table_width - 32.0, 7.0, 24.0, 24.0)
         self.update()
 
     def boundingRect(self) -> QRectF:
@@ -1664,7 +1740,7 @@ class ParameterTableItem(QGraphicsObject):
     def _palette(self) -> tuple[QColor, QColor, QColor]:
         anchor = self._rows[0] if self._rows else None
         if anchor is None:
-            return QColor("#4b2c11"), QColor("#ffc27a"), QColor("#fff8ef")
+            return QColor("#071b2d"), QColor("#25b7ff"), QColor("#e8f8ff")
         colors = parameter_table_colors(anchor)
         return QColor(colors["_table_body_color"]), QColor(colors["_table_border_color"]), QColor(colors["_table_text_color"])
 
@@ -1679,22 +1755,11 @@ class ParameterTableItem(QGraphicsObject):
         return self.mapRectToScene(rect)
 
     def pin_scene_pos(self, node_uuid: str, side: str) -> QPointF | None:
-        rect = self._row_rects.get(node_uuid)
-        if rect is None:
-            return None
-        x = rect.left() if side == "input" else rect.right()
-        return self.mapToScene(QPointF(x, rect.center().y()))
+        del node_uuid, side
+        return None
 
     def pin_hit(self, scene_pos: QPointF) -> tuple[str, str] | None:
-        local = self.mapFromScene(scene_pos)
-        radius = self.PIN_RADIUS + self.PIN_HIT_PADDING
-        for row_uuid, rect in self._row_rects.items():
-            input_rect = QRectF(rect.left() - radius, rect.center().y() - radius, radius * 2.0, radius * 2.0)
-            output_rect = QRectF(rect.right() - radius, rect.center().y() - radius, radius * 2.0, radius * 2.0)
-            if output_rect.contains(local):
-                return row_uuid, "output"
-            if input_rect.contains(local):
-                return row_uuid, "input"
+        del scene_pos
         return None
 
     def row_uuid_at(self, local_pos: QPointF) -> str | None:
@@ -1702,6 +1767,99 @@ class ParameterTableItem(QGraphicsObject):
             if rect.contains(local_pos):
                 return row_uuid
         return None
+
+    def cell_at(self, local_pos: QPointF) -> tuple[str, str] | None:
+        for key, rect in self._cell_rects.items():
+            if rect.contains(local_pos):
+                return key
+        return None
+
+    def _schema_field(self, field_key: str):
+        return next((field for field in self.schema.nodes["ParameterTrigger"].fields if field.key == field_key), None)
+
+    def _row_by_uuid(self, node_uuid: str):
+        return next((row for row in self._rows if row.uuid == node_uuid), None)
+
+    def _discard_cell_editor(self) -> None:
+        proxy = self._editor_proxy
+        self._editor_proxy = None
+        self._editor_target = None
+        if not proxy:
+            return
+        widget = proxy.widget()
+        if widget is not None:
+            widget.blockSignals(True)
+            proxy.setWidget(None)
+            widget.deleteLater()
+        if self.scene():
+            self.scene().removeItem(proxy)
+        proxy.deleteLater()
+
+    def begin_cell_edit(self, row_uuid: str, field_key: str) -> bool:
+        row = self._row_by_uuid(row_uuid)
+        field = self._schema_field(field_key)
+        cell_rect = self._cell_rects.get((row_uuid, field_key))
+        if row is None or field is None or cell_rect is None or row.locked or field.read_only:
+            return False
+        self.select_row(row_uuid)
+        self._discard_cell_editor()
+        raw_value = row.fields.get(field_key, field.default)
+        display_value = display_value_for_field(self.schema, row, field_key, raw_value)
+        if field.editor == "combo":
+            editor = CommitComboBox()
+            for option in field.options:
+                editor.addItem(option.label, option.value)
+            index = editor.findData(raw_value)
+            if index < 0:
+                index = editor.findData(display_value)
+            if index >= 0:
+                editor.setCurrentIndex(index)
+            editor.setStyleSheet(
+                "QComboBox { background: #0b1420; color: #f8fafc; border: 2px solid #55b3ff; "
+                "border-radius: 6px; padding: 4px 7px; }"
+            )
+        elif field.editor == "bool":
+            editor = CommitComboBox()
+            editor.addItem("否", 0)
+            editor.addItem("是", 1)
+            try:
+                checked = bool(int(raw_value or 0))
+            except (TypeError, ValueError):
+                checked = str(raw_value).strip().lower() in {"true", "yes", "on", "是"}
+            editor.setCurrentIndex(1 if checked else 0)
+            editor.setStyleSheet(
+                "QComboBox { background: #0b1420; color: #f8fafc; border: 2px solid #55b3ff; "
+                "border-radius: 6px; padding: 4px 7px; }"
+            )
+        else:
+            editor = NumericLineEdit(field.editor) if field.editor in {"int", "float", "nullable_int"} else CommitLineEdit()
+            editor.setText(str(display_value or ""))
+            editor.setPlaceholderText(field.placeholder)
+            editor.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            editor.setStyleSheet(
+                "QLineEdit { background: #0b1420; color: #f8fafc; border: 2px solid #55b3ff; "
+                "border-radius: 6px; padding: 4px 7px; }"
+            )
+        proxy = QGraphicsProxyWidget(self)
+        proxy.setZValue(32)
+        proxy.setWidget(editor)
+        edit_rect = cell_rect.adjusted(4.0, 7.0, -4.0, -7.0)
+        proxy.setPos(edit_rect.topLeft())
+        editor.setFixedSize(max(40, int(edit_rect.width())), max(24, int(edit_rect.height())))
+        editor.committed.connect(lambda value, target=editor: self._commit_cell_edit(value, target))
+        self._editor_proxy = proxy
+        self._editor_target = (row_uuid, field_key)
+        editor.setFocus(Qt.FocusReason.MouseFocusReason)
+        if hasattr(editor, "selectAll"):
+            editor.selectAll()
+        return True
+
+    def _commit_cell_edit(self, value: Any, editor) -> None:
+        if not self._editor_proxy or self._editor_proxy.widget() is not editor or not self._editor_target:
+            return
+        row_uuid, field_key = self._editor_target
+        self._discard_cell_editor()
+        self.controller.update_field(row_uuid, field_key, value, self.controller.preferences.global_mode)
 
     def focus_rect(self) -> QRectF:
         if self._selected_row_uuid:
@@ -1712,7 +1870,7 @@ class ParameterTableItem(QGraphicsObject):
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
         del option, widget
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, not self.view.should_use_fast_rendering())
         body_color, border_color, text_color = self._palette()
         fill = QColor(body_color)
         fill.setAlpha(235)
@@ -1733,7 +1891,24 @@ class ParameterTableItem(QGraphicsObject):
         title_font.setPointSizeF(11.4)
         painter.setFont(title_font)
         painter.setPen(QColor(text_color))
-        painter.drawText(self._header_rect.adjusted(14.0, 0.0, -14.0, 0.0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, f"{self.table_title()}  ({len(self._rows)} 行)")
+        title_rect = QRectF(14.0, 4.0, self._header_rect.width() - 82.0, 28.0)
+        painter.drawText(title_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, f"{self.table_title()}  ({len(self._rows)} 行)")
+
+        button_font = QFont()
+        button_font.setBold(True)
+        button_font.setPointSizeF(13.0)
+        painter.setFont(button_font)
+        for rect, label, enabled in (
+            (self._remove_button_rect, "-", len(self._rows) > 1 and bool(self.selected_row_uuids())),
+            (self._add_button_rect, "+", True),
+        ):
+            button_fill = QColor("#10151f")
+            button_fill.setAlpha(230 if enabled else 90)
+            painter.setPen(QPen(QColor(255, 255, 255, 160 if enabled else 70), 1.2))
+            painter.setBrush(button_fill)
+            painter.drawRoundedRect(rect, 5, 5)
+            painter.setPen(QColor(255, 255, 255, 230 if enabled else 100))
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
 
         header_font = QFont()
         header_font.setBold(True)
@@ -1741,7 +1916,7 @@ class ParameterTableItem(QGraphicsObject):
         painter.setFont(header_font)
         x = self.LEFT_GUTTER
         for _field_key, label, width in self._columns:
-            header_cell = QRectF(x, self.HEADER_HEIGHT - 2.0, width, 18.0)
+            header_cell = QRectF(x, self.HEADER_HEIGHT - 26.0, width, 20.0)
             painter.setPen(QColor(255, 255, 255, 222))
             painter.drawText(header_cell.adjusted(4.0, 0.0, -4.0, 0.0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
             x += width
@@ -1751,16 +1926,16 @@ class ParameterTableItem(QGraphicsObject):
         painter.setFont(cell_font)
         for row in self._rows:
             rect = self._row_rects[row.uuid]
-            row_fill = QColor("#21180f")
-            row_fill.setAlpha(248 if row.uuid == self._selected_row_uuid else 228)
+            row_fill = QColor(body_color.darker(126))
+            is_row_selected = row.uuid in self._selected_row_uuids
+            row_fill.setAlpha(252 if is_row_selected else 228)
             painter.setPen(QPen(QColor(border_color.darker(108)), 1.2))
             painter.setBrush(row_fill)
             painter.drawRoundedRect(rect, 7, 7)
-            pin_fill = QColor(border_color)
-            painter.setPen(QPen(QColor(border_color.lighter(118)), 1.2))
-            painter.setBrush(pin_fill)
-            painter.drawEllipse(QRectF(rect.left() - self.PIN_RADIUS, rect.center().y() - self.PIN_RADIUS, self.PIN_RADIUS * 2.0, self.PIN_RADIUS * 2.0))
-            painter.drawEllipse(QRectF(rect.right() - self.PIN_RADIUS, rect.center().y() - self.PIN_RADIUS, self.PIN_RADIUS * 2.0, self.PIN_RADIUS * 2.0))
+            if is_row_selected:
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.setPen(QPen(QColor("#fff4a8"), 2.4))
+                painter.drawRoundedRect(rect.adjusted(1.5, 1.5, -1.5, -1.5), 7, 7)
             cursor_x = rect.left()
             for field_key, _label, width in self._columns:
                 cell_rect = QRectF(cursor_x, rect.top(), width, rect.height())
@@ -1773,25 +1948,44 @@ class ParameterTableItem(QGraphicsObject):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            pin = self.pin_hit(event.scenePos())
-            if pin and pin[1] == "output":
-                self.setSelected(True)
-                self.view._start_connection_from_uuid(pin[0])
+            self._discard_cell_editor()
+            if self._add_button_rect.contains(event.pos()):
+                self.controller.add_parameter_table_row(self.table_id, self._selected_row_uuid)
+                event.accept()
+                return
+            if self._remove_button_rect.contains(event.pos()) and len(self._rows) > 1:
+                for row_uuid in self.selected_row_uuids():
+                    self.controller.remove_parameter_table_row(row_uuid)
                 event.accept()
                 return
             row_uuid = self.row_uuid_at(event.pos())
             if row_uuid:
+                modifiers = event.modifiers()
+                if modifiers & Qt.KeyboardModifier.ControlModifier:
+                    if row_uuid in self._selected_row_uuids:
+                        self._selected_row_uuids.remove(row_uuid)
+                    else:
+                        self._selected_row_uuids.add(row_uuid)
+                elif modifiers & Qt.KeyboardModifier.ShiftModifier and self._selected_row_uuid:
+                    row_ids = self.row_node_uuids()
+                    start = row_ids.index(self._selected_row_uuid)
+                    end = row_ids.index(row_uuid)
+                    lower, upper = sorted((start, end))
+                    self._selected_row_uuids = set(row_ids[lower : upper + 1])
+                else:
+                    self._selected_row_uuids = {row_uuid}
                 self._selected_row_uuid = row_uuid
                 self.controller.set_selected_node(row_uuid)
             else:
                 self._selected_row_uuid = None
+                self._selected_row_uuids.clear()
             self.setSelected(True)
             self._row_origins = {
                 row.uuid: QPointF(float(row.ui_position["x"]), float(row.ui_position["y"]))
                 for row in self._rows
-                if not row.locked
+                if not row.locked and (not self._selected_row_uuids or row.uuid in self._selected_row_uuids)
             }
-            if self._row_origins:
+            if self._row_origins and not (event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)):
                 self._dragging = True
                 self._drag_start_scene = event.scenePos()
                 self._drag_start_pos = QPointF(self.pos())
@@ -1799,7 +1993,16 @@ class ParameterTableItem(QGraphicsObject):
                 self.setCursor(Qt.CursorShape.ClosedHandCursor)
                 event.accept()
                 return
+            self.update()
         super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            cell = self.cell_at(event.pos())
+            if cell and self.begin_cell_edit(*cell):
+                event.accept()
+                return
+        super().mouseDoubleClickEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._dragging:
@@ -1827,9 +2030,8 @@ class ParameterTableItem(QGraphicsObject):
         super().mouseReleaseEvent(event)
 
     def hoverMoveEvent(self, event: QGraphicsSceneHoverEvent) -> None:
-        pin = self.pin_hit(self.mapToScene(event.pos()))
-        if pin:
-            self.setCursor(Qt.CursorShape.CrossCursor)
+        if self._add_button_rect.contains(event.pos()) or self._remove_button_rect.contains(event.pos()) or self.cell_at(event.pos()):
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
         else:
             self.setCursor(Qt.CursorShape.OpenHandCursor)
         super().hoverMoveEvent(event)
@@ -1852,8 +2054,9 @@ class NodeCanvasView(QGraphicsView):
         self.scene_ref = GridScene(self)
         self.setScene(self.scene_ref)
         self.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.TextAntialiasing)
-        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.MinimalViewportUpdate)
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.BoundingRectViewportUpdate)
         self.setOptimizationFlag(QGraphicsView.OptimizationFlag.DontAdjustForAntialiasing, True)
+        self.setOptimizationFlag(QGraphicsView.OptimizationFlag.DontSavePainterState, True)
         self.setCacheMode(QGraphicsView.CacheModeFlag.CacheBackground)
         self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
@@ -1892,6 +2095,7 @@ class NodeCanvasView(QGraphicsView):
         self._focus_animation.valueChanged.connect(self._advance_focus_animation)
         self._focus_animation.finished.connect(self._finish_focus_animation)
         self._interaction_flags: set[str] = set()
+        self._deferred_connection_update_uuids: set[str] = set()
         self._last_scale_sensitive_scale: float | None = None
         self._pending_display_toggle_uuid: str | None = None
         self._display_toggle_click_timer = QTimer(self)
@@ -1955,12 +2159,30 @@ class NodeCanvasView(QGraphicsView):
             self._interaction_flags.add(flag)
         else:
             self._interaction_flags.discard(flag)
+            if flag == "drag":
+                self._flush_deferred_connection_updates()
         after = bool(self._interaction_flags)
         if before != after:
             self.interactionBusyChanged.emit(after)
 
     def is_busy(self) -> bool:
         return bool(self._interaction_flags)
+
+    def should_use_fast_rendering(self) -> bool:
+        item_count = len(self.node_items) + len(self.table_items)
+        if item_count <= 50:
+            return False
+        if self._interaction_flags:
+            return True
+        return float(self.transform().m11()) < 0.42
+
+    def _flush_deferred_connection_updates(self) -> None:
+        if not self._deferred_connection_update_uuids:
+            return
+        pending = list(self._deferred_connection_update_uuids)
+        self._deferred_connection_update_uuids.clear()
+        for node_uuid in pending:
+            self._update_connections_for_node(node_uuid)
 
     def _clear_pending_display_toggle(self) -> None:
         self._pending_display_toggle_uuid = None
@@ -1994,7 +2216,7 @@ class NodeCanvasView(QGraphicsView):
                     seen.add(item.node.uuid)
                     selected.append(item.node.uuid)
             elif isinstance(item, ParameterTableItem):
-                row_ids = [item.selected_row_uuid()] if item.selected_row_uuid() else item.row_node_uuids()
+                row_ids = item.selected_row_uuids() or item.row_node_uuids()
                 for node_uuid in row_ids:
                     if node_uuid and node_uuid not in seen:
                         seen.add(node_uuid)
@@ -2282,6 +2504,10 @@ class NodeCanvasView(QGraphicsView):
             self._clear_pending_display_toggle()
             if node_item.has_card_field_editor():
                 node_item._discard_card_field_editor()
+            if node_item.isSelected() and len(self.selected_node_uuids()) > 1:
+                self._show_selection_menu(event.globalPos())
+                event.accept()
+                return
             node_item.open_appearance_dialog(event.globalPos())
             event.accept()
             return
@@ -2293,6 +2519,10 @@ class NodeCanvasView(QGraphicsView):
         group_item = self._group_item_at_view_point(event.pos())
         if group_item:
             self._show_group_menu(group_item, event.globalPos())
+            event.accept()
+            return
+        if len(self.selected_node_uuids()) > 1:
+            self._show_selection_menu(event.globalPos())
             event.accept()
             return
         if self.itemAt(event.pos()):
@@ -2366,7 +2596,6 @@ class NodeCanvasView(QGraphicsView):
             target_pos = QPointF(float(node.ui_position["x"]), float(node.ui_position["y"]))
             if item.pos() != target_pos:
                 item.setPos(target_pos)
-        self._rebuild_parameter_tables()
         self._rebuild_groups()
 
     def _move_node_item(self, node_uuid: str) -> None:
@@ -2383,7 +2612,6 @@ class NodeCanvasView(QGraphicsView):
         if item.pos() != target_pos:
             item.setPos(target_pos)
         self._update_connections_for_node(node_uuid)
-        self._rebuild_parameter_tables()
         self._rebuild_groups()
 
     def _remove_node_item(self, node_uuid: str) -> None:
@@ -2506,6 +2734,9 @@ class NodeCanvasView(QGraphicsView):
         self._refresh_scale_sensitive_nodes(force=True)
 
     def _on_node_geometry_changed(self, node_uuid: str) -> None:
+        if "drag" in self._interaction_flags:
+            self._deferred_connection_update_uuids.add(node_uuid)
+            return
         self._update_connections_for_node(node_uuid)
 
     def _on_scene_selection_changed(self) -> None:
@@ -2577,7 +2808,11 @@ class NodeCanvasView(QGraphicsView):
 
     def _hover_item_at_point(self, point) -> QGraphicsItem | None:
         items = self.items(point.toPoint() if hasattr(point, "toPoint") else point)
-        return items[0] if items else None
+        for item in items:
+            if item is self._temp_path:
+                continue
+            return item
+        return None
 
     def _input_target_uuid_at_scene(self, scene_pos: QPointF, *, exclude_uuid: str | None = None) -> str | None:
         best_match: tuple[float, str] | None = None
@@ -2676,17 +2911,76 @@ class NodeCanvasView(QGraphicsView):
         elif selected == remove_action:
             self.controller.remove_group(group_item.group.uuid)
 
+    def _show_selection_menu(self, global_pos) -> None:
+        menu = QMenu(self)
+        color_action = menu.addAction("设置所选节点颜色")
+        selected = menu.exec(global_pos)
+        if selected == color_action:
+            self._edit_selected_node_appearance(global_pos)
+
+    def _edit_selected_node_appearance(self, global_pos=None) -> bool:
+        node_uuids = self.selected_node_uuids()
+        nodes = [self.controller.get_node(node_uuid) for node_uuid in node_uuids]
+        editable_nodes = [node for node in nodes if node is not None and not node.locked]
+        if not editable_nodes:
+            return False
+        dialog = NodeAppearanceDialog(editable_nodes[0].fields, self)
+        if global_pos is not None:
+            dialog.move(global_pos)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+        self.controller.update_fields_for_nodes(
+            [node.uuid for node in editable_nodes],
+            dialog.values(),
+            self.controller.preferences.global_mode,
+            label="批量设置节点颜色",
+        )
+        return True
+
     def _show_parameter_table_menu(self, table_item: ParameterTableItem, global_pos) -> None:
         menu = QMenu(self)
         add_row_action = menu.addAction("新增一行")
         remove_row_action = menu.addAction("删除当前行")
-        if not table_item.selected_row_uuid() or len(table_item.row_node_uuids()) <= 1:
+        color_action = menu.addAction("设置参数表颜色")
+        if not table_item.selected_row_uuids() or len(table_item.row_node_uuids()) <= 1:
             remove_row_action.setEnabled(False)
         selected = menu.exec(global_pos)
         if selected == add_row_action:
             self.controller.add_parameter_table_row(table_item.table_id, table_item.selected_row_uuid())
-        elif selected == remove_row_action and table_item.selected_row_uuid():
-            self.controller.remove_parameter_table_row(table_item.selected_row_uuid())
+        elif selected == remove_row_action:
+            for row_uuid in table_item.selected_row_uuids():
+                self.controller.remove_parameter_table_row(row_uuid)
+        elif selected == color_action:
+            self._edit_parameter_table_appearance(table_item, global_pos)
+
+    def _edit_parameter_table_appearance(self, table_item: ParameterTableItem, global_pos=None) -> bool:
+        rows = [self.controller.get_node(node_uuid) for node_uuid in table_item.row_node_uuids()]
+        rows = [row for row in rows if row is not None and not row.locked]
+        if not rows:
+            return False
+        anchor = rows[0]
+        values = {
+            "theme_body_color": anchor.fields.get(TABLE_BODY_COLOR_FIELD, "#071b2d"),
+            "theme_border_color": anchor.fields.get(TABLE_BORDER_COLOR_FIELD, "#25b7ff"),
+            "theme_text_color": anchor.fields.get(TABLE_TEXT_COLOR_FIELD, "#e8f8ff"),
+        }
+        dialog = NodeAppearanceDialog(values, self)
+        if global_pos is not None:
+            dialog.move(global_pos)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+        colors = dialog.values()
+        self.controller.update_fields_for_nodes(
+            [row.uuid for row in rows],
+            {
+                TABLE_BODY_COLOR_FIELD: colors["theme_body_color"],
+                TABLE_BORDER_COLOR_FIELD: colors["theme_border_color"],
+                TABLE_TEXT_COLOR_FIELD: colors["theme_text_color"],
+            },
+            self.controller.preferences.global_mode,
+            label="设置参数表颜色",
+        )
+        return True
 
     def optimize_connection_layout(self) -> bool:
         movable_nodes = {
@@ -2791,7 +3085,7 @@ class NodeCanvasView(QGraphicsView):
         return True
 
     def _normalize_parameter_table_positions(self, positions: dict[str, tuple[float, float]]) -> None:
-        row_stride = ParameterTableItem.ROW_HEIGHT + ParameterTableItem.ROW_GAP + 12.0
+        row_stride = ParameterTableItem.ROW_HEIGHT + ParameterTableItem.ROW_GAP
         for table in self.controller.parameter_tables():
             row_ids = [node_uuid for node_uuid in table["node_uuids"] if node_uuid in positions]
             if len(row_ids) < 2:

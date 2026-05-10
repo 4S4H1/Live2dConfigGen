@@ -83,6 +83,11 @@ TABLE_BORDER_COLOR_FIELD = "_table_border_color"
 TABLE_TEXT_COLOR_FIELD = "_table_text_color"
 DEFAULT_PARAMETER_TABLE_TITLE = "参数表"
 DEFAULT_PARAMETER_TABLE_COLORS = {
+    TABLE_BODY_COLOR_FIELD: "#071b2d",
+    TABLE_BORDER_COLOR_FIELD: "#25b7ff",
+    TABLE_TEXT_COLOR_FIELD: "#e8f8ff",
+}
+LEGACY_PARAMETER_TABLE_COLORS = {
     TABLE_BODY_COLOR_FIELD: "#4b2c11",
     TABLE_BORDER_COLOR_FIELD: "#ffc27a",
     TABLE_TEXT_COLOR_FIELD: "#fff8ef",
@@ -106,7 +111,9 @@ def ensure_parameter_table_metadata(node: NodeRecord) -> None:
     if TABLE_TITLE_FIELD not in node.fields:
         node.fields[TABLE_TITLE_FIELD] = DEFAULT_PARAMETER_TABLE_TITLE
     for key, value in DEFAULT_PARAMETER_TABLE_COLORS.items():
-        if not _valid_color_or_none(node.fields.get(key)):
+        current = str(node.fields.get(key) or "").strip().lower()
+        legacy = LEGACY_PARAMETER_TABLE_COLORS[key].lower()
+        if not _valid_color_or_none(node.fields.get(key)) or current == legacy:
             node.fields[key] = value
     try:
         node.fields[TABLE_ORDER_FIELD] = int(node.fields.get(TABLE_ORDER_FIELD, 0))
@@ -198,7 +205,7 @@ def default_node_theme(schema: EditorSchema, node: NodeRecord) -> dict[str, str]
         "Initial": {"body": "#13251f", "border": "#5fc992", "text": "#f3fcf7"},
         "TouchIdle": {"body": "#071b2d", "border": "#25b7ff", "text": "#e8f8ff"},
         "TouchDrag": {"body": "#251f38", "border": "#b5a1ff", "text": "#faf7ff"},
-        "ParameterTrigger": {"body": "#332714", "border": "#ffbc33", "text": "#fff8ef"},
+        "ParameterTrigger": {"body": "#071b2d", "border": "#25b7ff", "text": "#e8f8ff"},
         "DrawFrame": {"body": "#12191f", "border": "#7aa6c2", "text": "#d9e8f3"},
         "Comment": {"body": "#2f2618", "border": "#e2b86a", "text": "#fff8eb"},
     }

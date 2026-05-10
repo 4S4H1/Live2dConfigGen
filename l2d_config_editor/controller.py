@@ -20,6 +20,7 @@ from .commands import (
     UpdateEditorSettingsCommand,
     UpdateFieldCommand,
     UpdateFieldsCommand,
+    UpdateManyFieldsCommand,
     UpdateNodeLockCommand,
 )
 from .constants import CLIPBOARD_MIME
@@ -117,7 +118,7 @@ class EditorController(QObject):
             path = schema_path or self.preferences.schema_path
             self.schema = load_editor_schema(path)
             self.preferences.schema_path = str(path) if path else None
-            self.refresh_derived()
+            self.refresh_derived(emit_node_updates=True)
             self.schemaChanged.emit()
 
     def set_global_mode(self, mode: str) -> None:
@@ -213,19 +214,20 @@ class EditorController(QObject):
             self.refresh_derived()
             return str(target)
 
-    def refresh_derived(self) -> None:
+    def refresh_derived(self, *, emit_node_updates: bool = False) -> None:
         with performance_recorder.measure("controller.refresh_derived", "controller", self._perf_document_meta()):
             self._ensure_parameter_table_metadata()
             self.document.groups = normalized_document_groups(self.document)
             with performance_recorder.measure("controller.reassign_function_ids", "controller", self._perf_document_meta()):
                 reassign_function_ids(self.schema, self.document)
-            with performance_recorder.measure(
-                "controller.emit_node_updates",
-                "controller",
-                {**self._perf_document_meta(), "emit_count": len(self.document.nodes)},
-            ):
-                for node in self.document.nodes:
-                    self.nodeUpdated.emit(node.uuid)
+            if emit_node_updates:
+                with performance_recorder.measure(
+                    "controller.emit_node_updates",
+                    "controller",
+                    {**self._perf_document_meta(), "emit_count": len(self.document.nodes)},
+                ):
+                    for node in self.document.nodes:
+                        self.nodeUpdated.emit(node.uuid)
             with performance_recorder.measure("controller.validate_document", "controller", self._perf_document_meta()):
                 validation_issues = validate_document(self.schema, self.document)
             self.validationChanged.emit(validation_issues)
@@ -481,6 +483,36 @@ class EditorController(QObject):
         if not updates:
             return
         self.undo_stack.push(UpdateFieldsCommand(self, node_uuid, updates, source_mode or self.preferences.global_mode, label))
+
+    def update_fields_for_nodes(
+        self,
+        node_uuids: list[str],
+        values: dict[str, Any],
+        source_mode: str | None = None,
+        label: str = "批量修改字段",
+    ) -> None:
+        if not node_uuids or not values:
+            return
+        source = source_mode or self.preferences.global_mode
+        seen: set[str] = set()
+        node_updates: dict[str, list[tuple[str, Any, Any]]] = {}
+        for node_uuid in node_uuids:
+            if node_uuid in seen:
+                continue
+            seen.add(node_uuid)
+            node = self.get_node(node_uuid)
+            if not node or node.locked:
+                continue
+            updates: list[tuple[str, Any, Any]] = []
+            for key, value in values.items():
+                normalized_value = normalize_field_input(self.schema, node, key, value)
+                old_value = node.fields.get(key)
+                if old_value != normalized_value:
+                    updates.append((key, old_value, normalized_value))
+            if updates:
+                node_updates[node_uuid] = updates
+        if node_updates:
+            self.undo_stack.push(UpdateManyFieldsCommand(self, node_updates, source, label))
 
     def move_node(self, node_uuid: str, old_pos: tuple[float, float], new_pos: tuple[float, float]) -> None:
         if old_pos == new_pos:
@@ -789,6 +821,40 @@ class EditorController(QObject):
         apply_auto_rules(self.schema, self.document, node, source_mode=source_mode, changed_key=effective_changed_key)
         reassign_function_ids(self.schema, self.document)
         self.nodeUpdated.emit(node_uuid)
+        self.refresh_derived()
+
+    def _set_many_fields(self, node_values: dict[str, dict[str, Any]], source_mode: str) -> None:
+        changed_node_uuids: list[str] = []
+        for node_uuid, values in node_values.items():
+            node = self.get_node(node_uuid)
+            if not node or not values:
+                continue
+            for key, value in values.items():
+                node.fields[key] = value
+            apply_node_appearance_defaults(self.schema, node)
+            changed_keys = set(values)
+            if node.type == "Comment" and changed_keys & {"theme_body_color", "theme_text_color"}:
+                sync_comment_legacy_appearance(node)
+            if node.type == "Comment" and changed_keys & {"note_box_color", "note_text_color"}:
+                sync_comment_theme_appearance(node)
+            effective_changed_key = next(iter(changed_keys)) if len(changed_keys) == 1 else None
+            if node.type in {"TouchDrag", "ParameterTrigger"} and changed_keys & {"action_trigger", "parameter"}:
+                node.fields["action_trigger_active"] = ""
+                if source_mode == "simple":
+                    node.manual_fields.discard("parameter")
+            if effective_changed_key in {"action_trigger_active", "action_trigger"} or (
+                source_mode == "advanced" and effective_changed_key == "parameter"
+            ):
+                infer_manual_fields(self.schema, node, self.document)
+            if node.type in {"TouchDrag", "ParameterTrigger"} and effective_changed_key == "action_trigger" and source_mode == "simple":
+                node.manual_fields.discard("parameter")
+            apply_auto_rules(self.schema, self.document, node, source_mode=source_mode, changed_key=effective_changed_key)
+            changed_node_uuids.append(node_uuid)
+        if not changed_node_uuids:
+            return
+        reassign_function_ids(self.schema, self.document)
+        for node_uuid in changed_node_uuids:
+            self.nodeUpdated.emit(node_uuid)
         self.refresh_derived()
 
     def _set_node_locked(self, node_uuid: str, locked: bool) -> None:

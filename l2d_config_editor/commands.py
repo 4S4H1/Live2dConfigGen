@@ -80,6 +80,35 @@ class UpdateFieldsCommand(QUndoCommand):
         )
 
 
+class UpdateManyFieldsCommand(QUndoCommand):
+    def __init__(self, controller, node_updates, source_mode, label: str = "批量修改字段") -> None:
+        super().__init__(label)
+        self.controller = controller
+        self.node_updates = {
+            node_uuid: [(key, old_value, new_value) for key, old_value, new_value in updates]
+            for node_uuid, updates in node_updates.items()
+        }
+        self.source_mode = source_mode
+
+    def redo(self) -> None:
+        self.controller._set_many_fields(
+            {
+                node_uuid: {key: new_value for key, _old_value, new_value in updates}
+                for node_uuid, updates in self.node_updates.items()
+            },
+            self.source_mode,
+        )
+
+    def undo(self) -> None:
+        self.controller._set_many_fields(
+            {
+                node_uuid: {key: old_value for key, old_value, _new_value in updates}
+                for node_uuid, updates in self.node_updates.items()
+            },
+            self.source_mode,
+        )
+
+
 class UpdateNodeLockCommand(QUndoCommand):
     def __init__(self, controller, node_uuid, old_locked, new_locked) -> None:
         super().__init__("切换节点锁定")

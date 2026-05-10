@@ -1499,9 +1499,9 @@
       "copyable": true,
       "quick_create": true,
       "resizable": false,
-      "header_color": "#b86a1d",
-      "body_color": "#4b2c11",
-      "accent_color": "#ffc27a",
+      "header_color": "#0e3a5a",
+      "body_color": "#071b2d",
+      "accent_color": "#25b7ff",
       "auto_rules": {
         "draw_template": "TouchDrag{sequence}",
         "parameter_template": "touch_drag{target_idle}",

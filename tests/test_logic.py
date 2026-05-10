@@ -10,8 +10,8 @@ if sys.platform != "win32":
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import QPoint, QPointF, QSettings, Qt
-from PyQt6.QtGui import QContextMenuEvent, QFontMetricsF
-from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox, QSplitter, QToolBar
+from PyQt6.QtGui import QContextMenuEvent, QFontMetricsF, QImage, QPainter
+from PyQt6.QtWidgets import QApplication, QComboBox, QDialog, QMessageBox, QSplitter, QToolBar
 
 from l2d_config_editor.controller import EditorController
 from l2d_config_editor.logic import (
@@ -1508,6 +1508,36 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
+    def test_test_close_policy_bypasses_close_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            window.controller.document.path = str(Path(temp_dir) / "close_policy.json")
+            window.controller.pathChanged.emit(window.controller.document.path)
+            window._mark_saved_checkpoint(saved=True)
+            window.controller.update_field(initial.uuid, "memo", "changed_for_discard", "simple")
+
+            with patch.dict(os.environ, {"L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY": "discard"}), patch.object(
+                QMessageBox, "exec", side_effect=AssertionError("should not prompt")
+            ), patch.object(window, "_save_current_file", wraps=window._save_current_file) as save_mock:
+                self.assertTrue(window._confirm_safe_to_close())
+                self.assertFalse(save_mock.called)
+
+            window._mark_saved_checkpoint(saved=True)
+            window.controller.update_field(initial.uuid, "memo", "changed_for_save", "simple")
+            with patch.dict(os.environ, {"L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY": "save"}), patch.object(
+                QMessageBox, "exec", side_effect=AssertionError("should not prompt")
+            ), patch.object(window, "_save_current_file", wraps=window._save_current_file) as save_mock:
+                self.assertTrue(window._confirm_safe_to_close())
+                self.assertTrue(save_mock.called)
+
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
     def test_close_does_not_prompt_when_initial_meta_is_incomplete(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
@@ -1581,6 +1611,16 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window.canvas._refresh_scale_sensitive_nodes()
             self.app.processEvents()
             self.assertEqual(original_pos, item.pos())
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_initial_node_uses_standard_title_size(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            item = window.canvas.node_items[initial.uuid]
+            self.assertLess(item._title_font().pointSizeF(), item.TITLE_BASE_POINT_SIZE)
+            self.assertLess(item._header_height, 70.0)
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
@@ -1814,6 +1854,31 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
+    def test_connection_preview_path_does_not_block_quick_create_hit_test(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            node_uuid = window.controller.create_node("TouchIdle", (100, 100))
+            self.assertIsNotNone(node_uuid)
+            window.canvas.rebuild_scene()
+            window.canvas._start_connection_from_uuid(node_uuid)
+            start = window.canvas.connection_anchor_scene_pos(node_uuid, "output")
+            self.assertIsNotNone(start)
+            release_scene = start + QPointF(220.0, 80.0)
+            window.canvas._update_temp_connection(release_scene)
+            window.canvas._temp_path.show()
+
+            release_view = window.canvas.mapFromScene(release_scene)
+            self.assertIn(window.canvas._temp_path, window.canvas.items(release_view))
+            self.assertIsNone(window.canvas._hover_item_at_point(release_view))
+            window.canvas.cancel_connection_preview()
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
     def test_function_node_card_layout_survives_zoom_in(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
@@ -1869,6 +1934,52 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
                 metrics = QFontMetricsF(fitted_font)
                 self.assertLessEqual(metrics.height(), draw_rect.height() + 0.5)
                 self.assertLessEqual(metrics.horizontalAdvance(display_text), draw_rect.width() + 0.5)
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_fast_rendering_keeps_compact_card_content_visible(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = None
+            for index in range(55):
+                node_uuid = window.controller.create_node("TouchIdle", (200 + index * 260, 120))
+                self.assertIsNotNone(node_uuid)
+                if created is None:
+                    created = node_uuid
+            window.controller.update_field(created, "tips", "visible_note", "simple")
+            window.controller.update_field(created, "draw_able_name", "visible_draw", "simple")
+            window.controller.update_field(created, "action_trigger", "visible_action", "simple")
+            window.controller.update_field(created, "action_trigger_active", "visible_target", "simple")
+            window.controller.update_field(created, "parameter", "visible_parameter", "simple")
+            item = window.canvas.node_items[created]
+            window.canvas._apply_view_state(0.18, QPointF(0.0, 0.0))
+            window.canvas._refresh_scale_sensitive_nodes()
+            self.assertTrue(window.canvas.should_use_fast_rendering())
+
+            painted_text: list[str] = []
+
+            def record_text(_painter, _rect, text, *_args, **_kwargs):
+                painted_text.append(text)
+
+            image = QImage(int(item.boundingRect().width()) + 20, int(item.boundingRect().height()) + 20, QImage.Format.Format_ARGB32_Premultiplied)
+            image.fill(0)
+            painter = QPainter(image)
+            try:
+                with patch.object(item, "_paint_compact_text", side_effect=record_text):
+                    item.paint(painter, None)
+            finally:
+                painter.end()
+
+            self.assertIn("visible_note", painted_text)
+            self.assertIn("visible_draw", painted_text)
+            self.assertIn("visible_action", painted_text)
+            self.assertIn("visible_parameter", painted_text)
+            self.assertGreaterEqual(len(painted_text), 5)
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
@@ -2065,9 +2176,56 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertNotIn(row_uuid, window.canvas.node_items)
             table_item = window.canvas.table_row_to_item[row_uuid]
             self.assertEqual([row_uuid], table_item.row_node_uuids())
-            second_row = window.controller.add_parameter_table_row(table_item.table_id, row_uuid)
-            self.assertIsNotNone(second_row)
-            self.assertEqual(2, len(window.canvas.table_items[table_item.table_id].row_node_uuids()))
+            for _index in range(7):
+                added_row = window.controller.add_parameter_table_row(table_item.table_id, table_item.selected_row_uuid())
+                self.assertIsNotNone(added_row)
+            table_item = window.canvas.table_items[table_item.table_id]
+            self.assertEqual(8, len(table_item.row_node_uuids()))
+            row_rects = [table_item._row_rects[row_uuid] for row_uuid in table_item.row_node_uuids()]
+            for previous, current in zip(row_rects, row_rects[1:]):
+                self.assertGreaterEqual(current.top(), previous.bottom() + table_item.ROW_GAP - 0.1)
+            self.assertLessEqual(row_rects[-1].bottom() + table_item.ROW_BOTTOM_MARGIN, table_item._rect.bottom() + 0.1)
+            body_color, border_color, text_color = table_item._palette()
+            self.assertEqual("#071b2d", body_color.name())
+            self.assertEqual("#25b7ff", border_color.name())
+            self.assertEqual("#e8f8ff", text_color.name())
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_parameter_table_cells_edit_without_connection_pins(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            row_uuid = window.controller.create_node("ParameterTrigger", (220, 120))
+            table_item = window.canvas.table_row_to_item[row_uuid]
+
+            self.assertIsNone(table_item.pin_hit(table_item.mapToScene(table_item.boundingRect().center())))
+            self.assertIsNone(window.canvas.connection_anchor_scene_pos(row_uuid, "input"))
+            self.assertIsNone(window.canvas.connection_anchor_scene_pos(row_uuid, "output"))
+
+            self.assertTrue(table_item.begin_cell_edit(row_uuid, "parameter"))
+            editor = table_item._editor_proxy.widget()
+            editor.setText("ParamEditedFromCell")
+            editor._emit_commit()
+            self.assertEqual("ParamEditedFromCell", window.controller.get_node(row_uuid).fields["parameter"])
+
+            self.assertTrue(table_item.begin_cell_edit(row_uuid, "control_type"))
+            combo = table_item._editor_proxy.widget()
+            self.assertIsInstance(combo, QComboBox)
+            combo.setCurrentIndex(combo.findData("drag"))
+            combo._emit_commit()
+            self.assertEqual("drag", window.controller.get_node(row_uuid).fields["control_type"])
+
+            self.assertTrue(table_item.begin_cell_edit(row_uuid, "revert_enabled"))
+            bool_combo = table_item._editor_proxy.widget()
+            self.assertIsInstance(bool_combo, QComboBox)
+            bool_combo.setCurrentIndex(bool_combo.findData(1))
+            bool_combo._emit_commit()
+            self.assertEqual(1, window.controller.get_node(row_uuid).fields["revert_enabled"])
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
