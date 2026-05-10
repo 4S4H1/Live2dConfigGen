@@ -1274,6 +1274,46 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
             window.close()
 
+    def test_canvas_snap_position_uses_minor_grid(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+
+            self.assertEqual((120.0, 80.0), window.canvas.snap_position(QPointF(113.0, 86.0)))
+            self.assertEqual((-20.0, 40.0), window.canvas.snap_position((-11.0, 49.0)))
+
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
+    def test_canvas_snap_positions_handles_multi_node_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            first = window.controller.create_node("TouchIdle", (113, 86))
+            second = window.controller.create_node("TouchDrag", (267, 154))
+
+            snapped = window.canvas.snap_positions(
+                {
+                    first: QPointF(113.0, 86.0),
+                    second: QPointF(267.0, 154.0),
+                }
+            )
+            window.canvas.apply_item_positions(snapped)
+
+            self.assertEqual((120.0, 80.0), snapped[first])
+            self.assertEqual((260.0, 160.0), snapped[second])
+            self.assertEqual(QPointF(120.0, 80.0), window.canvas.node_items[first].pos())
+            self.assertEqual(QPointF(260.0, 160.0), window.canvas.node_items[second].pos())
+            self.assertFalse(window.canvas.positions_match_document(snapped))
+
+            window.controller.move_nodes(snapped, label="test snap")
+            self.assertTrue(window.canvas.positions_match_document(snapped))
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
     def test_main_window_restores_last_opened_document(self) -> None:
         settings = QSettings("OpenAI", "L2DConfigEditor")
         settings.clear()

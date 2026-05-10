@@ -1109,36 +1109,43 @@ class NodeItem(QGraphicsObject):
         current = self.pos()
         old_pos = (self._drag_start_logical_pos.x(), self._drag_start_logical_pos.y())
         logical_current = QPointF(current)
-        new_pos = (logical_current.x(), logical_current.y())
+        new_pos = view.snap_position(logical_current) if view else (logical_current.x(), logical_current.y())
         if self._group_drag_targets:
-            positions = {self.node.uuid: new_pos}
+            raw_positions: dict[str, QPointF | tuple[float, float]] = {self.node.uuid: new_pos}
             for node_uuid, origin in self._group_drag_targets.items():
                 if not view:
                     continue
                 item = view.node_items.get(node_uuid)
                 if not item:
                     continue
-                logical_position = QPointF(item.pos())
-                positions[node_uuid] = (logical_position.x(), logical_position.y())
+                raw_positions[node_uuid] = QPointF(item.pos())
+            positions = view.snap_positions(raw_positions) if view else {key: value for key, value in raw_positions.items() if isinstance(value, tuple)}
+            if view:
+                view.apply_item_positions(positions)
             self._group_drag_targets.clear()
             self._group_drag_active = False
             self._selection_drag_targets.clear()
-            if len(positions) > 1 or positions.get(self.node.uuid) != old_pos:
+            if view and not view.positions_match_document(positions):
                 self.controller.move_nodes(positions, label="Move frame with nodes")
+            elif view:
+                view._rebuild_groups()
             return
         if view and self._selection_drag_targets:
-            positions = {self.node.uuid: new_pos}
+            raw_positions = {self.node.uuid: new_pos}
             for node_uuid in self._selection_drag_targets:
                 item = view.node_items.get(node_uuid)
                 if not item:
                     continue
-                logical_position = QPointF(item.pos())
-                positions[node_uuid] = (logical_position.x(), logical_position.y())
+                raw_positions[node_uuid] = QPointF(item.pos())
+            positions = view.snap_positions(raw_positions)
+            view.apply_item_positions(positions)
             self._selection_drag_targets.clear()
-            if len(positions) > 1 or positions.get(self.node.uuid) != old_pos:
+            if not view.positions_match_document(positions):
                 self.controller.move_nodes(positions, label="Move selected nodes")
             return
         self._selection_drag_targets.clear()
+        if view:
+            self.setPos(QPointF(new_pos[0], new_pos[1]))
         self.controller.move_node(self.node.uuid, old_pos, new_pos)
 
     def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value: Any):
@@ -1617,14 +1624,15 @@ class GroupItem(QGraphicsObject):
             self._dragging = False
             self.view._set_interaction_busy("drag", False)
             self.setCursor(Qt.CursorShape.OpenHandCursor if self._title_rect.contains(event.pos()) else Qt.CursorShape.ArrowCursor)
-            positions = {
-                node_uuid: (origin.x() + delta.x(), origin.y() + delta.y())
-                for node_uuid, origin in self._member_origins.items()
-            }
+            positions = self.view.snap_positions({node_uuid: origin + delta for node_uuid, origin in self._member_origins.items()})
+            self.view.apply_item_positions(positions)
             self._member_origins.clear()
             self._table_origins.clear()
-            if positions:
+            if positions and not self.view.positions_match_document(positions):
                 self.controller.move_nodes(positions, label="Move group with nodes")
+            else:
+                self.view._rebuild_parameter_tables()
+                self.view._rebuild_groups()
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -2055,13 +2063,12 @@ class ParameterTableItem(QGraphicsObject):
             self._dragging = False
             self.view._set_interaction_busy("drag", False)
             self.setCursor(Qt.CursorShape.OpenHandCursor)
-            positions = {
-                node_uuid: (origin.x() + delta.x(), origin.y() + delta.y())
-                for node_uuid, origin in self._row_origins.items()
-            }
+            positions = self.view.snap_positions({node_uuid: origin + delta for node_uuid, origin in self._row_origins.items()})
             self._row_origins.clear()
-            if positions:
+            if positions and not self.view.positions_match_document(positions):
                 self.controller.move_nodes(positions, label="Move parameter table")
+            else:
+                self.update_rows(self._rows)
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -2328,6 +2335,38 @@ class NodeCanvasView(QGraphicsView):
             if frame_rect.intersects(item.mapRectToScene(item.boundingRect())):
                 members[other_uuid] = QPointF(item.pos())
         return members
+
+    def snap_position(self, position: QPointF | tuple[float, float]) -> tuple[float, float]:
+        step = float(self.scene_ref.minor_grid)
+        if step <= 0:
+            if isinstance(position, QPointF):
+                return position.x(), position.y()
+            return float(position[0]), float(position[1])
+        if isinstance(position, QPointF):
+            x = position.x()
+            y = position.y()
+        else:
+            x = float(position[0])
+            y = float(position[1])
+        return round(x / step) * step, round(y / step) * step
+
+    def snap_positions(self, positions: dict[str, QPointF | tuple[float, float]]) -> dict[str, tuple[float, float]]:
+        return {node_uuid: self.snap_position(position) for node_uuid, position in positions.items()}
+
+    def apply_item_positions(self, positions: dict[str, tuple[float, float]]) -> None:
+        for node_uuid, position in positions.items():
+            item = self.node_items.get(node_uuid)
+            if item is not None:
+                item.setPos(QPointF(position[0], position[1]))
+
+    def positions_match_document(self, positions: dict[str, tuple[float, float]]) -> bool:
+        for node_uuid, position in positions.items():
+            node = self.controller.get_node(node_uuid)
+            if not node:
+                continue
+            if (float(node.ui_position["x"]), float(node.ui_position["y"])) != (float(position[0]), float(position[1])):
+                return False
+        return True
 
     def center_on_node(self, node_uuid: str) -> None:
         target_center = self._focus_target_center(node_uuid)
