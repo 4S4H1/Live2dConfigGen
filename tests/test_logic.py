@@ -6,12 +6,12 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-if sys.platform != "win32":
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault("L2D_CONFIG_EDITOR_TEST_CLOSE_EVENT_POLICY", "discard")
 
-from PyQt6.QtCore import QPoint, QPointF, QSettings, Qt
+from PyQt6.QtCore import QPoint, QPointF, QRectF, QSettings, Qt
 from PyQt6.QtGui import QContextMenuEvent, QFontMetricsF, QImage, QPainter
-from PyQt6.QtWidgets import QApplication, QComboBox, QDialog, QMessageBox, QSplitter, QToolBar
+from PyQt6.QtWidgets import QApplication, QComboBox, QDialog, QGraphicsItem, QMessageBox, QSplitter, QToolBar
 
 from l2d_config_editor.controller import EditorController
 from l2d_config_editor.logic import (
@@ -910,7 +910,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertIsNotNone(item._card_editor_proxy)
 
             editor = item._card_editor_proxy.widget()
-            self.assertIn("font-size:", editor.styleSheet())
+            self.assertNotEqual(editor.font().pointSizeF(), -1.0)
             self.assertGreater(editor.fontMetrics().height(), 12)
             editor.setText("Paramtouch_idle99")
             item._commit_card_field_edit("parameter", editor.text(), editor)
@@ -919,6 +919,55 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertEqual("Paramtouch_idle99", item._card_field_text("parameter"))
             self.assertEqual("card", window.canvas.node_display_mode(created))
             self.assertFalse(item.proxy.isVisible())
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
+    def test_compact_note_editor_grows_while_typing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            window.controller.set_global_mode("simple")
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            item = window.canvas.node_items[created]
+
+            self.assertTrue(item._begin_card_field_edit("tips"))
+            self.app.processEvents()
+            editor = item._card_editor_proxy.widget()
+            initial_note_width = item._card_layout["note"].width()
+            initial_editor_width = editor.width()
+            long_title = "超长长长长长长长长长长长长长长"
+
+            editor.setText(long_title)
+            self.app.processEvents()
+
+            expected_note_width = item._compact_note_width_for_text(long_title, item._card_layout["frame"].width(), editor.font())
+            self.assertGreater(item._card_layout["note"].width(), initial_note_width)
+            self.assertGreater(editor.width(), initial_editor_width)
+            self.assertAlmostEqual(item._card_layout["note"].width(), expected_note_width, delta=1.0)
+            self.assertLessEqual(item._card_layout["note"].right(), item._card_layout["frame"].right() + 0.1)
+            self.assertAlmostEqual(item._compact_note_layout_font().pointSizeF(), 27.0, delta=0.1)
+            draw_rect, fitted_font, _display_text = item._compact_text_layout(
+                long_title,
+                item._card_layout["note"],
+                item._compact_note_font_for_text(long_title, item._card_layout["note"].width()),
+                min_point_size=item.CARD_NOTE_MIN_POINT_SIZE,
+                horizontal_padding=10.0,
+                shrink_to_fit=False,
+            )
+            del draw_rect
+            self.assertAlmostEqual(
+                fitted_font.pointSizeF(),
+                item._compact_note_font_for_text(long_title, item._card_layout["note"].width()).pointSizeF(),
+                delta=0.1,
+            )
+            self.assertNotEqual(long_title, item._card_field_text("tips"))
+            item._commit_card_field_edit("tips", editor.text(), editor)
+            self.app.processEvents()
+            self.assertEqual(long_title, item._card_field_text("tips"))
             window._mark_saved_checkpoint(saved=True)
             window.close()
 
@@ -1524,6 +1573,41 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
+    def test_connection_updates_defer_during_zoomed_out_motion_preview(self) -> None:
+        def path_end(path):
+            element = path.elementAt(path.elementCount() - 1)
+            return QPointF(element.x, element.y)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            first = window.controller.create_node("TouchIdle", (160, 160))
+            second = window.controller.create_node("TouchDrag", (520, 180))
+            window.controller.add_connection(first, second)
+            for index in range(55):
+                window.controller.create_node("TouchIdle", (900 + index * 260, 120))
+            window.canvas._apply_view_state(0.18, QPointF(0.0, 0.0))
+            connection_item = window.canvas.connection_items[(first, second)]
+            before = path_end(connection_item.path())
+
+            window.canvas._set_interaction_busy("drag", True)
+            self.assertTrue(window.canvas.should_use_motion_preview())
+            second_item = window.canvas.node_items[second]
+            second_item.setPos(second_item.pos() + QPointF(180.0, 40.0))
+            during = path_end(connection_item.path())
+
+            self.assertEqual(before, during)
+            window.canvas._set_interaction_busy("drag", False)
+            after = path_end(connection_item.path())
+            self.assertNotEqual(before, after)
+            self.assertEqual(after, window.canvas.connection_anchor_scene_pos(second, "input"))
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
     def test_save_commits_pending_line_edit_without_enter(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
@@ -1567,7 +1651,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
                         box._forced_clicked_button = button
                         break
 
-            with patch.object(QMessageBox, "exec", choose_save), patch.object(
+            with patch.dict(os.environ, {"L2D_CONFIG_EDITOR_TEST_CLOSE_EVENT_POLICY": "", "L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY": ""}), patch.object(QMessageBox, "exec", choose_save), patch.object(
                 QMessageBox, "clickedButton", lambda box: getattr(box, "_forced_clicked_button", None)
             ), patch.object(window, "_save_current_file", wraps=window._save_current_file) as save_mock:
                 self.assertTrue(window._confirm_safe_to_close())
@@ -1588,7 +1672,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
             window.controller.update_field(initial.uuid, "memo", "changed_for_discard", "simple")
 
-            with patch.dict(os.environ, {"L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY": "discard"}), patch.object(
+            with patch.dict(os.environ, {"L2D_CONFIG_EDITOR_TEST_CLOSE_EVENT_POLICY": "", "L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY": "discard"}), patch.object(
                 QMessageBox, "exec", side_effect=AssertionError("should not prompt")
             ), patch.object(window, "_save_current_file", wraps=window._save_current_file) as save_mock:
                 self.assertTrue(window._confirm_safe_to_close())
@@ -1596,7 +1680,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
 
             window._mark_saved_checkpoint(saved=True)
             window.controller.update_field(initial.uuid, "memo", "changed_for_save", "simple")
-            with patch.dict(os.environ, {"L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY": "save"}), patch.object(
+            with patch.dict(os.environ, {"L2D_CONFIG_EDITOR_TEST_CLOSE_EVENT_POLICY": "", "L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY": "save"}), patch.object(
                 QMessageBox, "exec", side_effect=AssertionError("should not prompt")
             ), patch.object(window, "_save_current_file", wraps=window._save_current_file) as save_mock:
                 self.assertTrue(window._confirm_safe_to_close())
@@ -1611,7 +1695,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
             window.controller.update_field(initial.uuid, "tips", "draft only", "simple")
 
-            with patch.object(QMessageBox, "exec", side_effect=AssertionError("should not prompt")), patch.object(
+            with patch.dict(os.environ, {"L2D_CONFIG_EDITOR_TEST_CLOSE_EVENT_POLICY": "", "L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY": ""}), patch.object(QMessageBox, "exec", side_effect=AssertionError("should not prompt")), patch.object(
                 window, "_save_current_file", wraps=window._save_current_file
             ) as save_mock:
                 self.assertTrue(window._confirm_safe_to_close())
@@ -1715,6 +1799,131 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertLess(item._rect.height(), original_height + 40.0)
             self.assertLess(item._rect.width() * window.canvas.transform().m11(), original_screen_width * 0.6)
             self.assertLess(item._rect.height() * window.canvas.transform().m11(), original_screen_height * 0.6)
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_appearance_update_keeps_compact_note_layout_stable_when_zoomed_out(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            item = window.canvas.node_items[created]
+
+            window.canvas._apply_view_state(0.18, QPointF(0.0, 0.0))
+            window.canvas._refresh_scale_sensitive_nodes()
+            self.app.processEvents()
+            baseline_note = QRectF(item._card_layout["note"])
+            baseline_frame = QRectF(item._card_layout["frame"])
+            baseline_height = item._rect.height()
+            note_font_size = item._compact_note_font().pointSizeF()
+            window.controller.update_fields(
+                created,
+                {
+                    "theme_body_color": "#15302f",
+                    "theme_border_color": "#f5c84b",
+                    "theme_text_color": "#fff6d6",
+                },
+                "simple",
+            )
+            self.app.processEvents()
+
+            self.assertAlmostEqual(item._card_layout["note"].height(), baseline_note.height(), delta=0.1)
+            self.assertAlmostEqual(item._card_layout["note"].width(), baseline_note.width(), delta=0.1)
+            self.assertAlmostEqual(item._card_layout["frame"].top(), baseline_frame.top(), delta=0.1)
+            self.assertAlmostEqual(item._rect.height(), baseline_height, delta=0.1)
+            self.assertAlmostEqual(item._compact_note_font().pointSizeF(), note_font_size, delta=0.1)
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_zoomed_out_compact_note_does_not_collapse_to_ellipsis(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            item = window.canvas.node_items[created]
+
+            window.canvas._apply_view_state(0.18, QPointF(0.0, 0.0))
+            window.canvas._refresh_scale_sensitive_nodes()
+            self.app.processEvents()
+
+            draw_rect, fitted_font, display_text = item._compact_text_layout(
+                item._card_field_text("tips") or "empty",
+                item._card_layout["note"],
+                item._compact_note_font_for_text(item._card_field_text("tips") or "empty", item._card_layout["note"].width()),
+                min_point_size=item.CARD_NOTE_MIN_POINT_SIZE,
+                horizontal_padding=10.0,
+                shrink_to_fit=False,
+            )
+            del draw_rect, fitted_font
+            self.assertEqual("empty", display_text)
+            self.assertGreater(item._card_layout["note"].width(), 150.0)
+            self.assertLessEqual(item._card_layout["note"].right(), item._card_layout["frame"].right() + 0.1)
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_zoomed_out_long_compact_note_stays_inside_node_width(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("TouchDrag", (200, 120))
+            long_title = "compact note title"
+            window.controller.update_field(created, "tips", long_title, "simple")
+            item = window.canvas.node_items[created]
+
+            window.canvas._apply_view_state(0.18, QPointF(0.0, 0.0))
+            window.canvas._refresh_scale_sensitive_nodes()
+            self.app.processEvents()
+
+            note_rect = item._card_layout["note"]
+            note_font = item._compact_note_font_for_text(long_title, note_rect.width())
+            metrics = QFontMetricsF(note_font)
+            self.assertLessEqual(note_rect.right(), item._card_layout["frame"].right() + 0.1)
+            self.assertLessEqual(metrics.horizontalAdvance(long_title), note_rect.adjusted(10.0, 0.0, -10.0, 0.0).width() + 0.5)
+            self.assertGreaterEqual(note_rect.height(), metrics.height() + 18.0)
+            self.assertLess(note_font.pointSizeF(), item._compact_note_font().pointSizeF())
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_compact_note_layout_does_not_pulse_during_repeated_zoom(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("TouchDrag", (200, 120))
+            long_title = "compact note title"
+            window.controller.update_field(created, "tips", long_title, "simple")
+            item = window.canvas.node_items[created]
+            center = QPointF(0.0, 0.0)
+
+            baseline_note = QRectF(item._card_layout["note"])
+            baseline_height = item._rect.height()
+            baseline_font_size = item._compact_note_font_for_text(long_title, baseline_note.width()).pointSizeF()
+
+            for scale in (0.18, 0.4, 1.0, 0.18, 0.65, 0.25):
+                window.canvas._apply_view_state(scale, center)
+                window.canvas._refresh_scale_sensitive_nodes()
+                self.app.processEvents()
+                current_note = item._card_layout["note"]
+                current_font_size = item._compact_note_font_for_text(long_title, current_note.width()).pointSizeF()
+                self.assertAlmostEqual(current_note.width(), baseline_note.width(), delta=0.1)
+                self.assertAlmostEqual(current_note.height(), baseline_note.height(), delta=0.1)
+                self.assertAlmostEqual(item._rect.height(), baseline_height, delta=0.1)
+                self.assertAlmostEqual(current_font_size, baseline_font_size, delta=0.1)
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
@@ -2047,6 +2256,47 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertIn("visible_action", painted_text)
             self.assertIn("visible_parameter", painted_text)
             self.assertGreaterEqual(len(painted_text), 5)
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_zoomed_out_cards_use_item_cache_while_panning(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = None
+            for index in range(55):
+                node_uuid = window.controller.create_node("TouchIdle", (200 + index * 260, 120))
+                self.assertIsNotNone(node_uuid)
+                if created is None:
+                    created = node_uuid
+            window.controller.update_field(created, "tips", "preview_note", "simple")
+            item = window.canvas.node_items[created]
+            window.canvas._apply_view_state(0.18, QPointF(0.0, 0.0))
+            window.canvas._refresh_scale_sensitive_nodes()
+            self.assertTrue(window.canvas.should_use_fast_rendering())
+            self.assertFalse(window.canvas.should_use_motion_preview())
+            self.assertEqual(item.cacheMode(), QGraphicsItem.CacheMode.DeviceCoordinateCache)
+
+            image = QImage(int(item.boundingRect().width()) + 20, int(item.boundingRect().height()) + 20, QImage.Format.Format_ARGB32_Premultiplied)
+            image.fill(0)
+            painter = QPainter(image)
+            try:
+                with patch.object(item, "_paint_compact_text") as paint_text:
+                    window.canvas._set_interaction_busy("pan", True)
+                    self.assertTrue(window.canvas.should_use_motion_preview())
+                    item.paint(painter, None)
+                    self.assertGreater(paint_text.call_count, 0)
+
+                    window.canvas._set_interaction_busy("pan", False)
+                    self.assertFalse(window.canvas.should_use_motion_preview())
+                    item.paint(painter, None)
+                    self.assertGreater(paint_text.call_count, 0)
+            finally:
+                painter.end()
             window._mark_saved_checkpoint(saved=True)
         window.close()
 

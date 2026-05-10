@@ -130,6 +130,7 @@ class ConnectionItem(QGraphicsPathItem):
         self.to_uuid = to_uuid
         self.setZValue(-8)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        self.setCacheMode(QGraphicsItem.CacheMode.DeviceCoordinateCache)
         self.update_path()
 
     def update_path(self) -> None:
@@ -143,10 +144,18 @@ class ConnectionItem(QGraphicsPathItem):
         self.setPath(path)
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
+        motion_preview = self.view.should_use_motion_preview()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, not self.view.should_use_fast_rendering())
         color = QColor("#2b89ff") if self.isSelected() else QColor("#7d8aa0")
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(color, 2.8 if self.isSelected() else 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.setPen(QPen(color, 1.4 if motion_preview else (2.8 if self.isSelected() else 2.0), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        if motion_preview:
+            path = self.path()
+            if path.elementCount() >= 2:
+                start = path.elementAt(0)
+                end = path.elementAt(path.elementCount() - 1)
+                painter.drawLine(QPointF(start.x, start.y), QPointF(end.x, end.y))
+                return
         painter.drawPath(self.path())
 
 
@@ -175,9 +184,9 @@ class NodeItem(QGraphicsObject):
     DRAWFRAME_TITLE_BASE_POINT_SIZE = 25.2
     DRAWFRAME_TITLE_MIN_POINT_SIZE = 21.2
     DRAWFRAME_TITLE_MAX_POINT_SIZE = 144.0
-    CARD_NOTE_BASE_POINT_SIZE = 18.0
-    CARD_NOTE_MIN_POINT_SIZE = 13.0
-    CARD_NOTE_MAX_POINT_SIZE = 72.0
+    CARD_NOTE_BASE_POINT_SIZE = 27.0
+    CARD_NOTE_MIN_POINT_SIZE = 19.5
+    CARD_NOTE_MAX_POINT_SIZE = 108.0
     CARD_TITLE_BASE_POINT_SIZE = 24.0
     CARD_TITLE_MIN_POINT_SIZE = 16.0
     CARD_TITLE_MAX_POINT_SIZE = 96.0
@@ -240,6 +249,7 @@ class NodeItem(QGraphicsObject):
         )
         self.setAcceptHoverEvents(True)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setCacheMode(QGraphicsItem.CacheMode.DeviceCoordinateCache)
         self.proxy: QGraphicsProxyWidget | None = None
         self.form: NodeFormWidget | None = None
         self._recreate_form_proxy()
@@ -252,7 +262,10 @@ class NodeItem(QGraphicsObject):
 
     def boundingRect(self) -> QRectF:
         hit_padding = self._pin_radius + self.PIN_HIT_PADDING
-        return self._rect.adjusted(-hit_padding, -self.VISUAL_PADDING, hit_padding, self.VISUAL_PADDING + 4.0)
+        bounds = self._rect.adjusted(-hit_padding, -self.VISUAL_PADDING, hit_padding, self.VISUAL_PADDING + 4.0)
+        if self._uses_compact_card() and "note" in self._card_layout:
+            bounds = bounds.united(self._card_layout["note"].adjusted(-8.0, -self.VISUAL_PADDING, 8.0, self.VISUAL_PADDING))
+        return bounds
 
     def _pin_anchor_rect(self) -> QRectF:
         if self._uses_compact_card():
@@ -528,15 +541,34 @@ class NodeItem(QGraphicsObject):
         value = display_value_for_field(self.schema, self.node, key, self.node.fields.get(key))
         return "" if value is None else str(value).strip()
 
-    def _recompute_compact_card_layout(self, width: float) -> float:
+    def _compact_note_layout_font(self) -> QFont:
+        font = QFont(self.form.font())
+        font.setBold(True)
+        font.setPointSizeF(self.CARD_NOTE_BASE_POINT_SIZE)
+        return font
+
+    def _compact_card_font(self, point_size: float) -> QFont:
+        font = QFont(self.form.font())
+        font.setBold(True)
+        font.setPointSizeF(point_size)
+        return font
+
+    def _compact_note_width_for_text(self, text: str, inner_width: float, font: QFont | None = None) -> float:
+        resolved_text = str(text or "").strip() or "empty"
+        note_metrics = QFontMetricsF(font or self._compact_note_layout_font())
+        return min(max(150.0, float(note_metrics.horizontalAdvance(resolved_text) + 38)), inner_width)
+
+    def _compact_note_height_for_font(self, font: QFont) -> float:
+        return max(48.0, float(QFontMetricsF(font).height()) + 18.0)
+
+    def _recompute_compact_card_layout(self, width: float, *, note_text: str | None = None) -> float:
         outer_margin = 18.0
-        title_height = max(40.0, float(QFontMetrics(self._compact_note_font()).height()) + 12.0)
+        resolved_note_text = self._card_field_text("tips") if note_text is None else note_text
+        note_font = self._compact_note_font_for_text(resolved_note_text, width - outer_margin * 2.0)
+        title_height = self._compact_note_height_for_font(note_font)
         canvas_top = title_height + 16.0
         inner_width = width - outer_margin * 2.0
-        note_text = self._card_field_text("tips") or "empty"
-        note_font = self._compact_note_font()
-        note_metrics = QFontMetrics(note_font)
-        note_width = min(max(150.0, float(note_metrics.horizontalAdvance(note_text) + 32)), inner_width * 0.66)
+        note_width = self._compact_note_width_for_text(resolved_note_text, inner_width, note_font)
         frame_rect = QRectF(outer_margin, canvas_top, inner_width, self.CARD_BASE_HEIGHT - 26.0)
         top_box = QRectF(frame_rect.center().x() - 120.0, frame_rect.top() + 24.0, 240.0, 58.0)
         left_arrow = QRectF(frame_rect.left() + 26.0, frame_rect.top() + 116.0, 238.0, 118.0)
@@ -686,6 +718,7 @@ class NodeItem(QGraphicsObject):
         min_point_size: float,
         horizontal_padding: float = 0.0,
         vertical_padding: float = 0.0,
+        shrink_to_fit: bool = True,
     ) -> tuple[QRectF, QFont, str]:
         draw_rect = rect.adjusted(horizontal_padding, vertical_padding, -horizontal_padding, -vertical_padding)
         draw_rect = QRectF(draw_rect)
@@ -695,7 +728,7 @@ class NodeItem(QGraphicsObject):
         point_size = max(min_point_size, point_size)
         min_point_size = max(6.0, min_point_size)
 
-        while point_size > min_point_size:
+        while shrink_to_fit and point_size > min_point_size:
             fitted_font.setPointSizeF(point_size)
             metrics = QFontMetricsF(fitted_font)
             if metrics.height() <= draw_rect.height() + 0.5 and metrics.horizontalAdvance(resolved_text) <= draw_rect.width() + 0.5:
@@ -704,6 +737,8 @@ class NodeItem(QGraphicsObject):
             if point_size == min_point_size:
                 fitted_font.setPointSizeF(point_size)
                 break
+        if not shrink_to_fit:
+            fitted_font.setPointSizeF(point_size)
 
         metrics = QFontMetrics(fitted_font)
         available_width = max(1, int(draw_rect.width()))
@@ -722,6 +757,7 @@ class NodeItem(QGraphicsObject):
         min_point_size: float,
         horizontal_padding: float = 0.0,
         vertical_padding: float = 0.0,
+        shrink_to_fit: bool = True,
     ) -> None:
         draw_rect, fitted_font, display_text = self._compact_text_layout(
             text,
@@ -730,6 +766,7 @@ class NodeItem(QGraphicsObject):
             min_point_size=min_point_size,
             horizontal_padding=horizontal_padding,
             vertical_padding=vertical_padding,
+            shrink_to_fit=shrink_to_fit,
         )
         painter.setFont(fitted_font)
         painter.setPen(color)
@@ -809,11 +846,12 @@ class NodeItem(QGraphicsObject):
                 painter,
                 note_rect,
                 self._card_field_text("tips") or "empty",
-                self._compact_note_font(),
+                self._compact_note_font_for_text(self._card_field_text("tips") or "empty", note_rect.width()),
                 palette["note_text"],
                 Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                 min_point_size=self.CARD_NOTE_MIN_POINT_SIZE,
                 horizontal_padding=10.0,
+                shrink_to_fit=False,
             )
 
             painter.setPen(QPen(palette["draw_border"], 2.0))
@@ -1219,69 +1257,32 @@ class NodeItem(QGraphicsObject):
         return title_font
 
     def _compact_note_font(self) -> QFont:
-        font = QFont(self.form.font())
-        font.setBold(True)
-        font.setPointSizeF(
-            self._scale_compensated_point_size(
-                self.CARD_NOTE_BASE_POINT_SIZE,
-                self.CARD_NOTE_MIN_POINT_SIZE,
-                self.CARD_NOTE_MAX_POINT_SIZE,
-                scale_floor=self.CARD_TEXT_SCALE_FLOOR,
-            )
-        )
+        return self._compact_card_font(self.CARD_NOTE_BASE_POINT_SIZE)
+
+    def _compact_note_font_for_text(self, text: str, max_width: float) -> QFont:
+        font = self._compact_note_font()
+        resolved_text = str(text or "").strip() or "empty"
+        available_width = max(1.0, max_width - 20.0)
+        metrics = QFontMetricsF(font)
+        text_width = metrics.horizontalAdvance(resolved_text)
+        if text_width <= available_width:
+            return font
+        current_size = font.pointSizeF() if font.pointSizeF() > 0 else float(font.pointSize())
+        scaled_size = current_size * available_width / max(1.0, text_width)
+        font.setPointSizeF(max(self.CARD_NOTE_MIN_POINT_SIZE, min(current_size, scaled_size)))
         return font
 
     def _compact_title_font(self) -> QFont:
-        font = QFont(self.form.font())
-        font.setBold(True)
-        font.setPointSizeF(
-            self._scale_compensated_point_size(
-                self.CARD_TITLE_BASE_POINT_SIZE,
-                self.CARD_TITLE_MIN_POINT_SIZE,
-                self.CARD_TITLE_MAX_POINT_SIZE,
-                scale_floor=self.CARD_TEXT_SCALE_FLOOR,
-            )
-        )
-        return font
+        return self._compact_card_font(self.CARD_TITLE_BASE_POINT_SIZE)
 
     def _compact_action_font(self) -> QFont:
-        font = QFont(self.form.font())
-        font.setBold(True)
-        font.setPointSizeF(
-            self._scale_compensated_point_size(
-                self.CARD_ACTION_BASE_POINT_SIZE,
-                self.CARD_ACTION_MIN_POINT_SIZE,
-                self.CARD_ACTION_MAX_POINT_SIZE,
-                scale_floor=self.CARD_TEXT_SCALE_FLOOR,
-            )
-        )
-        return font
+        return self._compact_card_font(self.CARD_ACTION_BASE_POINT_SIZE)
 
     def _compact_target_font(self) -> QFont:
-        font = QFont(self.form.font())
-        font.setBold(True)
-        font.setPointSizeF(
-            self._scale_compensated_point_size(
-                self.CARD_TARGET_BASE_POINT_SIZE,
-                self.CARD_TARGET_MIN_POINT_SIZE,
-                self.CARD_TARGET_MAX_POINT_SIZE,
-                scale_floor=self.CARD_TEXT_SCALE_FLOOR,
-            )
-        )
-        return font
+        return self._compact_card_font(self.CARD_TARGET_BASE_POINT_SIZE)
 
     def _compact_parameter_font(self) -> QFont:
-        font = QFont(self.form.font())
-        font.setBold(True)
-        font.setPointSizeF(
-            self._scale_compensated_point_size(
-                self.CARD_PARAMETER_BASE_POINT_SIZE,
-                self.CARD_PARAMETER_MIN_POINT_SIZE,
-                self.CARD_PARAMETER_MAX_POINT_SIZE,
-                scale_floor=self.CARD_TEXT_SCALE_FLOOR,
-            )
-        )
-        return font
+        return self._compact_card_font(self.CARD_PARAMETER_BASE_POINT_SIZE)
 
     def has_card_field_editor(self) -> bool:
         return self._card_editor_proxy is not None
@@ -1325,7 +1326,55 @@ class NodeItem(QGraphicsObject):
             editor.setPlaceholderText(schema_field.placeholder)
         editor.setText(self._card_field_text(field_key))
         editor.setAlignment(Qt.AlignmentFlag.AlignLeft if field_key == "tips" else Qt.AlignmentFlag.AlignCenter)
-        font_px = max(14, int(round(QFontMetricsF(editor_font).height() * 0.9)))
+        self._apply_card_editor_style(editor)
+        proxy = QGraphicsProxyWidget(self)
+        proxy.setZValue(24)
+        proxy.setWidget(editor)
+        self._card_editor_proxy = proxy
+        self._card_editor_key = field_key
+        self._sync_card_editor_geometry(field_key, editor)
+        editor.committed.connect(lambda value, key=field_key, target=editor: self._commit_card_field_edit(key, value, target))
+        if field_key == "tips":
+            editor.textChanged.connect(lambda _text, key=field_key, target=editor: self._sync_card_editor_geometry(key, target))
+        editor.setFocus(Qt.FocusReason.MouseFocusReason)
+        editor.selectAll()
+        return True
+
+    def _sync_card_editor_geometry(self, field_key: str, editor) -> None:
+        if not self._card_editor_proxy or self._card_editor_proxy.widget() is not editor:
+            return
+        if field_key == "tips" and self._uses_compact_card():
+            self.prepareGeometryChange()
+            height = self._recompute_compact_card_layout(self._rect.width(), note_text=editor.text())
+            frame_width = self._card_layout.get("frame", self._rect).width()
+            editor_font = self._compact_note_font_for_text(editor.text(), frame_width)
+            editor.setFont(editor_font)
+            self._apply_card_editor_style(editor)
+            editor_note_width = self._compact_note_width_for_text(editor.text(), frame_width, editor_font)
+            current_note = self._card_layout.get("note")
+            if current_note is not None:
+                note_height = max(current_note.height(), self._compact_note_height_for_font(editor_font))
+                self._card_layout["note"] = QRectF(current_note.left(), current_note.top(), editor_note_width, note_height)
+            self._rect = QRectF(0.0, 0.0, self._rect.width(), height)
+        field_rect = self._card_rect_for_field(field_key)
+        if field_rect is None:
+            return
+        inset = 8.0 if field_key != "tips" else 4.0
+        edit_rect = field_rect.adjusted(inset, 4.0, -inset, -4.0)
+        width = max(120, int(math.ceil(edit_rect.width())))
+        height = max(28, int(math.ceil(edit_rect.height())))
+        self._card_editor_proxy.setPos(edit_rect.topLeft())
+        self._card_editor_proxy.setMinimumSize(width, height)
+        self._card_editor_proxy.setPreferredSize(width, height)
+        self._card_editor_proxy.setMaximumSize(width, height)
+        self._card_editor_proxy.setGeometry(QRectF(edit_rect.left(), edit_rect.top(), width, height))
+        editor.setFixedSize(width, height)
+        editor.resize(width, height)
+        self._card_editor_proxy.updateGeometry()
+        self._card_editor_proxy.update()
+        self.update()
+
+    def _apply_card_editor_style(self, editor) -> None:
         editor.setStyleSheet(
             "QLineEdit {"
             " background: rgba(9, 11, 16, 0.94);"
@@ -1334,25 +1383,11 @@ class NodeItem(QGraphicsObject):
             " border-radius: 10px;"
             " padding: 4px 10px;"
             " font-weight: 600;"
-            f" font-size: {font_px}px;"
             "}"
             "QLineEdit:focus {"
             " border: 2px solid #55b3ff;"
             "}"
         )
-        proxy = QGraphicsProxyWidget(self)
-        proxy.setZValue(24)
-        proxy.setWidget(editor)
-        inset = 8.0 if field_key != "tips" else 4.0
-        edit_rect = field_rect.adjusted(inset, 4.0, -inset, -4.0)
-        proxy.setPos(edit_rect.topLeft())
-        editor.setFixedSize(max(120, int(edit_rect.width())), max(28, int(edit_rect.height())))
-        editor.committed.connect(lambda value, key=field_key, target=editor: self._commit_card_field_edit(key, value, target))
-        self._card_editor_proxy = proxy
-        self._card_editor_key = field_key
-        editor.setFocus(Qt.FocusReason.MouseFocusReason)
-        editor.selectAll()
-        return True
 
     def open_appearance_dialog(self, anchor_global_pos=None) -> bool:
         if self.node.locked:
@@ -1467,6 +1502,7 @@ class GroupItem(QGraphicsObject):
         self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable | QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges)
         self.setAcceptHoverEvents(True)
         self.setCursor(Qt.CursorShape.ArrowCursor)
+        self.setCacheMode(QGraphicsItem.CacheMode.DeviceCoordinateCache)
         self.setZValue(self.BASE_Z)
 
     def boundingRect(self) -> QRectF:
@@ -1642,6 +1678,7 @@ class ParameterTableItem(QGraphicsObject):
         self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable | QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges)
         self.setAcceptHoverEvents(True)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setCacheMode(QGraphicsItem.CacheMode.DeviceCoordinateCache)
         self.setZValue(self.BASE_Z)
 
     def _build_columns(self) -> list[tuple[str, str, float]]:
@@ -2155,15 +2192,18 @@ class NodeCanvasView(QGraphicsView):
 
     def _set_interaction_busy(self, flag: str, busy: bool) -> None:
         before = bool(self._interaction_flags)
+        was_motion_preview = self.should_use_motion_preview()
         if busy:
             self._interaction_flags.add(flag)
         else:
             self._interaction_flags.discard(flag)
-            if flag == "drag":
+            if flag in {"drag", "resize"}:
                 self._flush_deferred_connection_updates()
         after = bool(self._interaction_flags)
         if before != after:
             self.interactionBusyChanged.emit(after)
+            if was_motion_preview and not self.should_use_motion_preview():
+                self.viewport().update()
 
     def is_busy(self) -> bool:
         return bool(self._interaction_flags)
@@ -2175,6 +2215,14 @@ class NodeCanvasView(QGraphicsView):
         if self._interaction_flags:
             return True
         return float(self.transform().m11()) < 0.42
+
+    def should_use_motion_preview(self) -> bool:
+        item_count = len(self.node_items) + len(self.table_items)
+        if item_count <= 50:
+            return False
+        if not (self._interaction_flags & {"pan", "wheel", "focus", "drag", "resize"}):
+            return False
+        return float(self.transform().m11()) < 0.5
 
     def _flush_deferred_connection_updates(self) -> None:
         if not self._deferred_connection_update_uuids:
@@ -2337,6 +2385,16 @@ class NodeCanvasView(QGraphicsView):
         point = self.mapToScene(self.viewport().rect().center())
         return point.x(), point.y()
 
+    def _pan_viewport_by(self, delta) -> None:
+        horizontal = self.horizontalScrollBar()
+        vertical = self.verticalScrollBar()
+        next_x = int(horizontal.value() - delta.x())
+        next_y = int(vertical.value() - delta.y())
+        if next_x != horizontal.value():
+            horizontal.setValue(next_x)
+        if next_y != vertical.value():
+            vertical.setValue(next_y)
+
     def reset_view_layout(self) -> None:
         self._focus_animation.stop()
         self._set_interaction_busy("focus", False)
@@ -2451,9 +2509,7 @@ class NodeCanvasView(QGraphicsView):
         if self._panning:
             delta = event.position() - self._pan_start
             self._pan_start = event.position()
-            self.horizontalScrollBar().setValue(int(self.horizontalScrollBar().value() - delta.x()))
-            self.verticalScrollBar().setValue(int(self.verticalScrollBar().value() - delta.y()))
-            self._store_canvas_view()
+            self._pan_viewport_by(delta)
             event.accept()
             return
         if self._connecting_from:
@@ -2469,6 +2525,7 @@ class NodeCanvasView(QGraphicsView):
             self._panning = False
             self._set_interaction_busy("pan", False)
             self.setCursor(Qt.CursorShape.ArrowCursor)
+            self._store_canvas_view()
             event.accept()
             return
         if event.button() == Qt.MouseButton.LeftButton and self._connecting_from:
@@ -2734,6 +2791,9 @@ class NodeCanvasView(QGraphicsView):
         self._refresh_scale_sensitive_nodes(force=True)
 
     def _on_node_geometry_changed(self, node_uuid: str) -> None:
+        if self._interaction_flags & {"drag", "resize"} and self.should_use_motion_preview():
+            self._deferred_connection_update_uuids.add(node_uuid)
+            return
         self._update_connections_for_node(node_uuid)
 
     def _on_scene_selection_changed(self) -> None:

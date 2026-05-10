@@ -2293,7 +2293,11 @@ class MainWindow(QMainWindow):
     def _confirm_safe_to_close(self) -> bool:
         self._auto_save_timer.stop()
         self._commit_pending_editor_changes()
-        close_policy = str(os.environ.get("L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY") or "").strip().lower()
+        close_policy = str(
+            os.environ.get("L2D_CONFIG_EDITOR_TEST_CLOSE_EVENT_POLICY")
+            or os.environ.get("L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY")
+            or ""
+        ).strip().lower()
         if close_policy == "save":
             if self._is_dirty() and self.controller.document.path:
                 return bool(self._save_current_file(silent=True, allow_incomplete=True))

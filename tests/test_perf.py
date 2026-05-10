@@ -3,8 +3,8 @@ import sys
 import tempfile
 import unittest
 
-if sys.platform != "win32":
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault("L2D_CONFIG_EDITOR_TEST_CLOSE_EVENT_POLICY", "discard")
 
 from PyQt6.QtWidgets import QApplication
 
