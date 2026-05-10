@@ -2734,9 +2734,6 @@ class NodeCanvasView(QGraphicsView):
         self._refresh_scale_sensitive_nodes(force=True)
 
     def _on_node_geometry_changed(self, node_uuid: str) -> None:
-        if "drag" in self._interaction_flags:
-            self._deferred_connection_update_uuids.add(node_uuid)
-            return
         self._update_connections_for_node(node_uuid)
 
     def _on_scene_selection_changed(self) -> None:

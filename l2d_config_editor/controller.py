@@ -810,7 +810,9 @@ class EditorController(QObject):
             effective_changed_key = next(iter(changed_keys))
         if node.type in {"TouchDrag", "ParameterTrigger"} and changed_keys & {"action_trigger", "parameter"}:
             node.fields["action_trigger_active"] = ""
-            if source_mode == "simple":
+            if node.type == "ParameterTrigger" and "parameter" in changed_keys:
+                node.manual_fields.add("parameter")
+            elif source_mode == "simple":
                 node.manual_fields.discard("parameter")
         if effective_changed_key in {"action_trigger_active", "action_trigger"} or (
             source_mode == "advanced" and effective_changed_key == "parameter"
@@ -840,7 +842,9 @@ class EditorController(QObject):
             effective_changed_key = next(iter(changed_keys)) if len(changed_keys) == 1 else None
             if node.type in {"TouchDrag", "ParameterTrigger"} and changed_keys & {"action_trigger", "parameter"}:
                 node.fields["action_trigger_active"] = ""
-                if source_mode == "simple":
+                if node.type == "ParameterTrigger" and "parameter" in changed_keys:
+                    node.manual_fields.add("parameter")
+                elif source_mode == "simple":
                     node.manual_fields.discard("parameter")
             if effective_changed_key in {"action_trigger_active", "action_trigger"} or (
                 source_mode == "advanced" and effective_changed_key == "parameter"

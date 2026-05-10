@@ -461,17 +461,33 @@ def _next_available_slot(used_slots: set[int]) -> int:
     return slot
 
 
+TOUCHDRAG_VALUE_NAMESPACE_TYPES = {"TouchDrag", "ParameterTrigger"}
+
+
+def _type_slot_namespace_types(node_type: str) -> set[str]:
+    if node_type in TOUCHDRAG_VALUE_NAMESPACE_TYPES:
+        return TOUCHDRAG_VALUE_NAMESPACE_TYPES
+    return {node_type}
+
+
+def _type_slot_namespace_key(node_type: str) -> str:
+    if node_type in TOUCHDRAG_VALUE_NAMESPACE_TYPES:
+        return "TouchDrag"
+    return node_type
+
+
 def _occupied_type_slots(document: DocumentModel, node_type: str, *, exclude_uuid: str | None = None) -> set[int]:
+    namespace_types = _type_slot_namespace_types(node_type)
     occupied = {
         int(node.type_slot)
         for node in document.nodes
-        if node.uuid != exclude_uuid and node.type == node_type and isinstance(node.type_slot, int) and node.type_slot > 0
+        if node.uuid != exclude_uuid and node.type in namespace_types and isinstance(node.type_slot, int) and node.type_slot > 0
     }
     if document.editor_settings.trash_enabled:
         occupied.update(
             int(entry.type_slot)
             for entry in document.trash_bin
-            if entry.node_type == node_type and isinstance(entry.type_slot, int) and entry.type_slot > 0
+            if entry.node_type in namespace_types and isinstance(entry.type_slot, int) and entry.type_slot > 0
         )
     return occupied
 
@@ -501,11 +517,16 @@ def allocate_export_slot(document: DocumentModel, *, exclude_uuid: str | None = 
 
 def backfill_slots(schema: EditorSchema, document: DocumentModel) -> None:
     function_types = set(function_node_types(schema))
+    seen_type_slots: dict[str, set[int]] = {}
     for node in document.nodes:
         if node.type not in function_types:
             continue
-        if not isinstance(node.type_slot, int) or node.type_slot <= 0:
+        namespace_key = _type_slot_namespace_key(node.type)
+        namespace_seen = seen_type_slots.setdefault(namespace_key, set())
+        current_slot = node.type_slot if isinstance(node.type_slot, int) else None
+        if not isinstance(current_slot, int) or current_slot <= 0 or current_slot in namespace_seen:
             node.type_slot = allocate_type_slot(document, node.type, exclude_uuid=node.uuid)
+        namespace_seen.add(int(node.type_slot))
         if not isinstance(node.export_slot, int) or node.export_slot <= 0:
             node.export_slot = allocate_export_slot(document, exclude_uuid=node.uuid)
 
@@ -527,6 +548,20 @@ def _sequence_action_name(node_schema: NodeSchema, target_idle: int) -> str:
 def _expected_parameter(node_schema: NodeSchema, target_idle: int) -> str:
     template = node_schema.auto_rules.parameter_template
     return template.format(target_idle=target_idle, sequence=target_idle)
+
+
+def _apply_parameter_table_generated_names(schema: EditorSchema, node: NodeRecord) -> None:
+    if node.type != "ParameterTrigger":
+        return
+    node_schema = _node_schema(schema, node.type)
+    sequence = int(node.type_slot or node.sequence_no or 1)
+    target_idle = sequence if node_schema.auto_rules.use_sequence_for_target_idle else 0
+    node.fields["draw_able_name"] = node_schema.auto_rules.draw_template.format(
+        sequence=sequence,
+        target_idle=target_idle,
+    )
+    node.fields["parameter"] = _expected_parameter(node_schema, target_idle)
+    node.manual_fields.difference_update({"draw_able_name", "parameter"})
 
 
 def _animated_action(
@@ -908,6 +943,8 @@ def apply_auto_rules(
     target_idle = _coerce_int(node.fields.get("target_idle"), normalized_target_idle(node))
     node.fields["target_idle"] = target_idle
     if _is_touchdrag_value_like(node):
+        if node.type == "ParameterTrigger" and (force_generated or "parameter" not in node.manual_fields):
+            _apply_parameter_table_generated_names(schema, node)
         if force_generated or source_mode == "simple":
             node.fields["action_trigger"] = ""
             node.fields["action_trigger_active"] = ""
@@ -974,6 +1011,7 @@ def create_node(
     else:
         apply_auto_rules(schema, document, node, force_generated=False)
     if node.type == "ParameterTrigger":
+        _apply_parameter_table_generated_names(schema, node)
         node.fields["result_type"] = "value"
         node.fields["action_trigger"] = ""
         node.fields["action_trigger_active"] = ""

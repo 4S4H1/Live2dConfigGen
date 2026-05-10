@@ -195,9 +195,47 @@ class LogicTests(unittest.TestCase):
         document = self.make_ready_document()
         node = create_node(self.schema, document, "ParameterTrigger")
         self.assertEqual("TouchDrag1", node.fields["draw_able_name"])
+        self.assertEqual("touch_drag1", node.fields["parameter"])
         self.assertEqual("value", node.fields["result_type"])
         self.assertEqual("", node.fields["action_trigger"])
         self.assertEqual("", node.fields["action_trigger_active"])
+
+    def test_parameter_trigger_generated_names_share_touchdrag_numbering(self) -> None:
+        document = self.make_ready_document()
+        touch_drag = create_node(self.schema, document, "TouchDrag")
+        document.nodes.append(touch_drag)
+        parameter_row = create_node(self.schema, document, "ParameterTrigger")
+        document.nodes.append(parameter_row)
+        copied_row = create_node(self.schema, document, "ParameterTrigger", base_node=parameter_row)
+        document.nodes.append(copied_row)
+        next_touch_drag = create_node(self.schema, document, "TouchDrag")
+
+        self.assertEqual("touch_drag1", touch_drag.fields["parameter"])
+        self.assertEqual("touch_drag2", parameter_row.fields["parameter"])
+        self.assertEqual("touch_drag3", copied_row.fields["parameter"])
+        self.assertEqual("touch_drag4", next_touch_drag.fields["parameter"])
+        self.assertEqual({"touch_drag1", "touch_drag2", "touch_drag3", "touch_drag4"}, {
+            touch_drag.fields["parameter"],
+            parameter_row.fields["parameter"],
+            copied_row.fields["parameter"],
+            next_touch_drag.fields["parameter"],
+        })
+
+    def test_reassign_function_ids_repairs_touchdrag_parameter_slot_collisions(self) -> None:
+        document = self.make_ready_document()
+        touch_drag = create_node(self.schema, document, "TouchDrag")
+        parameter_row = create_node(self.schema, document, "ParameterTrigger")
+        touch_drag.type_slot = 1
+        parameter_row.type_slot = 1
+        parameter_row.fields["parameter"] = "touch_drag1"
+        document.nodes.extend([touch_drag, parameter_row])
+
+        reassign_function_ids(self.schema, document)
+
+        self.assertEqual(1, touch_drag.type_slot)
+        self.assertEqual(2, parameter_row.type_slot)
+        self.assertEqual("touch_drag1", touch_drag.fields["parameter"])
+        self.assertEqual("touch_drag2", parameter_row.fields["parameter"])
 
     def test_manual_mode_touchdrag_defaults_use_unsuffixed_values(self) -> None:
         document = self.make_ready_document()
@@ -1457,6 +1495,35 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
+    def test_connection_path_updates_while_drag_is_active(self) -> None:
+        def path_end(path):
+            element = path.elementAt(path.elementCount() - 1)
+            return QPointF(element.x, element.y)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            first = window.controller.create_node("TouchIdle", (160, 160))
+            second = window.controller.create_node("TouchDrag", (520, 180))
+            window.controller.add_connection(first, second)
+            connection_item = window.canvas.connection_items[(first, second)]
+            before = path_end(connection_item.path())
+
+            window.canvas._set_interaction_busy("drag", True)
+            second_item = window.canvas.node_items[second]
+            second_item.setPos(second_item.pos() + QPointF(180.0, 40.0))
+            after = path_end(connection_item.path())
+
+            self.assertNotEqual(before, after)
+            self.assertEqual(after, window.canvas.connection_anchor_scene_pos(second, "input"))
+            window.canvas._set_interaction_busy("drag", False)
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
     def test_save_commits_pending_line_edit_without_enter(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
@@ -2181,6 +2248,12 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
                 self.assertIsNotNone(added_row)
             table_item = window.canvas.table_items[table_item.table_id]
             self.assertEqual(8, len(table_item.row_node_uuids()))
+            row_parameters = [
+                window.controller.get_node(row_uuid).fields["parameter"]
+                for row_uuid in table_item.row_node_uuids()
+            ]
+            self.assertEqual(len(row_parameters), len(set(row_parameters)))
+            self.assertTrue(all(str(parameter).startswith("touch_drag") for parameter in row_parameters))
             row_rects = [table_item._row_rects[row_uuid] for row_uuid in table_item.row_node_uuids()]
             for previous, current in zip(row_rects, row_rects[1:]):
                 self.assertGreaterEqual(current.top(), previous.bottom() + table_item.ROW_GAP - 0.1)
