@@ -401,6 +401,37 @@ class EditorController(QObject):
         self.undo_stack.push(SetGroupsCommand(self, old_groups, new_groups, label="删除分组"))
         return True
 
+    def set_node_group_memberships(self, memberships: dict[str, str | None], label: str = "更新分组成员") -> bool:
+        old_groups = self.group_records()
+        existing_group_ids = {group.uuid for group in old_groups}
+        requested: dict[str, str | None] = {}
+        for node_uuid, target_group_uuid in memberships.items():
+            node = self.get_node(node_uuid)
+            if not node:
+                continue
+            normalized_target = str(target_group_uuid).strip() if target_group_uuid else None
+            if normalized_target and normalized_target not in existing_group_ids:
+                continue
+            requested[node.uuid] = normalized_target
+        if not requested:
+            return False
+
+        changed = False
+        new_groups: list[GroupRecord] = []
+        for group in old_groups:
+            updated = group.clone()
+            before = list(updated.node_uuids)
+            updated.node_uuids = [node_uuid for node_uuid in updated.node_uuids if node_uuid not in requested]
+            for node_uuid, target_group_uuid in requested.items():
+                if target_group_uuid == updated.uuid and node_uuid not in updated.node_uuids:
+                    updated.node_uuids.append(node_uuid)
+            changed = changed or before != updated.node_uuids
+            new_groups.append(updated)
+        if not changed:
+            return False
+        self.undo_stack.push(SetGroupsCommand(self, old_groups, new_groups, label=label))
+        return True
+
     def add_parameter_table_row(self, table_id: str, reference_node_uuid: str | None = None) -> str | None:
         rows = self.parameter_table_rows(table_id)
         if not rows:

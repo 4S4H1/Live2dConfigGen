@@ -1122,6 +1122,7 @@ class NodeItem(QGraphicsObject):
             positions = view.snap_positions(raw_positions) if view else {key: value for key, value in raw_positions.items() if isinstance(value, tuple)}
             if view:
                 view.apply_item_positions(positions)
+            membership_changes = view.group_membership_changes_for_dropped_nodes(list(positions)) if view else {}
             self._group_drag_targets.clear()
             self._group_drag_active = False
             self._selection_drag_targets.clear()
@@ -1129,6 +1130,8 @@ class NodeItem(QGraphicsObject):
                 self.controller.move_nodes(positions, label="Move frame with nodes")
             elif view:
                 view._rebuild_groups()
+            if view:
+                view.apply_group_membership_changes(membership_changes)
             return
         if view and self._selection_drag_targets:
             raw_positions = {self.node.uuid: new_pos}
@@ -1140,13 +1143,18 @@ class NodeItem(QGraphicsObject):
             positions = view.snap_positions(raw_positions)
             view.apply_item_positions(positions)
             self._selection_drag_targets.clear()
+            membership_changes = view.group_membership_changes_for_dropped_nodes(list(positions))
             if not view.positions_match_document(positions):
                 self.controller.move_nodes(positions, label="Move selected nodes")
+            view.apply_group_membership_changes(membership_changes)
             return
         self._selection_drag_targets.clear()
         if view:
             self.setPos(QPointF(new_pos[0], new_pos[1]))
+        membership_changes = view.group_membership_changes_for_dropped_nodes([self.node.uuid]) if view else {}
         self.controller.move_node(self.node.uuid, old_pos, new_pos)
+        if view:
+            view.apply_group_membership_changes(membership_changes)
 
     def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value: Any):
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
@@ -1493,6 +1501,9 @@ class GroupItem(QGraphicsObject):
     BASE_Z = -140.0
     SELECTED_Z = -130.0
     OUTER_PADDING = 28.0
+    TITLE_TOP_MARGIN = 12.0
+    TITLE_SIDE_MARGIN = 16.0
+    TITLE_BOTTOM_GAP = 20.0
 
     def __init__(self, controller, view: "NodeCanvasView", group) -> None:
         super().__init__()
@@ -1518,14 +1529,16 @@ class GroupItem(QGraphicsObject):
     def update_group(self, group, member_rects: list[QRectF]) -> None:
         self.prepareGeometryChange()
         self.group = group
+        title_height = max(32.0, float(QFontMetrics(self._title_font()).height()) + 12.0)
+        top_padding = self.TITLE_TOP_MARGIN + title_height + self.TITLE_BOTTOM_GAP
         if member_rects:
             bounds = member_rects[0]
             for rect in member_rects[1:]:
                 bounds = bounds.united(rect)
             left = bounds.left() - self.OUTER_PADDING
-            top = bounds.top() - self.OUTER_PADDING
+            top = bounds.top() - top_padding
             width = max(180.0, bounds.width() + self.OUTER_PADDING * 2.0)
-            height = max(110.0, bounds.height() + self.OUTER_PADDING * 2.0)
+            height = max(110.0, bounds.height() + top_padding + self.OUTER_PADDING)
         else:
             left = 0.0
             top = 0.0
@@ -1533,8 +1546,7 @@ class GroupItem(QGraphicsObject):
             height = 110.0
         self.setPos(left, top)
         self._rect = QRectF(0.0, 0.0, width, height)
-        title_height = max(32.0, float(QFontMetrics(self._title_font()).height()) + 12.0)
-        self._title_rect = QRectF(16.0, 12.0, max(120.0, width - 32.0), title_height)
+        self._title_rect = QRectF(self.TITLE_SIDE_MARGIN, self.TITLE_TOP_MARGIN, max(120.0, width - self.TITLE_SIDE_MARGIN * 2.0), title_height)
         self.update()
 
     def group_title(self) -> str:
@@ -1544,7 +1556,7 @@ class GroupItem(QGraphicsObject):
     def _title_font(self) -> QFont:
         font = QFont()
         font.setBold(True)
-        font.setPointSizeF(11.5)
+        font.setPointSizeF(30.0)
         return font
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
@@ -1653,13 +1665,15 @@ class GroupItem(QGraphicsObject):
 class ParameterTableItem(QGraphicsObject):
     BASE_Z = 0.0
     SELECTED_Z = 48.0
-    HEADER_HEIGHT = 62.0
-    ROW_HEIGHT = 54.0
-    ROW_GAP = 8.0
-    ROW_TOP_MARGIN = 12.0
-    ROW_BOTTOM_MARGIN = 16.0
-    LEFT_GUTTER = 12.0
-    RIGHT_GUTTER = 12.0
+    UI_SCALE = 1.25
+    FONT_SCALE = 1.8
+    HEADER_HEIGHT = 77.5
+    ROW_HEIGHT = 67.5
+    ROW_GAP = 10.0
+    ROW_TOP_MARGIN = 15.0
+    ROW_BOTTOM_MARGIN = 20.0
+    LEFT_GUTTER = 15.0
+    RIGHT_GUTTER = 15.0
 
     def __init__(self, schema: EditorSchema, controller, view: "NodeCanvasView", table_id: str) -> None:
         super().__init__()
@@ -1689,6 +1703,30 @@ class ParameterTableItem(QGraphicsObject):
         self.setCacheMode(QGraphicsItem.CacheMode.DeviceCoordinateCache)
         self.setZValue(self.BASE_Z)
 
+    @classmethod
+    def _scaled(cls, value: float) -> float:
+        return float(value) * cls.UI_SCALE
+
+    @classmethod
+    def _font_scaled(cls, value: float) -> float:
+        return float(value) * cls.FONT_SCALE
+
+    @staticmethod
+    def _mix_colors(first: QColor, second: QColor, ratio: float) -> QColor:
+        clamped = max(0.0, min(1.0, ratio))
+        inverse = 1.0 - clamped
+        return QColor(
+            int(first.red() * inverse + second.red() * clamped),
+            int(first.green() * inverse + second.green() * clamped),
+            int(first.blue() * inverse + second.blue() * clamped),
+            int(first.alpha() * inverse + second.alpha() * clamped),
+        )
+
+    def _header_fill_color(self, body_color: QColor, border_color: QColor) -> QColor:
+        header = self._mix_colors(QColor(body_color), QColor(border_color), 0.24)
+        header.setAlpha(250)
+        return header
+
     def _build_columns(self) -> list[tuple[str, str, float]]:
         columns: list[tuple[str, str, float]] = []
         skip_keys = {
@@ -1713,7 +1751,7 @@ class ParameterTableItem(QGraphicsObject):
                 width = 156.0
             elif field.editor in {"range", "text"}:
                 width = 132.0
-            columns.append((field.key, field.label, width))
+            columns.append((field.key, field.label, self._scaled(width)))
         return columns
 
     def selected_row_uuid(self) -> str | None:
@@ -1750,10 +1788,10 @@ class ParameterTableItem(QGraphicsObject):
         if not self._rows:
             self._row_rects = {}
             self._cell_rects = {}
-            self._rect = QRectF(0.0, 0.0, 520.0, 120.0)
-            self._header_rect = QRectF(0.0, 0.0, 520.0, self.HEADER_HEIGHT)
-            self._add_button_rect = QRectF(460.0, 7.0, 24.0, 24.0)
-            self._remove_button_rect = QRectF(488.0, 7.0, 24.0, 24.0)
+            self._rect = QRectF(0.0, 0.0, self._scaled(520.0), self._scaled(120.0))
+            self._header_rect = QRectF(0.0, 0.0, self._scaled(520.0), self.HEADER_HEIGHT)
+            self._add_button_rect = QRectF(self._scaled(460.0), self._scaled(7.0), self._scaled(24.0), self._scaled(24.0))
+            self._remove_button_rect = QRectF(self._scaled(488.0), self._scaled(7.0), self._scaled(24.0), self._scaled(24.0))
             self.setPos(0.0, 0.0)
             self.update()
             return
@@ -1775,12 +1813,13 @@ class ParameterTableItem(QGraphicsObject):
         self.setPos(anchor_x, anchor_y)
         self._rect = QRectF(0.0, 0.0, table_width, row_bottom + self.ROW_BOTTOM_MARGIN)
         self._header_rect = QRectF(0.0, 0.0, table_width, self.HEADER_HEIGHT)
-        self._remove_button_rect = QRectF(table_width - 62.0, 7.0, 24.0, 24.0)
-        self._add_button_rect = QRectF(table_width - 32.0, 7.0, 24.0, 24.0)
+        self._remove_button_rect = QRectF(table_width - self._scaled(62.0), self._scaled(7.0), self._scaled(24.0), self._scaled(24.0))
+        self._add_button_rect = QRectF(table_width - self._scaled(32.0), self._scaled(7.0), self._scaled(24.0), self._scaled(24.0))
         self.update()
 
     def boundingRect(self) -> QRectF:
-        return self._rect.adjusted(-10.0, -10.0, 10.0, 10.0)
+        margin = self._scaled(10.0)
+        return self._rect.adjusted(-margin, -margin, margin, margin)
 
     def _palette(self) -> tuple[QColor, QColor, QColor]:
         anchor = self._rows[0] if self._rows else None
@@ -1861,7 +1900,7 @@ class ParameterTableItem(QGraphicsObject):
                 editor.setCurrentIndex(index)
             editor.setStyleSheet(
                 "QComboBox { background: #0b1420; color: #f8fafc; border: 2px solid #55b3ff; "
-                "border-radius: 6px; padding: 4px 7px; }"
+                f"border-radius: {int(self._scaled(6.0))}px; padding: {int(self._scaled(4.0))}px {int(self._scaled(7.0))}px; }}"
             )
         elif field.editor == "bool":
             editor = CommitComboBox()
@@ -1874,7 +1913,7 @@ class ParameterTableItem(QGraphicsObject):
             editor.setCurrentIndex(1 if checked else 0)
             editor.setStyleSheet(
                 "QComboBox { background: #0b1420; color: #f8fafc; border: 2px solid #55b3ff; "
-                "border-radius: 6px; padding: 4px 7px; }"
+                f"border-radius: {int(self._scaled(6.0))}px; padding: {int(self._scaled(4.0))}px {int(self._scaled(7.0))}px; }}"
             )
         else:
             editor = NumericLineEdit(field.editor) if field.editor in {"int", "float", "nullable_int"} else CommitLineEdit()
@@ -1883,14 +1922,17 @@ class ParameterTableItem(QGraphicsObject):
             editor.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             editor.setStyleSheet(
                 "QLineEdit { background: #0b1420; color: #f8fafc; border: 2px solid #55b3ff; "
-                "border-radius: 6px; padding: 4px 7px; }"
+                f"border-radius: {int(self._scaled(6.0))}px; padding: {int(self._scaled(4.0))}px {int(self._scaled(7.0))}px; }}"
             )
+        editor_font = QFont(editor.font())
+        editor_font.setPointSizeF(self._font_scaled(9.3))
+        editor.setFont(editor_font)
         proxy = QGraphicsProxyWidget(self)
         proxy.setZValue(32)
         proxy.setWidget(editor)
-        edit_rect = cell_rect.adjusted(4.0, 7.0, -4.0, -7.0)
+        edit_rect = cell_rect.adjusted(self._scaled(4.0), self._scaled(7.0), -self._scaled(4.0), -self._scaled(7.0))
         proxy.setPos(edit_rect.topLeft())
-        editor.setFixedSize(max(40, int(edit_rect.width())), max(24, int(edit_rect.height())))
+        editor.setFixedSize(max(int(self._scaled(40.0)), int(edit_rect.width())), max(int(self._scaled(24.0)), int(edit_rect.height())))
         editor.committed.connect(lambda value, target=editor: self._commit_cell_edit(value, target))
         self._editor_proxy = proxy
         self._editor_target = (row_uuid, field_key)
@@ -1919,29 +1961,28 @@ class ParameterTableItem(QGraphicsObject):
         body_color, border_color, text_color = self._palette()
         fill = QColor(body_color)
         fill.setAlpha(235)
-        header_fill = QColor(border_color)
-        header_fill.setAlpha(248)
+        header_fill = self._header_fill_color(body_color, border_color)
         stroke = QColor(border_color.lighter(115) if self.isSelected() else border_color)
-        painter.setPen(QPen(stroke, 2.0))
+        painter.setPen(QPen(stroke, self._scaled(2.0)))
         painter.setBrush(fill)
-        painter.drawRoundedRect(self._rect, 9, 9)
+        painter.drawRoundedRect(self._rect, self._scaled(9.0), self._scaled(9.0))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(header_fill)
-        painter.drawRoundedRect(self._header_rect, 9, 9)
+        painter.drawRoundedRect(self._header_rect, self._scaled(9.0), self._scaled(9.0))
         painter.setBrush(header_fill)
-        painter.drawRect(QRectF(0.0, self._header_rect.height() - 9.0, self._header_rect.width(), 9.0))
+        painter.drawRect(QRectF(0.0, self._header_rect.height() - self._scaled(9.0), self._header_rect.width(), self._scaled(9.0)))
 
         title_font = QFont()
         title_font.setBold(True)
-        title_font.setPointSizeF(11.4)
+        title_font.setPointSizeF(self._font_scaled(11.4))
         painter.setFont(title_font)
         painter.setPen(QColor(text_color))
-        title_rect = QRectF(14.0, 4.0, self._header_rect.width() - 82.0, 28.0)
+        title_rect = QRectF(self._scaled(14.0), self._scaled(4.0), self._header_rect.width() - self._scaled(82.0), self._scaled(28.0))
         painter.drawText(title_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, f"{self.table_title()}  ({len(self._rows)} 行)")
 
         button_font = QFont()
         button_font.setBold(True)
-        button_font.setPointSizeF(13.0)
+        button_font.setPointSizeF(self._font_scaled(13.0))
         painter.setFont(button_font)
         for rect, label, enabled in (
             (self._remove_button_rect, "-", len(self._rows) > 1 and bool(self.selected_row_uuids())),
@@ -1949,46 +1990,47 @@ class ParameterTableItem(QGraphicsObject):
         ):
             button_fill = QColor("#10151f")
             button_fill.setAlpha(230 if enabled else 90)
-            painter.setPen(QPen(QColor(255, 255, 255, 160 if enabled else 70), 1.2))
+            painter.setPen(QPen(QColor(255, 255, 255, 160 if enabled else 70), self._scaled(1.2)))
             painter.setBrush(button_fill)
-            painter.drawRoundedRect(rect, 5, 5)
+            painter.drawRoundedRect(rect, self._scaled(5.0), self._scaled(5.0))
             painter.setPen(QColor(255, 255, 255, 230 if enabled else 100))
             painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
 
         header_font = QFont()
         header_font.setBold(True)
-        header_font.setPointSizeF(9.6)
+        header_font.setPointSizeF(self._font_scaled(9.6))
         painter.setFont(header_font)
         x = self.LEFT_GUTTER
         for _field_key, label, width in self._columns:
-            header_cell = QRectF(x, self.HEADER_HEIGHT - 26.0, width, 20.0)
+            header_cell = QRectF(x, self.HEADER_HEIGHT - self._scaled(26.0), width, self._scaled(20.0))
             painter.setPen(QColor(255, 255, 255, 222))
-            painter.drawText(header_cell.adjusted(4.0, 0.0, -4.0, 0.0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
+            painter.drawText(header_cell.adjusted(self._scaled(4.0), 0.0, -self._scaled(4.0), 0.0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
             x += width
 
         cell_font = QFont()
-        cell_font.setPointSizeF(9.3)
+        cell_font.setPointSizeF(self._font_scaled(9.3))
         painter.setFont(cell_font)
         for row in self._rows:
             rect = self._row_rects[row.uuid]
             row_fill = QColor(body_color.darker(126))
             is_row_selected = row.uuid in self._selected_row_uuids
             row_fill.setAlpha(252 if is_row_selected else 228)
-            painter.setPen(QPen(QColor(border_color.darker(108)), 1.2))
+            painter.setPen(QPen(QColor(border_color.darker(108)), self._scaled(1.2)))
             painter.setBrush(row_fill)
-            painter.drawRoundedRect(rect, 7, 7)
+            painter.drawRoundedRect(rect, self._scaled(7.0), self._scaled(7.0))
             if is_row_selected:
                 painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.setPen(QPen(QColor("#fff4a8"), 2.4))
-                painter.drawRoundedRect(rect.adjusted(1.5, 1.5, -1.5, -1.5), 7, 7)
+                painter.setPen(QPen(QColor("#fff4a8"), self._scaled(2.4)))
+                inset = self._scaled(1.5)
+                painter.drawRoundedRect(rect.adjusted(inset, inset, -inset, -inset), self._scaled(7.0), self._scaled(7.0))
             cursor_x = rect.left()
             for field_key, _label, width in self._columns:
                 cell_rect = QRectF(cursor_x, rect.top(), width, rect.height())
                 painter.setPen(QColor(text_color))
                 text = str(display_value_for_field(self.schema, row, field_key, row.fields.get(field_key)) or "").strip()
-                painter.drawText(cell_rect.adjusted(8.0, 0.0, -8.0, 0.0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text or "-")
+                painter.drawText(cell_rect.adjusted(self._scaled(8.0), 0.0, -self._scaled(8.0), 0.0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text or "-")
                 painter.setPen(QColor(255, 255, 255, 22))
-                painter.drawLine(QPointF(cell_rect.right(), rect.top() + 8.0), QPointF(cell_rect.right(), rect.bottom() - 8.0))
+                painter.drawLine(QPointF(cell_rect.right(), rect.top() + self._scaled(8.0)), QPointF(cell_rect.right(), rect.bottom() - self._scaled(8.0)))
                 cursor_x += width
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
@@ -2065,10 +2107,12 @@ class ParameterTableItem(QGraphicsObject):
             self.setCursor(Qt.CursorShape.OpenHandCursor)
             positions = self.view.snap_positions({node_uuid: origin + delta for node_uuid, origin in self._row_origins.items()})
             self._row_origins.clear()
+            membership_changes = self.view.group_membership_changes_for_dropped_nodes(list(positions))
             if positions and not self.view.positions_match_document(positions):
                 self.controller.move_nodes(positions, label="Move parameter table")
             else:
                 self.update_rows(self._rows)
+            self.view.apply_group_membership_changes(membership_changes)
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -2810,6 +2854,36 @@ class NodeCanvasView(QGraphicsView):
         if item is None:
             return None
         return item.mapRectToScene(item.boundingRect())
+
+    def group_for_node_drop(self, node_uuid: str) -> str | None:
+        node_rect = self.node_visual_rect(node_uuid)
+        if node_rect is None:
+            return None
+        node_center = node_rect.center()
+        matches = [
+            (group_item.focus_rect().width() * group_item.focus_rect().height(), group_uuid)
+            for group_uuid, group_item in self.group_items.items()
+            if group_item.focus_rect().contains(node_center)
+        ]
+        if not matches:
+            return None
+        return min(matches)[1]
+
+    def group_membership_changes_for_dropped_nodes(self, node_uuids: list[str]) -> dict[str, str | None]:
+        memberships: dict[str, str | None] = {}
+        for node_uuid in node_uuids:
+            target_group_uuid = self.group_for_node_drop(node_uuid)
+            current_group_uuid = self.controller.node_group_uuid(node_uuid)
+            if target_group_uuid != current_group_uuid:
+                memberships[node_uuid] = target_group_uuid
+        return memberships
+
+    def apply_group_membership_changes(self, memberships: dict[str, str | None]) -> None:
+        if memberships:
+            self.controller.set_node_group_memberships(memberships)
+
+    def sync_group_membership_for_dropped_nodes(self, node_uuids: list[str]) -> None:
+        self.apply_group_membership_changes(self.group_membership_changes_for_dropped_nodes(node_uuids))
 
     def _update_connections_for_node(self, node_uuid: str) -> None:
         for pair, item in self.connection_items.items():

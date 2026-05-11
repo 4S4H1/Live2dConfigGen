@@ -2096,10 +2096,79 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertIn(group_uuid, window.canvas.group_items)
             self.assertNotIn(group_uuid, window.canvas.node_items)
             group_item = window.canvas.group_items[group_uuid]
-            first_center = window.canvas.node_visual_rect(first_uuid).center()
-            second_center = window.canvas.node_visual_rect(second_uuid).center()
+            first_rect = window.canvas.node_visual_rect(first_uuid)
+            second_rect = window.canvas.node_visual_rect(second_uuid)
+            first_center = first_rect.center()
+            second_center = second_rect.center()
             self.assertTrue(group_item.focus_rect().contains(first_center))
             self.assertTrue(group_item.focus_rect().contains(second_center))
+            title_bottom = group_item.mapRectToScene(group_item._title_rect).bottom()
+            self.assertGreaterEqual(first_rect.top(), title_bottom + group_item.TITLE_BOTTOM_GAP - 0.1)
+            self.assertGreaterEqual(second_rect.top(), title_bottom + group_item.TITLE_BOTTOM_GAP - 0.1)
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_dropped_node_inside_group_is_added_to_group(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            first_uuid = window.controller.create_node("TouchIdle", (260, 180))
+            second_uuid = window.controller.create_node("TouchDrag", (620, 260))
+            dropped_uuid = window.controller.create_node("TouchIdle", (1200, 760))
+            group_uuid = window.controller.create_group([first_uuid, second_uuid])
+            group_item = window.canvas.group_items[group_uuid]
+            dropped_item = window.canvas.node_items[dropped_uuid]
+            dropped_rect = window.canvas.node_visual_rect(dropped_uuid)
+            center_offset = dropped_rect.center() - dropped_item.pos()
+            target_pos = group_item.focus_rect().center() - center_offset
+
+            dropped_item.setPos(target_pos)
+            window.canvas.sync_group_membership_for_dropped_nodes([dropped_uuid])
+
+            group = window.controller.get_group(group_uuid)
+            self.assertIn(dropped_uuid, group.node_uuids)
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_dropped_node_outside_group_is_removed_from_group(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            first_uuid = window.controller.create_node("TouchIdle", (260, 180))
+            second_uuid = window.controller.create_node("TouchDrag", (620, 260))
+            group_uuid = window.controller.create_group([first_uuid, second_uuid])
+            first_item = window.canvas.node_items[first_uuid]
+
+            first_item.setPos(QPointF(1400.0, 900.0))
+            window.canvas.sync_group_membership_for_dropped_nodes([first_uuid])
+
+            group = window.controller.get_group(group_uuid)
+            self.assertNotIn(first_uuid, group.node_uuids)
+            self.assertIn(second_uuid, group.node_uuids)
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_group_title_font_is_30_for_readability(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            first_uuid = window.controller.create_node("TouchIdle", (260, 180))
+            second_uuid = window.controller.create_node("TouchDrag", (620, 260))
+            group_uuid = window.controller.create_group([first_uuid, second_uuid])
+
+            self.assertAlmostEqual(30.0, window.canvas.group_items[group_uuid]._title_font().pointSizeF())
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
@@ -2566,6 +2635,13 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertNotIn(row_uuid, window.canvas.node_items)
             table_item = window.canvas.table_row_to_item[row_uuid]
             self.assertEqual([row_uuid], table_item.row_node_uuids())
+            self.assertAlmostEqual(1.25, table_item.UI_SCALE)
+            self.assertAlmostEqual(1.8, table_item.FONT_SCALE)
+            self.assertAlmostEqual(16.74, table_item._font_scaled(9.3))
+            self.assertAlmostEqual(67.5, table_item.ROW_HEIGHT)
+            self.assertAlmostEqual(10.0, table_item.ROW_GAP)
+            first_column_width = table_item._columns[0][2]
+            self.assertAlmostEqual(200.0, first_column_width)
             for _index in range(7):
                 added_row = window.controller.add_parameter_table_row(table_item.table_id, table_item.selected_row_uuid())
                 self.assertIsNotNone(added_row)
@@ -2585,6 +2661,9 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertEqual("#071b2d", body_color.name())
             self.assertEqual("#25b7ff", border_color.name())
             self.assertEqual("#e8f8ff", text_color.name())
+            header_fill = table_item._header_fill_color(body_color, border_color)
+            self.assertNotEqual(border_color.name(), header_fill.name())
+            self.assertEqual("#0e405f", header_fill.name())
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
