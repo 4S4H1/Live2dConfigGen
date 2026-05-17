@@ -121,6 +121,58 @@ def ensure_parameter_table_metadata(node: NodeRecord) -> None:
         node.fields[TABLE_ORDER_FIELD] = 0
 
 
+def _coerce_position_value(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _restore_missing_parameter_table_groups(document: DocumentModel) -> None:
+    missing_rows = [
+        node
+        for node in document.nodes
+        if node.type == "ParameterTrigger" and not str(node.fields.get(TABLE_ID_FIELD) or "").strip()
+    ]
+    if not missing_rows:
+        return
+
+    row_height = 67.5
+    row_gap = 10.0
+    row_stride = row_height + row_gap
+    same_table_x_tolerance = 24.0
+    same_table_y_tolerance = max(row_stride * 0.6, 48.0)
+    rows = sorted(
+        missing_rows,
+        key=lambda node: (
+            _coerce_position_value(node.ui_position.get("x")),
+            _coerce_position_value(node.ui_position.get("y")),
+            node.uuid,
+        ),
+    )
+    groups: list[list[NodeRecord]] = []
+    for row in rows:
+        row_x = _coerce_position_value(row.ui_position.get("x"))
+        row_y = _coerce_position_value(row.ui_position.get("y"))
+        appended = False
+        for group in groups:
+            anchor_x = _coerce_position_value(group[0].ui_position.get("x"))
+            last_y = _coerce_position_value(group[-1].ui_position.get("y"))
+            if abs(row_x - anchor_x) <= same_table_x_tolerance and 0.0 < row_y - last_y <= row_stride + same_table_y_tolerance:
+                group.append(row)
+                appended = True
+                break
+        if not appended:
+            groups.append([row])
+
+    for group in groups:
+        table_id = new_uuid()
+        ordered_group = sorted(group, key=lambda node: (_coerce_position_value(node.ui_position.get("y")), node.uuid))
+        for index, row in enumerate(ordered_group):
+            row.fields[TABLE_ID_FIELD] = table_id
+            row.fields[TABLE_ORDER_FIELD] = index
+
+
 def parameter_table_id(node: NodeRecord) -> str:
     if node.type != "ParameterTrigger":
         return ""
@@ -1218,6 +1270,17 @@ def make_trash_entry(schema: EditorSchema, node: NodeRecord) -> TrashEntry:
 
 def _export_node_fields(node: NodeRecord) -> dict[str, Any]:
     hidden_fields = set(HIDDEN_NODE_FIELDS)
+    if node.type == "ParameterTrigger":
+        hidden_fields.difference_update(
+            {
+                TABLE_ID_FIELD,
+                TABLE_TITLE_FIELD,
+                TABLE_ORDER_FIELD,
+                TABLE_BODY_COLOR_FIELD,
+                TABLE_BORDER_COLOR_FIELD,
+                TABLE_TEXT_COLOR_FIELD,
+            }
+        )
     if node.type in {"TouchDrag", "ParameterTrigger"}:
         hidden_fields.add("action_trigger_active")
     return {key: value for key, value in node.fields.items() if key not in hidden_fields}
@@ -1334,6 +1397,7 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
         node_type = raw["type"]
         if node_type == "DrawFrame":
             continue
+        missing_parameter_table_id = node_type == "ParameterTrigger" and not str(fields.get(TABLE_ID_FIELD) or "").strip()
         if node_type == "Initial":
             fields.pop("defaultState", None)
         if "target_idle" not in fields:
@@ -1360,9 +1424,12 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
         apply_node_appearance_defaults(schema, node)
         sync_comment_legacy_appearance(node)
         ensure_parameter_table_metadata(node)
+        if missing_parameter_table_id:
+            node.fields.pop(TABLE_ID_FIELD, None)
         infer_manual_fields(schema, node, document)
         apply_auto_rules(schema, document, node, source_mode="advanced", force_generated=False)
         document.nodes.append(node)
+    _restore_missing_parameter_table_groups(document)
     parsed_groups: list[GroupRecord] = []
     for raw_group in groups_payload:
         if not isinstance(raw_group, dict):

@@ -221,6 +221,60 @@ class LogicTests(unittest.TestCase):
             next_touch_drag.fields["parameter"],
         })
 
+    def test_parameter_table_metadata_roundtrips_to_keep_rows_grouped(self) -> None:
+        document = self.make_ready_document()
+        first = create_node(self.schema, document, "ParameterTrigger")
+        second = create_node(self.schema, document, "ParameterTrigger", base_node=first)
+        third = create_node(self.schema, document, "ParameterTrigger", base_node=first)
+        table_id = first.fields["_table_id"]
+        for index, node in enumerate((first, second, third)):
+            node.fields["_table_id"] = table_id
+            node.fields["_table_order"] = index
+            node.ui_position = {"x": 220.0, "y": 120.0 + index * 96.0}
+        document.nodes.extend([first, second, third])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "parameter_table_roundtrip.json"
+            save_document(self.schema, document, path)
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            raw_rows = [node for node in payload["nodes"] if node["type"] == "ParameterTrigger"]
+            loaded = load_document(self.schema, path)
+
+        self.assertEqual(3, len(raw_rows))
+        self.assertEqual({table_id}, {row["_table_id"] for row in raw_rows})
+        self.assertEqual([0, 1, 2], [row["_table_order"] for row in raw_rows])
+        loaded_rows = [node for node in loaded.nodes if node.type == "ParameterTrigger"]
+        self.assertEqual({table_id}, {node.fields["_table_id"] for node in loaded_rows})
+        self.assertEqual([0, 1, 2], [node.fields["_table_order"] for node in loaded_rows])
+
+    def test_legacy_parameter_rows_without_table_metadata_load_as_grouped_tables(self) -> None:
+        document = self.make_ready_document()
+        first = create_node(self.schema, document, "ParameterTrigger")
+        second = create_node(self.schema, document, "ParameterTrigger", base_node=first)
+        distant = create_node(self.schema, document, "ParameterTrigger")
+        first.ui_position = {"x": 220.0, "y": 120.0}
+        second.ui_position = {"x": 220.0, "y": 196.0}
+        distant.ui_position = {"x": 900.0, "y": 120.0}
+        document.nodes.extend([first, second, distant])
+        payload = export_document_dict(self.schema, document)
+        for raw_node in payload["nodes"]:
+            if raw_node["type"] == "ParameterTrigger":
+                raw_node.pop("_table_id", None)
+                raw_node.pop("_table_order", None)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "legacy_parameter_rows.json"
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            loaded = load_document(self.schema, path)
+
+        rows = sorted(
+            [node for node in loaded.nodes if node.type == "ParameterTrigger"],
+            key=lambda node: (node.ui_position["x"], node.ui_position["y"]),
+        )
+        self.assertEqual(rows[0].fields["_table_id"], rows[1].fields["_table_id"])
+        self.assertNotEqual(rows[0].fields["_table_id"], rows[2].fields["_table_id"])
+        self.assertEqual([0, 1], [rows[0].fields["_table_order"], rows[1].fields["_table_order"]])
+
     def test_reassign_function_ids_repairs_touchdrag_parameter_slot_collisions(self) -> None:
         document = self.make_ready_document()
         touch_drag = create_node(self.schema, document, "TouchDrag")
