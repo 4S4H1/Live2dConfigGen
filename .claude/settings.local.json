@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls CLAUDE.md)",
+      "Bash(ls AGENTS.md)",
+      "Bash(ls .cursor)",
+      "Bash(ls .cursorrules)",
+      "Bash(ls .github/copilot-instructions.md)"
+    ]
+  }
+}
