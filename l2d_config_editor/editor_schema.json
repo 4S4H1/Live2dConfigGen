@@ -42,9 +42,9 @@
   },
   "templates": {
     "animated_action": "{type = 2 ,action = '{action_name}'}",
-    "animated_active": "{enable = {},ignore = {{{ignore_values}}},idle = {target_idle}}",
+    "animated_active": "{enable = {},ignore = {{ignore_values}},idle = {target_idle}}",
     "hard_cut_action": "{type = 2 ,action = 'idle',target = 1}",
-    "hard_cut_active": "{enable = {},ignore = {{{ignore_values}}},idle = {target_idle},idle_focus = 1}"
+    "hard_cut_active": "{enable = {},ignore = {{ignore_values}},idle = {target_idle},idle_focus = 1}"
   },
   "csv_columns": [
     "id",

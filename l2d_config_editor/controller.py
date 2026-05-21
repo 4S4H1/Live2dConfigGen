@@ -839,18 +839,15 @@ class EditorController(QObject):
         effective_changed_key = changed_key
         if effective_changed_key is None and len(changed_keys) == 1:
             effective_changed_key = next(iter(changed_keys))
+        if node.type in function_node_types(self.schema):
+            for manual_key in changed_keys & {"draw_able_name", "parameter", "action_trigger"}:
+                node.manual_fields.add(manual_key)
         if node.type in {"TouchDrag", "ParameterTrigger"} and changed_keys & {"action_trigger", "parameter"}:
             node.fields["action_trigger_active"] = ""
-            if node.type == "ParameterTrigger" and "parameter" in changed_keys:
-                node.manual_fields.add("parameter")
-            elif source_mode == "simple":
-                node.manual_fields.discard("parameter")
         if effective_changed_key in {"action_trigger_active", "action_trigger"} or (
             source_mode == "advanced" and effective_changed_key == "parameter"
         ):
             infer_manual_fields(self.schema, node, self.document)
-        if node.type in {"TouchDrag", "ParameterTrigger"} and effective_changed_key == "action_trigger" and source_mode == "simple":
-            node.manual_fields.discard("parameter")
         apply_auto_rules(self.schema, self.document, node, source_mode=source_mode, changed_key=effective_changed_key)
         reassign_function_ids(self.schema, self.document)
         self.nodeUpdated.emit(node_uuid)
@@ -871,18 +868,15 @@ class EditorController(QObject):
             if node.type == "Comment" and changed_keys & {"note_box_color", "note_text_color"}:
                 sync_comment_theme_appearance(node)
             effective_changed_key = next(iter(changed_keys)) if len(changed_keys) == 1 else None
+            if node.type in function_node_types(self.schema):
+                for manual_key in changed_keys & {"draw_able_name", "parameter", "action_trigger"}:
+                    node.manual_fields.add(manual_key)
             if node.type in {"TouchDrag", "ParameterTrigger"} and changed_keys & {"action_trigger", "parameter"}:
                 node.fields["action_trigger_active"] = ""
-                if node.type == "ParameterTrigger" and "parameter" in changed_keys:
-                    node.manual_fields.add("parameter")
-                elif source_mode == "simple":
-                    node.manual_fields.discard("parameter")
             if effective_changed_key in {"action_trigger_active", "action_trigger"} or (
                 source_mode == "advanced" and effective_changed_key == "parameter"
             ):
                 infer_manual_fields(self.schema, node, self.document)
-            if node.type in {"TouchDrag", "ParameterTrigger"} and effective_changed_key == "action_trigger" and source_mode == "simple":
-                node.manual_fields.discard("parameter")
             apply_auto_rules(self.schema, self.document, node, source_mode=source_mode, changed_key=effective_changed_key)
             changed_node_uuids.append(node_uuid)
         if not changed_node_uuids:

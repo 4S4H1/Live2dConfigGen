@@ -7,7 +7,7 @@ from collections import defaultdict, deque
 from typing import Any
 
 from PyQt6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QLineF, QTimer, QVariantAnimation, pyqtSignal
-from PyQt6.QtGui import QColor, QContextMenuEvent, QFont, QFontMetrics, QFontMetricsF, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen
+from PyQt6.QtGui import QColor, QContextMenuEvent, QFont, QFontMetrics, QFontMetricsF, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen, QPolygonF
 from PyQt6.QtWidgets import (
     QApplication,
     QGraphicsItem,
@@ -138,25 +138,81 @@ class ConnectionItem(QGraphicsPathItem):
         end = self.view.connection_anchor_scene_pos(self.to_uuid, "input")
         if start is None or end is None:
             return
-        delta = max(80.0, abs(end.x() - start.x()) * 0.5)
         path = QPainterPath(start)
-        path.cubicTo(start.x() + delta, start.y(), end.x() - delta, end.y(), end.x(), end.y())
+        path.lineTo(end)
         self.setPath(path)
+
+    def _endpoints(self) -> tuple[QPointF, QPointF] | None:
+        path = self.path()
+        if path.elementCount() < 2:
+            return None
+        start = path.elementAt(0)
+        end = path.elementAt(path.elementCount() - 1)
+        return QPointF(start.x, start.y), QPointF(end.x, end.y)
+
+    def _draw_direction_arrow(self, painter: QPainter, start: QPointF, end: QPointF, color: QColor) -> None:
+        self._draw_direction_arrow_at(painter, start, end, 0.58, color, 9.0 if not self.view.should_use_motion_preview() else 7.0)
+
+    def _draw_direction_arrow_at(
+        self,
+        painter: QPainter,
+        start: QPointF,
+        end: QPointF,
+        position: float,
+        color: QColor,
+        size: float,
+    ) -> None:
+        dx = end.x() - start.x()
+        dy = end.y() - start.y()
+        length = math.hypot(dx, dy)
+        if length < 24.0:
+            return
+        ux = dx / length
+        uy = dy / length
+        position = max(0.08, min(0.92, position))
+        tip = QPointF(start.x() + dx * position, start.y() + dy * position)
+        base = QPointF(tip.x() - ux * size, tip.y() - uy * size)
+        normal_x = -uy
+        normal_y = ux
+        left = QPointF(base.x() + normal_x * size * 0.55, base.y() + normal_y * size * 0.55)
+        right = QPointF(base.x() - normal_x * size * 0.55, base.y() - normal_y * size * 0.55)
+        painter.setBrush(color)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawPolygon(QPolygonF([tip, left, right]))
+
+    def _draw_flow_arrows(self, painter: QPainter, start: QPointF, end: QPointF, color: QColor) -> None:
+        dx = end.x() - start.x()
+        dy = end.y() - start.y()
+        length = math.hypot(dx, dy)
+        if length < 36.0:
+            return
+        phase = self.view.connection_flow_phase()
+        spacing = max(0.18, min(0.34, 46.0 / length))
+        position = 0.12 + phase * spacing
+        while position < 0.94:
+            self._draw_direction_arrow_at(painter, start, end, position, color, 7.2)
+            position += spacing
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
         motion_preview = self.view.should_use_motion_preview()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, not self.view.should_use_fast_rendering())
-        color = QColor("#2b89ff") if self.isSelected() else QColor("#7d8aa0")
+        is_related = self.view.is_related_connection(self.from_uuid, self.to_uuid)
+        color = QColor("#fff4a8") if is_related else (QColor("#2b89ff") if self.isSelected() else QColor("#7d8aa0"))
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(color, 1.4 if motion_preview else (2.8 if self.isSelected() else 2.0), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.setPen(QPen(color, 1.4 if motion_preview else (3.0 if is_related or self.isSelected() else 2.0), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        endpoints = self._endpoints()
         if motion_preview:
-            path = self.path()
-            if path.elementCount() >= 2:
-                start = path.elementAt(0)
-                end = path.elementAt(path.elementCount() - 1)
-                painter.drawLine(QPointF(start.x, start.y), QPointF(end.x, end.y))
+            if endpoints is not None:
+                start, end = endpoints
+                painter.drawLine(start, end)
+                self._draw_direction_arrow(painter, start, end, color)
                 return
         painter.drawPath(self.path())
+        if endpoints is not None:
+            if is_related:
+                self._draw_flow_arrows(painter, endpoints[0], endpoints[1], color)
+            else:
+                self._draw_direction_arrow(painter, endpoints[0], endpoints[1], color)
 
 
 class NodeItem(QGraphicsObject):
@@ -809,8 +865,10 @@ class NodeItem(QGraphicsObject):
             border = QColor("#c85a5a")
         elif self._search_highlight:
             border = QColor("#ffcf25")
+        elif self.is_relation_highlighted():
+            border = QColor("#fff4a8")
         elif self.isSelected():
-            border = QColor(accent).lighter(112)
+            border = QColor("#f0b429")
 
         shadow_color = QColor(0, 0, 0, 48 if self.isSelected() else 30)
         painter.setPen(Qt.PenStyle.NoPen)
@@ -829,8 +887,8 @@ class NodeItem(QGraphicsObject):
             painter.setPen(QPen(border, 2.4))
             painter.setBrush(palette["frame_fill"])
             painter.drawRoundedRect(frame_rect, 6, 6)
-            if self.isSelected():
-                select_glow = QColor("#fff4a8")
+            if self.isSelected() or self.is_relation_highlighted():
+                select_glow = QColor("#fff4a8") if self.is_relation_highlighted() and not self.isSelected() else QColor("#f0b429")
                 select_glow.setAlpha(210)
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.setPen(QPen(select_glow, 4.0))
@@ -945,9 +1003,9 @@ class NodeItem(QGraphicsObject):
             painter.setPen(QPen(border, 2.5))
             painter.setBrush(frame_fill)
             painter.drawRoundedRect(self._rect, 8, 8)
-            if self.isSelected():
+            if self.isSelected() or self.is_relation_highlighted():
                 painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.setPen(QPen(QColor("#fff4a8"), 4.0))
+                painter.setPen(QPen(QColor("#fff4a8") if self.is_relation_highlighted() and not self.isSelected() else QColor("#f0b429"), 4.0))
                 painter.drawRoundedRect(self._rect.adjusted(-3, -3, 3, 3), 10, 10)
             title_rect = self._draw_frame_title_rect()
             painter.setPen(Qt.PenStyle.NoPen)
@@ -968,8 +1026,8 @@ class NodeItem(QGraphicsObject):
         painter.setPen(QPen(border, border_width))
         painter.setBrush(body_color)
         painter.drawRoundedRect(self._rect, 10, 10)
-        if self.isSelected():
-            select_glow = QColor("#fff4a8")
+        if self.isSelected() or self.is_relation_highlighted():
+            select_glow = QColor("#fff4a8") if self.is_relation_highlighted() and not self.isSelected() else QColor("#f0b429")
             select_glow.setAlpha(215)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(QPen(select_glow, 4.0))
@@ -1171,6 +1229,10 @@ class NodeItem(QGraphicsObject):
             self.setZValue(self.COMMENT_SELECTED_Z if active else self.COMMENT_BASE_Z)
         else:
             self.setZValue(self.NORMAL_SELECTED_Z if active else self.NORMAL_BASE_Z)
+
+    def is_relation_highlighted(self) -> bool:
+        view = self._canvas_view()
+        return bool(view and view.is_related_node(self.node.uuid))
 
     def hoverMoveEvent(self, event: QGraphicsSceneHoverEvent) -> None:
         if self.lock_rect().contains(event.pos()):
@@ -2014,13 +2076,14 @@ class ParameterTableItem(QGraphicsObject):
             rect = self._row_rects[row.uuid]
             row_fill = QColor(body_color.darker(126))
             is_row_selected = row.uuid in self._selected_row_uuids
+            is_relation_highlighted = self.view.is_related_node(row.uuid)
             row_fill.setAlpha(252 if is_row_selected else 228)
             painter.setPen(QPen(QColor(border_color.darker(108)), self._scaled(1.2)))
             painter.setBrush(row_fill)
             painter.drawRoundedRect(rect, self._scaled(7.0), self._scaled(7.0))
-            if is_row_selected:
+            if is_row_selected or is_relation_highlighted:
                 painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.setPen(QPen(QColor("#fff4a8"), self._scaled(2.4)))
+                painter.setPen(QPen(QColor("#fff4a8") if is_relation_highlighted and not is_row_selected else QColor("#f0b429"), self._scaled(2.4)))
                 inset = self._scaled(1.5)
                 painter.drawRoundedRect(rect.adjusted(inset, inset, -inset, -inset), self._scaled(7.0), self._scaled(7.0))
             cursor_x = rect.left()
@@ -2156,6 +2219,9 @@ class NodeCanvasView(QGraphicsView):
         self.group_items: dict[str, GroupItem] = {}
         self.table_items: dict[str, ParameterTableItem] = {}
         self.table_row_to_item: dict[str, ParameterTableItem] = {}
+        self._related_node_uuids: set[str] = set()
+        self._related_connection_pairs: set[tuple[str, str]] = set()
+        self._connection_flow_phase = 0.0
         self.zoom_wheel_modifier = "ctrl"
         self.horizontal_wheel_modifier = "alt_shift"
         self.expanded_node_uuids: set[str] = set()
@@ -2192,6 +2258,9 @@ class NodeCanvasView(QGraphicsView):
         self._wheel_busy_timer = QTimer(self)
         self._wheel_busy_timer.setSingleShot(True)
         self._wheel_busy_timer.timeout.connect(lambda: self._set_interaction_busy("wheel", False))
+        self._connection_flow_timer = QTimer(self)
+        self._connection_flow_timer.setInterval(80)
+        self._connection_flow_timer.timeout.connect(self._advance_connection_flow)
         self.scene_ref.selectionChanged.connect(self._on_scene_selection_changed)
         controller.documentLoaded.connect(self.rebuild_scene)
         controller.nodeAdded.connect(self._add_or_update_node_item)
@@ -2200,7 +2269,7 @@ class NodeCanvasView(QGraphicsView):
         controller.nodeMoved.connect(self._move_node_item)
         controller.connectionsChanged.connect(self._rebuild_connections)
         controller.validationChanged.connect(self._apply_validation)
-        controller.selectionChanged.connect(lambda _uuid: self._refresh_node_z_values())
+        controller.selectionChanged.connect(self._handle_selection_changed)
         controller.globalModeChanged.connect(self._handle_mode_changed)
         controller.documentStateChanged.connect(self._handle_document_state_changed)
         controller.nodeUpdated.connect(self._refresh_hint_overlay)
@@ -2233,6 +2302,7 @@ class NodeCanvasView(QGraphicsView):
             self._rebuild_parameter_tables()
             self._rebuild_groups()
             self._rebuild_connections()
+            self._refresh_relation_highlights()
             self.resetTransform()
             scale = self.controller.document.canvas_view.scale
             if scale != 1.0:
@@ -2335,6 +2405,59 @@ class NodeCanvasView(QGraphicsView):
 
     def should_render_thumbnail_nodes(self) -> bool:
         return False
+
+    def is_related_node(self, node_uuid: str) -> bool:
+        return node_uuid in self._related_node_uuids
+
+    def is_related_connection(self, from_uuid: str, to_uuid: str) -> bool:
+        return (from_uuid, to_uuid) in self._related_connection_pairs
+
+    def connection_flow_phase(self) -> float:
+        return self._connection_flow_phase
+
+    def _handle_selection_changed(self, _uuid: str | None) -> None:
+        self._refresh_node_z_values()
+        self._refresh_relation_highlights()
+
+    def _advance_connection_flow(self) -> None:
+        self._connection_flow_phase = (self._connection_flow_phase + 0.11) % 1.0
+        for pair in self._related_connection_pairs:
+            item = self.connection_items.get(pair)
+            if item is not None:
+                item.update()
+
+    def _refresh_relation_highlights(self) -> None:
+        selected_uuid = self.controller.selected_node_uuid
+        related_nodes: set[str] = set()
+        related_pairs: set[tuple[str, str]] = set()
+        if selected_uuid:
+            for connection in self.controller.document.connections:
+                pair = (connection.from_uuid, connection.to_uuid)
+                if connection.from_uuid == selected_uuid:
+                    related_nodes.add(connection.to_uuid)
+                    related_pairs.add(pair)
+                elif connection.to_uuid == selected_uuid:
+                    related_nodes.add(connection.from_uuid)
+                    related_pairs.add(pair)
+        changed_nodes = self._related_node_uuids ^ related_nodes
+        changed_pairs = self._related_connection_pairs ^ related_pairs
+        self._related_node_uuids = related_nodes
+        self._related_connection_pairs = related_pairs
+        if related_pairs and not self._connection_flow_timer.isActive():
+            self._connection_flow_timer.start()
+        elif not related_pairs and self._connection_flow_timer.isActive():
+            self._connection_flow_timer.stop()
+        for node_uuid in changed_nodes | related_nodes:
+            item = self.node_items.get(node_uuid)
+            if item is not None:
+                item.update()
+            table_item = self.table_row_to_item.get(node_uuid)
+            if table_item is not None:
+                table_item.update()
+        for pair in changed_pairs | related_pairs:
+            item = self.connection_items.get(pair)
+            if item is not None:
+                item.update()
 
     def toggle_node_display_mode(self, node_uuid: str) -> None:
         node = self.controller.get_node(node_uuid)
@@ -2783,6 +2906,7 @@ class NodeCanvasView(QGraphicsView):
                 item = ConnectionItem(self, connection.from_uuid, connection.to_uuid)
                 self.connection_items[(connection.from_uuid, connection.to_uuid)] = item
                 self.scene_ref.addItem(item)
+            self._refresh_relation_highlights()
 
     def _rebuild_parameter_tables(self) -> None:
         existing_ids = {table["table_id"] for table in self.controller.parameter_tables()}
@@ -2889,6 +3013,7 @@ class NodeCanvasView(QGraphicsView):
         for pair, item in self.connection_items.items():
             if node_uuid in pair:
                 item.update_path()
+                item.update()
 
     def _apply_validation(self, issues) -> None:
         warnings: dict[str, list[str]] = {}
@@ -3036,9 +3161,8 @@ class NodeCanvasView(QGraphicsView):
         start = self.connection_anchor_scene_pos(self._connecting_from, "output")
         if start is None:
             return
-        delta = max(80.0, abs(end_scene_pos.x() - start.x()) * 0.5)
         path = QPainterPath(start)
-        path.cubicTo(start.x() + delta, start.y(), end_scene_pos.x() - delta, end_scene_pos.y(), end_scene_pos.x(), end_scene_pos.y())
+        path.lineTo(end_scene_pos)
         self._temp_path.setPath(path)
 
     def cancel_connection_preview(self) -> None:

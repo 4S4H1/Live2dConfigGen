@@ -30,6 +30,7 @@ from .schema import EditorSchema, FieldSchema, NodeSchema, load_editor_schema
 RANGE_PATTERN = re.compile(r"^\{\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\}$")
 ACTION_NAME_PATTERN = re.compile(r"action\s*=\s*'([^']*)'")
 TARGET_IDLE_PATTERN = re.compile(r"idle\s*=\s*(-?\d+)")
+IGNORE_LIST_PATTERN = re.compile(r"ignore\s*=\s*\{\s*(?:\{\s*)?(?P<values>.*?)(?:\s*\})?\s*\}", re.IGNORECASE)
 TRAILING_INT_PATTERN = re.compile(r"(-?\d+)\s*$")
 PARTS_DATA_PATTERN = re.compile(r"^\{\s*parts\s*=\s*\{(?P<values>.*)\}\s*\}$", re.IGNORECASE)
 REACT_CONDITION_PATTERN = re.compile(r"^\{\s*idle_on\s*=\s*\{(?P<values>.*)\}\s*\}$", re.IGNORECASE)
@@ -137,40 +138,18 @@ def _restore_missing_parameter_table_groups(document: DocumentModel) -> None:
     if not missing_rows:
         return
 
-    row_height = 67.5
-    row_gap = 10.0
-    row_stride = row_height + row_gap
-    same_table_x_tolerance = 24.0
-    same_table_y_tolerance = max(row_stride * 0.6, 48.0)
+    table_id = new_uuid()
     rows = sorted(
         missing_rows,
         key=lambda node: (
-            _coerce_position_value(node.ui_position.get("x")),
             _coerce_position_value(node.ui_position.get("y")),
+            _coerce_position_value(node.ui_position.get("x")),
             node.uuid,
         ),
     )
-    groups: list[list[NodeRecord]] = []
-    for row in rows:
-        row_x = _coerce_position_value(row.ui_position.get("x"))
-        row_y = _coerce_position_value(row.ui_position.get("y"))
-        appended = False
-        for group in groups:
-            anchor_x = _coerce_position_value(group[0].ui_position.get("x"))
-            last_y = _coerce_position_value(group[-1].ui_position.get("y"))
-            if abs(row_x - anchor_x) <= same_table_x_tolerance and 0.0 < row_y - last_y <= row_stride + same_table_y_tolerance:
-                group.append(row)
-                appended = True
-                break
-        if not appended:
-            groups.append([row])
-
-    for group in groups:
-        table_id = new_uuid()
-        ordered_group = sorted(group, key=lambda node: (_coerce_position_value(node.ui_position.get("y")), node.uuid))
-        for index, row in enumerate(ordered_group):
-            row.fields[TABLE_ID_FIELD] = table_id
-            row.fields[TABLE_ORDER_FIELD] = index
+    for index, row in enumerate(rows):
+        row.fields[TABLE_ID_FIELD] = table_id
+        row.fields[TABLE_ORDER_FIELD] = index
 
 
 def parameter_table_id(node: NodeRecord) -> str:
@@ -439,6 +418,22 @@ def _target_idle_from_raw(value: Any) -> int | None:
     return _coerce_int(match.group(1), 0)
 
 
+def normalize_action_trigger_active_for_csv(value: Any) -> Any:
+    text = _text(value).strip()
+    if not text:
+        return value
+    target_idle = _target_idle_from_raw(text)
+    if target_idle is None:
+        return value
+    match = IGNORE_LIST_PATTERN.search(text)
+    if not match:
+        return value
+    ignore_values = "" if target_idle == 0 else match.group("values").strip()
+    ignore_values = ignore_values.strip("{} ")
+    normalized = f"ignore = {{{ignore_values}}}"
+    return text[: match.start()] + normalized + text[match.end() :]
+
+
 def _suffix_int(value: Any) -> int | None:
     text = _text(value).strip()
     if not text:
@@ -602,40 +597,45 @@ def _expected_parameter(node_schema: NodeSchema, target_idle: int) -> str:
     return template.format(target_idle=target_idle, sequence=target_idle)
 
 
-def _apply_parameter_table_generated_names(schema: EditorSchema, node: NodeRecord) -> None:
+def _apply_parameter_table_generated_names(schema: EditorSchema, node: NodeRecord, *, force_parameter: bool = True) -> None:
     if node.type != "ParameterTrigger":
         return
     node_schema = _node_schema(schema, node.type)
     sequence = int(node.type_slot or node.sequence_no or 1)
     target_idle = sequence if node_schema.auto_rules.use_sequence_for_target_idle else 0
-    node.fields["draw_able_name"] = node_schema.auto_rules.draw_template.format(
-        sequence=sequence,
-        target_idle=target_idle,
-    )
-    node.fields["parameter"] = _expected_parameter(node_schema, target_idle)
-    node.manual_fields.difference_update({"draw_able_name", "parameter"})
+    if force_parameter or "draw_able_name" not in node.manual_fields:
+        node.fields["draw_able_name"] = node_schema.auto_rules.draw_template.format(
+            sequence=sequence,
+            target_idle=target_idle,
+        )
+        node.manual_fields.discard("draw_able_name")
+    if force_parameter or "parameter" not in node.manual_fields:
+        node.fields["parameter"] = _expected_parameter(node_schema, target_idle)
+        node.manual_fields.discard("parameter")
 
 
 def _animated_action(
     schema: EditorSchema, node_schema: NodeSchema, target_idle: int, action_name: str | None = None
 ) -> tuple[str, str]:
     resolved_action_name = action_name if action_name is not None else _sequence_action_name(node_schema, target_idle)
+    ignore_values = "" if target_idle == 0 else _format_ignore_values(schema.default_ignore)
     action = (
         schema.animated_action_template.replace("{target_idle}", str(target_idle))
         .replace("{action_name}", resolved_action_name)
     )
     active = (
         schema.animated_active_template.replace("{target_idle}", str(target_idle))
-        .replace("{ignore_values}", _format_ignore_values(schema.default_ignore))
+        .replace("{ignore_values}", ignore_values)
     )
     return action, active
 
 
 def _hard_cut_action(schema: EditorSchema, target_idle: int) -> tuple[str, str]:
     action = schema.hard_cut_action_template
+    ignore_values = "" if target_idle == 0 else _format_ignore_values(schema.hard_cut_ignore)
     active = (
         schema.hard_cut_active_template.replace("{target_idle}", str(target_idle))
-        .replace("{ignore_values}", _format_ignore_values(schema.hard_cut_ignore))
+        .replace("{ignore_values}", ignore_values)
     )
     return action, active
 
@@ -992,11 +992,15 @@ def apply_auto_rules(
                 preserve_key=changed_key,
             )
             return
-    target_idle = _coerce_int(node.fields.get("target_idle"), normalized_target_idle(node))
+    target_idle = (
+        _coerce_int(node.fields.get("target_idle"), normalized_target_idle(node))
+        if changed_key in {"target_idle", "transition_type"}
+        else normalized_target_idle(node)
+    )
     node.fields["target_idle"] = target_idle
     if _is_touchdrag_value_like(node):
-        if node.type == "ParameterTrigger" and (force_generated or "parameter" not in node.manual_fields):
-            _apply_parameter_table_generated_names(schema, node)
+        if node.type == "ParameterTrigger":
+            _apply_parameter_table_generated_names(schema, node, force_parameter=force_generated)
         if force_generated or source_mode == "simple":
             node.fields["action_trigger"] = ""
             node.fields["action_trigger_active"] = ""
@@ -1461,6 +1465,8 @@ def _csv_value_for_mapping(mapping, document: DocumentModel, node: NodeRecord) -
         return canonicalize_parts_data(node.fields.get(mapping.field or "", mapping.default))
     if mapping.column == "react_condition":
         return format_react_condition_for_csv(getattr(document.meta, mapping.field or "", mapping.default))
+    if mapping.column == "action_trigger_active":
+        return normalize_action_trigger_active_for_csv(node.fields.get(mapping.field or "", mapping.default))
     if mapping.kind == "node":
         return node.fields.get(mapping.field, mapping.default)
     if mapping.kind == "meta":
@@ -1478,10 +1484,12 @@ def document_to_csv_rows(schema: EditorSchema, document: DocumentModel) -> list[
     sync_meta_from_initial(document)
     reassign_function_ids(schema, document)
     rows: list[CsvPreviewRow] = []
-    for node in _function_nodes(schema, document):
+    for row_index, node in enumerate(_function_nodes(schema, document)):
         values = {column: "" for column in schema.csv_columns}
         for mapping in schema.csv_mapping:
             values[mapping.column] = _csv_value_for_mapping(mapping, document, node)
+        if row_index > 0:
+            values["react_condition"] = ""
         rows.append(CsvPreviewRow(values=values))
     return rows
 

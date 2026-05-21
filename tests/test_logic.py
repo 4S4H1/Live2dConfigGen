@@ -247,7 +247,7 @@ class LogicTests(unittest.TestCase):
         self.assertEqual({table_id}, {node.fields["_table_id"] for node in loaded_rows})
         self.assertEqual([0, 1, 2], [node.fields["_table_order"] for node in loaded_rows])
 
-    def test_legacy_parameter_rows_without_table_metadata_load_as_grouped_tables(self) -> None:
+    def test_legacy_parameter_rows_without_table_metadata_load_as_one_fallback_table(self) -> None:
         document = self.make_ready_document()
         first = create_node(self.schema, document, "ParameterTrigger")
         second = create_node(self.schema, document, "ParameterTrigger", base_node=first)
@@ -271,9 +271,8 @@ class LogicTests(unittest.TestCase):
             [node for node in loaded.nodes if node.type == "ParameterTrigger"],
             key=lambda node: (node.ui_position["x"], node.ui_position["y"]),
         )
-        self.assertEqual(rows[0].fields["_table_id"], rows[1].fields["_table_id"])
-        self.assertNotEqual(rows[0].fields["_table_id"], rows[2].fields["_table_id"])
-        self.assertEqual([0, 1], [rows[0].fields["_table_order"], rows[1].fields["_table_order"]])
+        self.assertEqual(1, len({row.fields["_table_id"] for row in rows}))
+        self.assertEqual([0, 1, 2], [row.fields["_table_order"] for row in sorted(rows, key=lambda row: row.fields["_table_order"])])
 
     def test_reassign_function_ids_repairs_touchdrag_parameter_slot_collisions(self) -> None:
         document = self.make_ready_document()
@@ -290,6 +289,18 @@ class LogicTests(unittest.TestCase):
         self.assertEqual(2, parameter_row.type_slot)
         self.assertEqual("touch_drag1", touch_drag.fields["parameter"])
         self.assertEqual("touch_drag2", parameter_row.fields["parameter"])
+
+    def test_reassign_function_ids_preserves_manual_parameter_trigger_parameter(self) -> None:
+        document = self.make_ready_document()
+        parameter_row = create_node(self.schema, document, "ParameterTrigger")
+        parameter_row.fields["parameter"] = "ParamEditedFromCell"
+        parameter_row.manual_fields.add("parameter")
+        document.nodes.append(parameter_row)
+
+        reassign_function_ids(self.schema, document)
+
+        self.assertEqual("ParamEditedFromCell", parameter_row.fields["parameter"])
+        self.assertIn("parameter", parameter_row.manual_fields)
 
     def test_manual_mode_touchdrag_defaults_use_unsuffixed_values(self) -> None:
         document = self.make_ready_document()
@@ -457,6 +468,53 @@ class LogicTests(unittest.TestCase):
         document.nodes.append(node)
         rows = document_to_csv_rows(self.schema, document)
         self.assertEqual("{idle_on={0,17}}", rows[0].values["react_condition"])
+
+    def test_csv_preview_only_writes_react_condition_on_first_row(self) -> None:
+        document = self.make_ready_document()
+        initial = next(node for node in document.nodes if node.type == "Initial")
+        initial.fields["react_condition"] = "0,17"
+        first = create_node(self.schema, document, "TouchIdle")
+        second = create_node(self.schema, document, "TouchIdle")
+        document.nodes.extend([first, second])
+
+        rows = document_to_csv_rows(self.schema, document)
+
+        self.assertEqual("{idle_on={0,17}}", rows[0].values["react_condition"])
+        self.assertEqual("", rows[1].values["react_condition"])
+
+    def test_action_trigger_active_exports_single_layer_ignore_braces(self) -> None:
+        document = self.make_ready_document()
+        node = create_node(self.schema, document, "TouchIdle")
+        document.nodes.append(node)
+
+        rows = document_to_csv_rows(self.schema, document)
+
+        self.assertIn("ignore = {'main_1','main_2','main_3','main_4'", rows[0].values["action_trigger_active"])
+        self.assertNotIn("ignore = {{", rows[0].values["action_trigger_active"])
+
+    def test_zero_target_idle_exports_empty_ignore(self) -> None:
+        document = self.make_ready_document()
+        node = create_node(self.schema, document, "TouchIdle")
+        node.fields["target_idle"] = 0
+        apply_auto_rules(self.schema, document, node, source_mode="simple", changed_key="target_idle")
+        document.nodes.append(node)
+
+        rows = document_to_csv_rows(self.schema, document)
+
+        self.assertEqual("{enable = {},ignore = {},idle = 0}", rows[0].values["action_trigger_active"])
+
+    def test_legacy_double_wrapped_action_trigger_active_is_normalized_for_csv(self) -> None:
+        document = self.make_ready_document()
+        node = create_node(self.schema, document, "TouchIdle")
+        node.fields["action_trigger_active"] = (
+            "{enable = {},ignore = {{'main_1','main_2','main_3','main_4','mission','mission_complete',"
+            "'complete','login','home','mail','touch_body','touch_head'}},idle = 0}"
+        )
+        document.nodes.append(node)
+
+        rows = document_to_csv_rows(self.schema, document)
+
+        self.assertEqual("{enable = {},ignore = {},idle = 0}", rows[0].values["action_trigger_active"])
 
     def test_range_abs_tracks_signed_range(self) -> None:
         document = self.make_ready_document()
@@ -2348,6 +2406,31 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertIn(window.canvas._temp_path, window.canvas.items(release_view))
             self.assertIsNone(window.canvas._hover_item_at_point(release_view))
             window.canvas.cancel_connection_preview()
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_connections_render_as_straight_paths_with_relation_highlight(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            parent_uuid = window.controller.create_node("TouchIdle", (100, 100))
+            child_uuid = window.controller.create_node_with_connection(parent_uuid, "TouchIdle", (600, 180))
+            window.canvas.rebuild_scene()
+
+            connection_item = window.canvas.connection_items[(parent_uuid, child_uuid)]
+            path = connection_item.path()
+            self.assertEqual(2, path.elementCount())
+            window.controller.set_selected_node(parent_uuid)
+            self.assertTrue(window.canvas.is_related_node(child_uuid))
+            self.assertTrue(window.canvas.is_related_connection(parent_uuid, child_uuid))
+            self.assertTrue(window.canvas._connection_flow_timer.isActive())
+            old_phase = window.canvas.connection_flow_phase()
+            window.canvas._advance_connection_flow()
+            self.assertNotEqual(old_phase, window.canvas.connection_flow_phase())
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
