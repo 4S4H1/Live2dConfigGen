@@ -35,6 +35,9 @@ from PyQt6.QtWidgets import (
 from .logic import display_value_for_field
 from .schema import EditorSchema, FieldSchema, field_visible
 
+APPEARANCE_DISABLED_NODE_TYPES = {"Initial"}
+APPEARANCE_BUTTON_HIDDEN_NODE_TYPES = {"Initial", "Comment"}
+
 
 def _dialog_parent_widget(widget: QWidget | None) -> QWidget | None:
     current = widget
@@ -812,7 +815,7 @@ class NodeFormWidget(QFrame):
         return result
 
     def _add_appearance_row(self) -> None:
-        if not self.node:
+        if not self.node or self.node.type in APPEARANCE_BUTTON_HIDDEN_NODE_TYPES:
             return
         button = QPushButton("外观设置")
         button.setProperty("accentButton", True)
@@ -838,6 +841,8 @@ class NodeFormWidget(QFrame):
 
     def open_appearance_dialog(self, anchor_global_pos: QPoint | None = None) -> bool:
         if not self.node:
+            return False
+        if self.node.type in APPEARANCE_DISABLED_NODE_TYPES:
             return False
         if isinstance(anchor_global_pos, bool):
             anchor_global_pos = None
@@ -1118,9 +1123,13 @@ class NodeFormWidget(QFrame):
                 alpha = 100
             text_color.setAlphaF(alpha / 100.0)
         try:
-            font_size = max(11, min(28, int(self.node.fields.get("note_font_size", 15)))) if self.node.type == "Comment" else 13
+            if self.node.type == "Comment":
+                base_font_size = max(11, min(28, int(self.node.fields.get("note_font_size", 15))))
+                font_size = max(12, min(42, round(base_font_size * 1.5)))
+            else:
+                font_size = 13
         except (TypeError, ValueError):
-            font_size = 15 if self.node.type == "Comment" else 13
+            font_size = 23 if self.node.type == "Comment" else 13
         rgba = f"rgba({text_color.red()}, {text_color.green()}, {text_color.blue()}, {text_color.alpha()})"
         self.setStyleSheet(
             f"QLabel {{ color: {rgba}; }}"

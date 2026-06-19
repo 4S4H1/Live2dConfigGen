@@ -9,8 +9,8 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("L2D_CONFIG_EDITOR_TEST_CLOSE_EVENT_POLICY", "discard")
 
-from PyQt6.QtCore import QPoint, QPointF, QRectF, QSettings, Qt
-from PyQt6.QtGui import QContextMenuEvent, QFontMetricsF, QImage, QPainter
+from PyQt6.QtCore import QEvent, QPoint, QPointF, QRectF, QSettings, Qt
+from PyQt6.QtGui import QContextMenuEvent, QFontMetricsF, QImage, QMouseEvent, QPainter
 from PyQt6.QtWidgets import QApplication, QComboBox, QDialog, QGraphicsItem, QMessageBox, QSplitter, QToolBar
 
 from l2d_config_editor.controller import EditorController
@@ -974,6 +974,59 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
             window.close()
 
+    def test_compact_card_detail_button_matches_lock_and_opens_detail(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            window.controller.set_global_mode("simple")
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            item = window.canvas.node_items[created]
+
+            self.assertEqual("card", window.canvas.node_display_mode(created))
+            self.assertEqual(item.lock_rect().size(), item.detail_toggle_rect().size())
+            self.assertAlmostEqual(item.detail_toggle_rect().top(), item.lock_rect().top(), delta=0.1)
+            self.assertLess(item.detail_toggle_rect().right(), item.lock_rect().left())
+
+            center = item.detail_toggle_rect().center()
+            event = QMouseEvent(
+                QEvent.Type.MouseButtonPress,
+                center,
+                item.mapToScene(center),
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            item.mousePressEvent(event)
+            self.app.processEvents()
+
+            self.assertTrue(event.isAccepted())
+            self.assertEqual("detail", window.canvas.node_display_mode(created))
+            self.assertIn(created, window.canvas.expanded_node_uuids)
+            self.assertTrue(item.proxy.isVisible())
+
+            center = item.detail_toggle_rect().center()
+            event = QMouseEvent(
+                QEvent.Type.MouseButtonPress,
+                center,
+                item.mapToScene(center),
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            item.mousePressEvent(event)
+            self.app.processEvents()
+
+            self.assertTrue(event.isAccepted())
+            self.assertEqual("card", window.canvas.node_display_mode(created))
+            self.assertNotIn(created, window.canvas.expanded_node_uuids)
+            self.assertFalse(item.proxy.isVisible())
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
     def test_card_field_focus_opens_detail_and_focuses_editor(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
@@ -1023,7 +1076,9 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
 
             editor = item._card_editor_proxy.widget()
             self.assertNotEqual(editor.font().pointSizeF(), -1.0)
-            self.assertGreater(editor.fontMetrics().height(), 12)
+            self.assertGreater(editor.font().pointSizeF(), item._compact_parameter_font().pointSizeF())
+            self.assertGreater(editor.fontMetrics().height(), 30)
+            self.assertGreaterEqual(editor.height(), editor.fontMetrics().height())
             editor.setText("Paramtouch_idle99")
             item._commit_card_field_edit("parameter", editor.text(), editor)
             self.app.processEvents()
@@ -1031,6 +1086,36 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertEqual("Paramtouch_idle99", item._card_field_text("parameter"))
             self.assertEqual("card", window.canvas.node_display_mode(created))
             self.assertFalse(item.proxy.isVisible())
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
+    def test_all_compact_card_field_editors_use_large_fonts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            window.controller.set_global_mode("simple")
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            item = window.canvas.node_items[created]
+
+            expected = {
+                "tips": item._compact_note_font().pointSizeF(),
+                "draw_able_name": item._compact_title_font().pointSizeF(),
+                "action_trigger": item._compact_action_font().pointSizeF(),
+                "action_trigger_active": item._compact_target_font().pointSizeF(),
+                "parameter": item._compact_parameter_font().pointSizeF(),
+            }
+            for field_key, base_size in expected.items():
+                self.assertTrue(item._begin_card_field_edit(field_key))
+                self.app.processEvents()
+                editor = item._card_editor_proxy.widget()
+                self.assertGreater(editor.font().pointSizeF(), base_size)
+                self.assertGreaterEqual(editor.height(), editor.fontMetrics().height())
+                item._discard_card_field_editor()
+
             window._mark_saved_checkpoint(saved=True)
             window.close()
 
@@ -1151,7 +1236,103 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
             window.close()
 
-    def test_comment_appearance_dialog_updates_comment_and_theme_colors(self) -> None:
+    def test_initial_and_comment_do_not_expose_appearance_buttons(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("Comment", (200, 120))
+            initial_item = window.canvas.node_items[initial.uuid]
+            comment_item = window.canvas.node_items[created]
+
+            self.assertIsNone(initial_item.form._appearance_button)
+            self.assertIsNone(comment_item.form._appearance_button)
+
+            with patch("l2d_config_editor.widgets.CommentAppearanceDialog") as comment_dialog_cls, patch(
+                "l2d_config_editor.widgets.NodeAppearanceDialog"
+            ) as node_dialog_cls:
+                self.assertFalse(initial_item.form.open_appearance_dialog())
+                self.assertFalse(initial_item.open_appearance_dialog())
+
+            comment_dialog_cls.assert_not_called()
+            node_dialog_cls.assert_not_called()
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
+    def test_right_click_initial_is_disabled_but_comment_opens_appearance_dialog(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            comment_uuid = window.controller.create_node("Comment", (200, 120))
+
+            initial_item = window.canvas.node_items[initial.uuid]
+            comment_item = window.canvas.node_items[comment_uuid]
+
+            view_pos = window.canvas.viewport().rect().center()
+            event = QContextMenuEvent(
+                QContextMenuEvent.Reason.Mouse,
+                view_pos,
+                window.canvas.viewport().mapToGlobal(view_pos),
+            )
+            with patch.object(window.canvas, "_node_item_at_view_point", return_value=initial_item), patch.object(
+                initial_item, "open_appearance_dialog", return_value=True
+            ) as open_initial:
+                window.canvas.contextMenuEvent(event)
+            open_initial.assert_not_called()
+
+            event = QContextMenuEvent(
+                QContextMenuEvent.Reason.Mouse,
+                view_pos,
+                window.canvas.viewport().mapToGlobal(view_pos),
+            )
+            with patch.object(window.canvas, "_node_item_at_view_point", return_value=comment_item), patch.object(
+                comment_item, "open_appearance_dialog", return_value=True
+            ) as open_comment:
+                window.canvas.contextMenuEvent(event)
+            open_comment.assert_called_once()
+
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
+    def test_right_click_comment_opens_appearance_even_when_multi_selected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            comment_uuid = window.controller.create_node("Comment", (200, 120))
+            touch_uuid = window.controller.create_node("TouchIdle", (420, 120))
+            comment_item = window.canvas.node_items[comment_uuid]
+            touch_item = window.canvas.node_items[touch_uuid]
+            comment_item.setSelected(True)
+            touch_item.setSelected(True)
+
+            view_pos = window.canvas.viewport().rect().center()
+            event = QContextMenuEvent(
+                QContextMenuEvent.Reason.Mouse,
+                view_pos,
+                window.canvas.viewport().mapToGlobal(view_pos),
+            )
+            with patch.object(window.canvas, "_node_item_at_view_point", return_value=comment_item), patch.object(
+                window.canvas, "_show_selection_menu"
+            ) as show_selection_menu, patch.object(comment_item, "open_appearance_dialog", return_value=True) as open_comment:
+                window.canvas.contextMenuEvent(event)
+
+            open_comment.assert_called_once()
+            show_selection_menu.assert_not_called()
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
+    def test_comment_right_click_appearance_uses_node_color_dialog(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
@@ -1163,30 +1344,47 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             node = window.controller.get_node(created)
             item = window.canvas.node_items[created]
 
-            with patch("l2d_config_editor.widgets._move_dialog_near_anchor"), patch(
-                "l2d_config_editor.widgets.CommentAppearanceDialog"
-            ) as comment_dialog_cls, patch("l2d_config_editor.widgets.NodeAppearanceDialog") as node_dialog_cls:
-                dialog_instance = comment_dialog_cls.return_value
+            with patch("l2d_config_editor.canvas._move_dialog_near_anchor") as move_dialog, patch(
+                "l2d_config_editor.canvas.NodeAppearanceDialog"
+            ) as node_dialog_cls, patch("l2d_config_editor.widgets.CommentAppearanceDialog") as comment_dialog_cls:
+                dialog_instance = node_dialog_cls.return_value
                 dialog_instance.exec.return_value = QDialog.DialogCode.Accepted
                 dialog_instance.values.return_value = {
-                    "note_box_color": "#112233",
+                    "theme_body_color": "#112233",
                     "theme_border_color": "#334455",
-                    "note_box_alpha": 70,
-                    "note_text_color": "#ddeeff",
-                    "note_text_alpha": 85,
-                    "note_font_size": 18,
+                    "theme_text_color": "#ddeeff",
                 }
-                self.assertTrue(item.form.open_appearance_dialog())
+                self.assertTrue(item.open_appearance_dialog(QPoint(120, 80)))
 
-            node_dialog_cls.assert_not_called()
+            comment_dialog_cls.assert_not_called()
+            node_dialog_cls.assert_called_once()
+            move_dialog.assert_called_once()
             self.assertEqual("#112233", node.fields["note_box_color"])
             self.assertEqual("#112233", node.fields["theme_body_color"])
             self.assertEqual("#334455", node.fields["theme_border_color"])
             self.assertEqual("#ddeeff", node.fields["note_text_color"])
             self.assertEqual("#ddeeff", node.fields["theme_text_color"])
-            self.assertEqual(70, node.fields["note_box_alpha"])
-            self.assertEqual(85, node.fields["note_text_alpha"])
-            self.assertEqual(18, node.fields["note_font_size"])
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
+    def test_comment_title_is_smaller_and_body_text_is_larger(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            created = window.controller.create_node("Comment", (200, 120))
+            window.controller.update_field(created, "content", "This is a long comment title line for readability\nbody", "simple")
+            item = window.canvas.node_items[created]
+
+            self.assertAlmostEqual(item.TITLE_BASE_POINT_SIZE * item.COMMENT_TITLE_SCALE, item._title_font().pointSizeF(), delta=0.2)
+            baseline_title_size = item._title_font().pointSizeF()
+            window.canvas._apply_view_state(0.35, QPointF(0.0, 0.0))
+            self.app.processEvents()
+            self.assertAlmostEqual(baseline_title_size, item._title_font().pointSizeF(), delta=0.1)
+            self.assertIn("font-size: 22px", item.form.styleSheet())
             window._mark_saved_checkpoint(saved=True)
             window.close()
 
@@ -1237,6 +1435,91 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
                 "simple",
                 label="应用外观方案",
             )
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
+    def test_batch_appearance_filters_initial_and_comment_nodes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            window.controller.set_global_mode("simple")
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            comment_uuid = window.controller.create_node("Comment", (200, 120))
+            touch_uuid = window.controller.create_node("TouchIdle", (420, 120))
+
+            window.canvas.node_items[initial.uuid].setSelected(True)
+            window.canvas.node_items[comment_uuid].setSelected(True)
+            window.canvas.node_items[touch_uuid].setSelected(True)
+
+            values = {
+                "theme_body_color": "#15302f",
+                "theme_border_color": "#f5c84b",
+                "theme_text_color": "#fff6d6",
+            }
+            with patch("l2d_config_editor.canvas.NodeAppearanceDialog") as dialog_cls, patch.object(
+                window.controller, "update_fields_for_nodes"
+            ) as update_fields_for_nodes:
+                dialog_instance = dialog_cls.return_value
+                dialog_instance.exec.return_value = QDialog.DialogCode.Accepted
+                dialog_instance.values.return_value = values
+
+                self.assertTrue(window.canvas._edit_selected_node_appearance())
+
+            update_fields_for_nodes.assert_called_once()
+            self.assertEqual([touch_uuid], update_fields_for_nodes.call_args.args[0])
+            self.assertEqual(values, update_fields_for_nodes.call_args.args[1])
+            self.assertEqual("simple", update_fields_for_nodes.call_args.args[2])
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
+    def test_right_click_multi_selected_touch_nodes_opens_color_dialog_directly(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            window.controller.set_global_mode("simple")
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            first_uuid = window.controller.create_node("TouchIdle", (200, 120))
+            second_uuid = window.controller.create_node("TouchIdle", (520, 120))
+            first_item = window.canvas.node_items[first_uuid]
+            second_item = window.canvas.node_items[second_uuid]
+            first_item.setSelected(True)
+            second_item.setSelected(True)
+            values = {
+                "theme_body_color": "#15302f",
+                "theme_border_color": "#f5c84b",
+                "theme_text_color": "#fff6d6",
+            }
+
+            view_pos = window.canvas.viewport().rect().center()
+            event = QContextMenuEvent(
+                QContextMenuEvent.Reason.Mouse,
+                view_pos,
+                window.canvas.viewport().mapToGlobal(view_pos),
+            )
+            with patch.object(window.canvas, "_node_item_at_view_point", return_value=first_item), patch.object(
+                window.canvas, "_show_selection_menu"
+            ) as show_selection_menu, patch("l2d_config_editor.canvas.NodeAppearanceDialog") as dialog_cls, patch(
+                "l2d_config_editor.canvas._move_dialog_near_anchor"
+            ) as move_dialog, patch.object(window.controller, "update_fields_for_nodes") as update_fields_for_nodes:
+                dialog_instance = dialog_cls.return_value
+                dialog_instance.exec.return_value = QDialog.DialogCode.Accepted
+                dialog_instance.values.return_value = values
+
+                window.canvas.contextMenuEvent(event)
+
+            show_selection_menu.assert_not_called()
+            dialog_cls.assert_called_once()
+            move_dialog.assert_called_once()
+            update_fields_for_nodes.assert_called_once()
+            self.assertEqual({first_uuid, second_uuid}, set(update_fields_for_nodes.call_args.args[0]))
+            self.assertEqual(values, update_fields_for_nodes.call_args.args[1])
+            self.assertEqual("simple", update_fields_for_nodes.call_args.args[2])
             window._mark_saved_checkpoint(saved=True)
             window.close()
 
@@ -1956,7 +2239,48 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
             item = window.canvas.node_items[initial.uuid]
             self.assertLess(item._title_font().pointSizeF(), item.TITLE_BASE_POINT_SIZE)
+            self.assertAlmostEqual(16.8, item._title_font().pointSizeF(), delta=0.1)
+            baseline_title_size = item._title_font().pointSizeF()
+            window.canvas._apply_view_state(0.35, QPointF(0.0, 0.0))
+            self.app.processEvents()
+            self.assertAlmostEqual(baseline_title_size, item._title_font().pointSizeF(), delta=0.1)
+            self.assertGreaterEqual(item._title_rect.height(), QFontMetricsF(item._title_font()).height())
             self.assertLess(item._header_height, 70.0)
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_initial_node_matches_touchidle_main_panel_size(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            touch_uuid = window.controller.create_node("TouchIdle", (200, 120))
+            initial_item = window.canvas.node_items[initial.uuid]
+            touch_item = window.canvas.node_items[touch_uuid]
+
+            initial_frame = initial_item._active_frame_rect()
+            touch_frame = touch_item._card_layout["frame"]
+            initial_item.setPos(120.0, 160.0)
+            touch_item.setPos(520.0, 160.0)
+            self.assertAlmostEqual(touch_item._rect.width(), initial_item._rect.width(), delta=0.1)
+            self.assertAlmostEqual(touch_item._rect.height(), initial_item._rect.height(), delta=0.1)
+            self.assertAlmostEqual(touch_item.boundingRect().top(), initial_item.boundingRect().top(), delta=0.1)
+            self.assertAlmostEqual(touch_item.boundingRect().height(), initial_item.boundingRect().height(), delta=0.1)
+            self.assertAlmostEqual(touch_frame.width(), initial_frame.width(), delta=0.1)
+            self.assertAlmostEqual(touch_frame.height(), initial_frame.height(), delta=0.1)
+            self.assertAlmostEqual(touch_frame.left(), initial_frame.left(), delta=0.1)
+            self.assertAlmostEqual(touch_frame.top(), initial_frame.top(), delta=0.1)
+            self.assertAlmostEqual(touch_frame.center().y(), initial_frame.center().y(), delta=0.1)
+            self.assertAlmostEqual(touch_frame.right(), initial_frame.right(), delta=0.1)
+            self.assertAlmostEqual(initial_item.mapToScene(initial_frame.topLeft()).y(), touch_item.mapToScene(touch_frame.topLeft()).y(), delta=0.1)
+            self.assertAlmostEqual(initial_item.input_pin_rect().center().x(), touch_item.input_pin_rect().center().x(), delta=0.1)
+            self.assertAlmostEqual(initial_item.output_pin_rect().center().x(), touch_item.output_pin_rect().center().x(), delta=0.1)
+            self.assertAlmostEqual(initial_item.input_pin_rect().center().y(), touch_item.input_pin_rect().center().y(), delta=0.1)
+            self.assertAlmostEqual(initial_item.output_pin_rect().center().y(), touch_item.output_pin_rect().center().y(), delta=0.1)
+            self.assertAlmostEqual(initial_item.input_pin_scene_pos().y(), touch_item.input_pin_scene_pos().y(), delta=0.1)
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
@@ -2193,6 +2517,29 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
+    def test_comment_resize_expands_inner_content_panel(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            comment_uuid = window.controller.create_node("Comment", (450, 110))
+            comment_node = window.controller.get_node(comment_uuid)
+            item = window.canvas.node_items[comment_uuid]
+            baseline_proxy_height = item.proxy.geometry().height()
+
+            comment_node.ui_size = {"width": 620.0, "height": 420.0}
+            window.controller.nodeUpdated.emit(comment_uuid)
+            self.app.processEvents()
+
+            expected_height = item._rect.height() - item._margin * 2 - item._header_height - item._content_top_gap
+            self.assertGreater(item.proxy.geometry().height(), baseline_proxy_height + 100.0)
+            self.assertAlmostEqual(item.proxy.geometry().height(), expected_height, delta=4.0)
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
     def test_create_group_builds_canvas_group_item_and_wraps_members(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
@@ -2409,6 +2756,32 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
+    def test_connection_preview_snaps_to_input_pin_and_animates(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            source_uuid = window.controller.create_node("TouchIdle", (100, 100))
+            target_uuid = window.controller.create_node("TouchIdle", (620, 150))
+            self.assertIsNotNone(source_uuid)
+            self.assertIsNotNone(target_uuid)
+            window.canvas.rebuild_scene()
+
+            window.canvas._start_connection_from_uuid(source_uuid)
+            target_anchor = window.canvas.connection_anchor_scene_pos(target_uuid, "input")
+            self.assertIsNotNone(target_anchor)
+            window.canvas._update_temp_connection(target_anchor + QPointF(5.0, 0.0))
+
+            self.assertEqual(4, window.canvas._temp_path.path().elementCount())
+            self.assertTrue(window.canvas._temp_path._target_active)
+            self.assertTrue(window.canvas._connection_flow_timer.isActive())
+            window.canvas.cancel_connection_preview()
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
     def test_connections_render_as_straight_paths_with_relation_highlight(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
@@ -2431,6 +2804,28 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             old_phase = window.canvas.connection_flow_phase()
             window.canvas._advance_connection_flow()
             self.assertNotEqual(old_phase, window.canvas.connection_flow_phase())
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_node_hover_glow_does_not_start_flow_timer(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
+            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
+            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
+            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
+            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            node_uuid = window.controller.create_node("TouchIdle", (100, 100))
+            self.assertIsNotNone(node_uuid)
+            window.canvas.rebuild_scene()
+            item = window.canvas.node_items[node_uuid]
+
+            item._hovered = True
+            window.canvas._refresh_blueprint_animation_timer()
+            self.assertFalse(window.canvas._connection_flow_timer.isActive())
+            item._hovered = False
+            window.canvas._refresh_blueprint_animation_timer()
+            self.assertFalse(window.canvas._connection_flow_timer.isActive())
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
