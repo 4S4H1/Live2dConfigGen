@@ -12,6 +12,7 @@ class MetaRecord:
     author: str = ""
     ship_skin_id: int = 0
     memo: str = ""
+    default_state: str = "idle0"
     react_condition: str = ""
     tips: str = ""
     CharName: str = ""
@@ -38,6 +39,8 @@ class GroupRecord:
     theme_body_color: str = "#dfeada"
     theme_border_color: str = "#69b070"
     theme_text_color: str = "#ffffff"
+    ui_position: dict[str, float] | None = None
+    ui_size: dict[str, float] | None = None
 
     def clone(self) -> "GroupRecord":
         return GroupRecord(
@@ -47,6 +50,32 @@ class GroupRecord:
             theme_body_color=self.theme_body_color,
             theme_border_color=self.theme_border_color,
             theme_text_color=self.theme_text_color,
+            ui_position=dict(self.ui_position) if self.ui_position else None,
+            ui_size=dict(self.ui_size) if self.ui_size else None,
+        )
+
+
+@dataclass
+class CanvasImageRecord:
+    uuid: str
+    data_base64: str
+    mime_type: str = "image/png"
+    name: str = "参考图"
+    ui_position: dict[str, float] = field(default_factory=lambda: {"x": 0.0, "y": 0.0})
+    ui_size: dict[str, float] = field(default_factory=lambda: {"width": 1.0, "height": 1.0})
+    opacity: float = 1.0
+    locked: bool = False
+
+    def clone(self) -> "CanvasImageRecord":
+        return CanvasImageRecord(
+            uuid=self.uuid,
+            data_base64=self.data_base64,
+            mime_type=self.mime_type,
+            name=self.name,
+            ui_position=dict(self.ui_position),
+            ui_size=dict(self.ui_size),
+            opacity=self.opacity,
+            locked=self.locked,
         )
 
 
@@ -117,6 +146,7 @@ class DocumentModel:
     nodes: list[NodeRecord] = field(default_factory=list)
     connections: list[ConnectionRecord] = field(default_factory=list)
     groups: list[GroupRecord] = field(default_factory=list)
+    canvas_images: list[CanvasImageRecord] = field(default_factory=list)
     trash_bin: list[TrashEntry] = field(default_factory=list)
     canvas_view: CanvasViewState = field(default_factory=CanvasViewState)
     state: DocumentState = field(default_factory=DocumentState)

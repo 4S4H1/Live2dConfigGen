@@ -1,0 +1,40 @@
+{
+  "editor_signature": "l2d_config_editor/v1",
+  "format_version": 2,
+  "global_mode": "simple",
+  "interaction_creation_mode": "auto",
+  "editor_settings": {
+    "numeric_linkage_enabled": false,
+    "trash_enabled": false
+  },
+  "meta": {
+    "version": "2026-07-11",
+    "author": "1",
+    "ship_skin_id": 6,
+    "memo": "3",
+    "default_state": "idle0",
+    "react_condition": "0",
+    "tips": "1",
+    "CharName": "3"
+  },
+  "nodes": [
+    {
+      "uuid": "c1c1025a06d041a3b8f7cd2fa115ac48",
+      "type": "Idle0",
+      "ui_position": {
+        "x": 72.0,
+        "y": 72.0
+      },
+      "locked": false
+    }
+  ],
+  "groups": [],
+  "canvas_images": [],
+  "connections": [],
+  "trash_bin": [],
+  "canvas_view": {
+    "scale": 1.0,
+    "offset_x": 0.0,
+    "offset_y": 0.0
+  }
+}

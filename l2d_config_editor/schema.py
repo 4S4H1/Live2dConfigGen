@@ -44,6 +44,7 @@ class AutoRuleSpec:
     action_name_template: str = ""
     use_sequence_for_target_idle: bool = False
     supports_quick_create: bool = False
+    fixed_target_idle: int | None = None
 
 
 @dataclass(frozen=True)
@@ -138,6 +139,11 @@ def _parse_node(type_name: str, raw: dict[str, Any]) -> NodeSchema:
             action_name_template=str(raw.get("auto_rules", {}).get("action_name_template", "")),
             use_sequence_for_target_idle=bool(raw.get("auto_rules", {}).get("use_sequence_for_target_idle", False)),
             supports_quick_create=bool(raw.get("auto_rules", {}).get("supports_quick_create", False)),
+            fixed_target_idle=(
+                int(raw.get("auto_rules", {}).get("fixed_target_idle"))
+                if raw.get("auto_rules", {}).get("fixed_target_idle") is not None
+                else None
+            ),
         ),
     )
 
@@ -145,7 +151,27 @@ def _parse_node(type_name: str, raw: dict[str, Any]) -> NodeSchema:
 def load_editor_schema(path: str | Path | None = None) -> EditorSchema:
     schema_path = Path(path) if path else SCHEMA_FILE
     payload = json.loads(schema_path.read_text(encoding="utf-8"))
-    nodes = {type_name: _parse_node(type_name, raw) for type_name, raw in payload["nodes"].items()}
+    raw_nodes = payload["nodes"]
+    resolved_nodes: dict[str, dict[str, Any]] = {}
+    for type_name, raw in raw_nodes.items():
+        inherited_type = raw.get("inherits_fields_from")
+        if not inherited_type:
+            resolved_nodes[type_name] = raw
+            continue
+        inherited = raw_nodes[inherited_type]
+        excluded_fields = {str(key) for key in raw.get("exclude_fields", [])}
+        resolved = {**inherited, **raw}
+        resolved["fields"] = [
+            dict(field)
+            for field in inherited.get("fields", [])
+            if str(field.get("key")) not in excluded_fields
+        ] + [dict(field) for field in raw.get("fields", [])]
+        resolved["auto_rules"] = {
+            **inherited.get("auto_rules", {}),
+            **raw.get("auto_rules", {}),
+        }
+        resolved_nodes[type_name] = resolved
+    nodes = {type_name: _parse_node(type_name, raw) for type_name, raw in resolved_nodes.items()}
     csv_mapping = tuple(
         CsvMappingSpec(
             column=str(item["column"]),

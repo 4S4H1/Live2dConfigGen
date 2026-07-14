@@ -35,8 +35,8 @@ from PyQt6.QtWidgets import (
 from .logic import display_value_for_field
 from .schema import EditorSchema, FieldSchema, field_visible
 
-APPEARANCE_DISABLED_NODE_TYPES = {"Initial"}
-APPEARANCE_BUTTON_HIDDEN_NODE_TYPES = {"Initial", "Comment"}
+APPEARANCE_DISABLED_NODE_TYPES = {"Initial", "Idle0"}
+APPEARANCE_BUTTON_HIDDEN_NODE_TYPES = {"Initial", "Idle0", "Comment"}
 
 
 def _dialog_parent_widget(widget: QWidget | None) -> QWidget | None:

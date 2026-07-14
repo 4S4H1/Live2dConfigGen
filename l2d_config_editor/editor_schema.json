@@ -1,12 +1,10 @@
 {
   "required_meta_fields": [
-    "author",
     "ship_skin_id",
     "memo",
     "CharName"
   ],
   "required_meta_labels": {
-    "author": "作者",
     "ship_skin_id": "角色ID",
     "memo": "角色资源名",
     "CharName": "角色名"
@@ -329,99 +327,43 @@
         "parts_data",
         "range"
       ]
-    },
-    {
-      "name": "duplicate_initial",
-      "fields": []
     }
   ],
   "nodes": {
-    "Initial": {
-      "title": "初始节点",
-      "category": "meta",
+    "Idle0": {
+      "title": "idle0（默认待机）",
+      "category": "root",
       "copyable": false,
       "quick_create": false,
       "resizable": false,
-      "header_color": "#4f7c6a",
-      "body_color": "#2b4139",
-      "accent_color": "#6fc49e",
-      "fields": [
-        {
-          "key": "tips",
-          "label": "备注",
-          "editor": "text",
-          "default": "",
-          "placeholder": "（非必填）",
-          "show_in_modes": [
-            "simple",
-            "advanced"
-          ]
-        },
-        {
-          "key": "version",
-          "label": "版本",
-          "editor": "date",
-          "default": "2099-09-09",
-          "show_in_modes": [
-            "simple",
-            "advanced"
-          ]
-        },
-        {
-          "key": "CharName",
-          "label": "角色名",
-          "editor": "text",
-          "default": "",
-          "placeholder": "如 信浓泳装",
-          "show_in_modes": [
-            "simple",
-            "advanced"
-          ]
-        },
-        {
-          "key": "memo",
-          "label": "角色资源名",
-          "editor": "text",
-          "default": "",
-          "placeholder": "如 xinnong_3",
-          "show_in_modes": [
-            "simple",
-            "advanced"
-          ]
-        },
-        {
-          "key": "ship_skin_id",
-          "label": "角色ID（找策划要）",
-          "editor": "int",
-          "default": 0,
-          "show_in_modes": [
-            "simple",
-            "advanced"
-          ]
-        },
-        {
-          "key": "react_condition",
-          "label": "允许目光拖拽的待机",
-          "editor": "text",
-          "default": "0",
-          "placeholder": "一般情况下填 0 就可以",
-          "show_in_modes": [
-            "simple",
-            "advanced"
-          ]
-        },
-        {
-          "key": "author",
-          "label": "作者",
-          "editor": "text",
-          "default": "",
-          "placeholder": "君の名は。",
-          "show_in_modes": [
-            "simple",
-            "advanced"
-          ]
-        }
-      ]
+      "header_color": "#315847",
+      "body_color": "#13251f",
+      "accent_color": "#5fc992",
+      "fields": []
+    },
+    "ReturnDefaultIdle": {
+      "title": "返回默认待机",
+      "inherits_fields_from": "TouchIdle",
+      "exclude_fields": [
+        "action_trigger_active",
+        "action_trigger_active_kind_ui",
+        "action_trigger_active_reserved_ui"
+      ],
+      "category": "function",
+      "copyable": true,
+      "quick_create": true,
+      "resizable": false,
+      "header_color": "#315847",
+      "body_color": "#13251f",
+      "accent_color": "#5fc992",
+      "auto_rules": {
+        "draw_template": "TouchIdle{sequence}",
+        "parameter_template": "Paramtouch_idle{sequence}",
+        "action_name_template": "touch_idle{sequence}",
+        "use_sequence_for_target_idle": false,
+        "supports_quick_create": true,
+        "fixed_target_idle": 0
+      }
     },
     "TouchIdle": {
       "title": "TouchIdle",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import re
 import uuid
 from dataclasses import asdict
@@ -13,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import (
+    CanvasImageRecord,
     CanvasViewState,
     ConnectionRecord,
     CsvPreviewRow,
@@ -26,6 +28,12 @@ from .models import (
     ValidationIssue,
 )
 from .schema import EditorSchema, FieldSchema, NodeSchema, load_editor_schema
+from .reference_images import (
+    MAX_DOCUMENT_REFERENCE_IMAGE_BYTES,
+    MAX_DOCUMENT_REFERENCE_IMAGE_PIXELS,
+    MAX_REFERENCE_IMAGE_COUNT,
+    canonicalize_reference_image,
+)
 
 RANGE_PATTERN = re.compile(r"^\{\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\}$")
 ACTION_NAME_PATTERN = re.compile(r"action\s*=\s*'([^']*)'")
@@ -48,6 +56,7 @@ HIDDEN_NODE_FIELDS = {
     "_table_text_color",
 }
 EDITOR_DOCUMENT_SIGNATURE = "l2d_config_editor/v1"
+EDITOR_DOCUMENT_FORMAT_VERSION = 2
 RESERVED_FIELD_KEYS = (
     "draw_able_name",
     "parameter",
@@ -57,12 +66,6 @@ RESERVED_FIELD_KEYS = (
     "id",
 )
 CSV_TEMPLATE_FILES = ("(full)ship_l2d.csv", "ship_l2d.csv")
-TEMPLATE_CSV_COLUMN_ALIASES = {
-    "version": ("版本", "version"),
-    "char_name": ("角色名", "charname", "char_name"),
-    "memo": ("角色资源名", "资源名", "memo"),
-    "ship_skin_id": ("角色id", "角色ID", "ship_skin_id", "shipskinid"),
-}
 
 
 NODE_THEME_FIELD_KEYS = ("theme_body_color", "theme_border_color", "theme_text_color")
@@ -118,7 +121,7 @@ def ensure_parameter_table_metadata(node: NodeRecord) -> None:
             node.fields[key] = value
     try:
         node.fields[TABLE_ORDER_FIELD] = int(node.fields.get(TABLE_ORDER_FIELD, 0))
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         node.fields[TABLE_ORDER_FIELD] = 0
 
 
@@ -235,6 +238,7 @@ def default_node_theme(schema: EditorSchema, node: NodeRecord) -> dict[str, str]
     palette_by_type = {
         "Initial": {"body": "#13251f", "border": "#5fc992", "text": "#f3fcf7"},
         "TouchIdle": {"body": "#071b2d", "border": "#25b7ff", "text": "#e8f8ff"},
+        "ReturnDefaultIdle": {"body": "#13251f", "border": "#5fc992", "text": "#f3fcf7"},
         "TouchDrag": {"body": "#251f38", "border": "#b5a1ff", "text": "#faf7ff"},
         "ParameterTrigger": {"body": "#071b2d", "border": "#25b7ff", "text": "#e8f8ff"},
         "DrawFrame": {"body": "#12191f", "border": "#7aa6c2", "text": "#d9e8f3"},
@@ -264,6 +268,9 @@ def default_node_theme(schema: EditorSchema, node: NodeRecord) -> dict[str, str]
 
 
 def apply_node_appearance_defaults(schema: EditorSchema, node: NodeRecord) -> None:
+    if _node_schema(schema, node.type).category == "root":
+        node.fields.clear()
+        return
     defaults = default_node_theme(schema, node)
     for key, value in defaults.items():
         if not _valid_color_or_none(node.fields.get(key)):
@@ -461,7 +468,7 @@ def _classify_action_trigger_active(value: Any) -> str:
 
 
 def _refresh_trigger_interface_fields(node: NodeRecord) -> None:
-    if node.type not in {"TouchIdle", "TouchDrag", "ParameterTrigger"}:
+    if node.type not in {"TouchIdle", "ReturnDefaultIdle", "TouchDrag", "ParameterTrigger"}:
         return
     action_raw = _text(node.fields.get("action_trigger", "")).strip()
     active_raw = _text(node.fields.get("action_trigger_active", "")).strip()
@@ -474,6 +481,8 @@ def _refresh_trigger_interface_fields(node: NodeRecord) -> None:
 
 
 def normalized_target_idle(node: NodeRecord) -> int:
+    if node.type == "ReturnDefaultIdle":
+        return 0
     raw_target_idle = _target_idle_from_raw(node.fields.get("action_trigger_active"))
     if raw_target_idle is not None:
         return raw_target_idle
@@ -509,17 +518,22 @@ def _next_available_slot(used_slots: set[int]) -> int:
 
 
 TOUCHDRAG_VALUE_NAMESPACE_TYPES = {"TouchDrag", "ParameterTrigger"}
+TOUCHIDLE_NAMESPACE_TYPES = {"TouchIdle", "ReturnDefaultIdle"}
 
 
 def _type_slot_namespace_types(node_type: str) -> set[str]:
     if node_type in TOUCHDRAG_VALUE_NAMESPACE_TYPES:
         return TOUCHDRAG_VALUE_NAMESPACE_TYPES
+    if node_type in TOUCHIDLE_NAMESPACE_TYPES:
+        return TOUCHIDLE_NAMESPACE_TYPES
     return {node_type}
 
 
 def _type_slot_namespace_key(node_type: str) -> str:
     if node_type in TOUCHDRAG_VALUE_NAMESPACE_TYPES:
         return "TouchDrag"
+    if node_type in TOUCHIDLE_NAMESPACE_TYPES:
+        return "TouchIdle"
     return node_type
 
 
@@ -565,6 +579,7 @@ def allocate_export_slot(document: DocumentModel, *, exclude_uuid: str | None = 
 def backfill_slots(schema: EditorSchema, document: DocumentModel) -> None:
     function_types = set(function_node_types(schema))
     seen_type_slots: dict[str, set[int]] = {}
+    seen_export_slots: set[int] = set()
     for node in document.nodes:
         if node.type not in function_types:
             continue
@@ -574,8 +589,13 @@ def backfill_slots(schema: EditorSchema, document: DocumentModel) -> None:
         if not isinstance(current_slot, int) or current_slot <= 0 or current_slot in namespace_seen:
             node.type_slot = allocate_type_slot(document, node.type, exclude_uuid=node.uuid)
         namespace_seen.add(int(node.type_slot))
-        if not isinstance(node.export_slot, int) or node.export_slot <= 0:
+        if (
+            not isinstance(node.export_slot, int)
+            or node.export_slot <= 0
+            or node.export_slot in seen_export_slots
+        ):
             node.export_slot = allocate_export_slot(document, exclude_uuid=node.uuid)
+        seen_export_slots.add(int(node.export_slot))
 
 
 def _next_sequence_no(document: DocumentModel, node_type: str) -> int:
@@ -587,14 +607,14 @@ def _node_schema(schema: EditorSchema, node_type: str) -> NodeSchema:
     return schema.nodes[node_type]
 
 
-def _sequence_action_name(node_schema: NodeSchema, target_idle: int) -> str:
+def _sequence_action_name(node_schema: NodeSchema, target_idle: int, sequence: int | None = None) -> str:
     template = node_schema.auto_rules.action_name_template or "touch_idle{target_idle}"
-    return template.format(target_idle=target_idle)
+    return template.format(target_idle=target_idle, sequence=target_idle if sequence is None else sequence)
 
 
-def _expected_parameter(node_schema: NodeSchema, target_idle: int) -> str:
+def _expected_parameter(node_schema: NodeSchema, target_idle: int, *, sequence: int | None = None) -> str:
     template = node_schema.auto_rules.parameter_template
-    return template.format(target_idle=target_idle, sequence=target_idle)
+    return template.format(target_idle=target_idle, sequence=target_idle if sequence is None else sequence)
 
 
 def _apply_parameter_table_generated_names(schema: EditorSchema, node: NodeRecord, *, force_parameter: bool = True) -> None:
@@ -610,14 +630,23 @@ def _apply_parameter_table_generated_names(schema: EditorSchema, node: NodeRecor
         )
         node.manual_fields.discard("draw_able_name")
     if force_parameter or "parameter" not in node.manual_fields:
-        node.fields["parameter"] = _expected_parameter(node_schema, target_idle)
+        node.fields["parameter"] = _expected_parameter(node_schema, target_idle, sequence=sequence)
         node.manual_fields.discard("parameter")
 
 
 def _animated_action(
-    schema: EditorSchema, node_schema: NodeSchema, target_idle: int, action_name: str | None = None
+    schema: EditorSchema,
+    node_schema: NodeSchema,
+    target_idle: int,
+    action_name: str | None = None,
+    *,
+    sequence: int | None = None,
 ) -> tuple[str, str]:
-    resolved_action_name = action_name if action_name is not None else _sequence_action_name(node_schema, target_idle)
+    resolved_action_name = (
+        action_name
+        if action_name is not None
+        else _sequence_action_name(node_schema, target_idle, sequence=sequence)
+    )
     ignore_values = "" if target_idle == 0 else _format_ignore_values(schema.default_ignore)
     action = (
         schema.animated_action_template.replace("{target_idle}", str(target_idle))
@@ -644,10 +673,6 @@ def build_csv_export_filename(prefix: str = "ship_l2d_export") -> str:
     return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
 
-def _normalized_template_header(value: Any) -> str:
-    return str(value or "").strip().replace(" ", "").replace("_", "").lower()
-
-
 def build_template_version_folder_name(version: Any) -> str:
     text = str(version or "").strip()
     if not text:
@@ -662,56 +687,6 @@ def build_template_version_folder_name(version: Any) -> str:
     return sanitized or "unknown_version"
 
 
-def load_template_csv_rows(path: str | Path) -> list[dict[str, Any]]:
-    last_error: Exception | None = None
-    rows: list[list[str]] | None = None
-    for encoding in ("utf-8-sig", "utf-8", "gb18030"):
-        try:
-            with Path(path).open("r", encoding=encoding, newline="") as handle:
-                rows = list(csv.reader(handle))
-            break
-        except UnicodeDecodeError as exc:
-            last_error = exc
-    if rows is None:
-        raise ValueError(f"无法读取 CSV：{last_error}") from last_error
-    if not rows:
-        return []
-    header_map = {_normalized_template_header(value): index for index, value in enumerate(rows[0])}
-    resolved_indexes: dict[str, int] = {}
-    missing_columns: list[str] = []
-    for key, aliases in TEMPLATE_CSV_COLUMN_ALIASES.items():
-        index = next((header_map[alias] for alias in (_normalized_template_header(item) for item in aliases) if alias in header_map), None)
-        if index is None:
-            missing_columns.append(aliases[0])
-            continue
-        resolved_indexes[key] = index
-    if missing_columns:
-        raise ValueError(f"CSV 缺少必要列：{'、'.join(missing_columns)}")
-    result: list[dict[str, Any]] = []
-    for row in rows[1:]:
-        if not any(str(cell or "").strip() for cell in row):
-            continue
-        version = str(row[resolved_indexes["version"]] if resolved_indexes["version"] < len(row) else "").strip()
-        char_name = str(row[resolved_indexes["char_name"]] if resolved_indexes["char_name"] < len(row) else "").strip()
-        memo = str(row[resolved_indexes["memo"]] if resolved_indexes["memo"] < len(row) else "").strip()
-        ship_skin_id_text = str(row[resolved_indexes["ship_skin_id"]] if resolved_indexes["ship_skin_id"] < len(row) else "").strip()
-        if not version and not char_name and not memo and not ship_skin_id_text:
-            continue
-        try:
-            ship_skin_id = int(ship_skin_id_text or "0")
-        except ValueError as exc:
-            raise ValueError(f"角色 ID 不是有效整数：{ship_skin_id_text}") from exc
-        result.append(
-            {
-                "version": version,
-                "CharName": char_name,
-                "memo": memo,
-                "ship_skin_id": ship_skin_id,
-            }
-        )
-    return result
-
-
 def create_template_document(
     schema: EditorSchema,
     *,
@@ -719,17 +694,22 @@ def create_template_document(
     char_name: str,
     memo: str,
     ship_skin_id: int,
+    author: str = "",
+    tips: str = "",
+    react_condition: str = "",
+    default_state: str = "idle0",
 ) -> DocumentModel:
     document = create_document(schema)
-    initial = next(node for node in document.nodes if node.type == "Initial")
-    initial.fields["version"] = str(version or "").strip()
-    initial.fields["author"] = ""
-    initial.fields["ship_skin_id"] = int(ship_skin_id or 0)
-    initial.fields["memo"] = str(memo or "").strip()
-    initial.fields["react_condition"] = ""
-    initial.fields["tips"] = ""
-    initial.fields["CharName"] = str(char_name or "").strip()
-    sync_meta_from_initial(document)
+    document.meta.version = str(version or "").strip()
+    document.meta.author = str(author or "").strip()
+    document.meta.ship_skin_id = int(ship_skin_id or 0)
+    document.meta.memo = str(memo or "").strip()
+    # Idle0 is the sole graph root, so legacy/default-state input is normalized
+    # to the corresponding hidden metadata value.
+    document.meta.default_state = "idle0"
+    document.meta.react_condition = normalize_react_condition_list(react_condition)
+    document.meta.tips = str(tips or "").strip()
+    document.meta.CharName = str(char_name or "").strip()
     reassign_function_ids(schema, document)
     recompute_document_state(schema, document)
     return document
@@ -814,11 +794,15 @@ def _manual_sequence_defaults(schema: EditorSchema, node: NodeRecord) -> None:
 
 
 def _infer_expected_actions(schema: EditorSchema, node: NodeRecord) -> tuple[str, str]:
-    target_idle = _coerce_int(node.fields.get("target_idle"), normalized_target_idle(node))
     node_schema = _node_schema(schema, node.type)
-    if node.type == "TouchIdle" and node.fields.get("transition_type") == "hard":
+    fixed_target = node_schema.auto_rules.fixed_target_idle
+    target_idle = fixed_target if fixed_target is not None else _coerce_int(
+        node.fields.get("target_idle"), normalized_target_idle(node)
+    )
+    if node.type in {"TouchIdle", "ReturnDefaultIdle"} and node.fields.get("transition_type") == "hard":
         return _hard_cut_action(schema, target_idle)
-    return _animated_action(schema, node_schema, target_idle)
+    sequence = int(node.type_slot or node.sequence_no or target_idle or 1)
+    return _animated_action(schema, node_schema, target_idle, sequence=sequence)
 
 
 def _linked_draw_name(node_schema: NodeSchema, target_idle: int) -> str:
@@ -852,7 +836,11 @@ def _apply_simple_linked_field_updates(
     if preserve_key == "parameter":
         node.manual_fields.add("parameter")
     else:
-        node.fields["parameter"] = _expected_parameter(node_schema, target_idle)
+        node.fields["parameter"] = _expected_parameter(
+            node_schema,
+            target_idle,
+            sequence=int(node.type_slot or node.sequence_no or target_idle),
+        )
         node.manual_fields.discard("parameter")
     if _is_touchdrag_value_like(node):
         node.fields["target_idle"] = 0
@@ -886,9 +874,14 @@ def infer_manual_fields(schema: EditorSchema, node: NodeRecord, document: Docume
     if node.type not in function_node_types(schema):
         return
     node_schema = _node_schema(schema, node.type)
-    target_idle = normalized_target_idle(node)
+    fixed_target = node_schema.auto_rules.fixed_target_idle
+    target_idle = fixed_target if fixed_target is not None else normalized_target_idle(node)
     node.fields["target_idle"] = target_idle
-    expected_parameter = _expected_parameter(node_schema, target_idle)
+    expected_parameter = _expected_parameter(
+        node_schema,
+        target_idle,
+        sequence=int(node.type_slot or node.sequence_no or target_idle),
+    )
     if str(node.fields.get("parameter", "")) != expected_parameter:
         node.manual_fields.add("parameter")
     else:
@@ -916,14 +909,128 @@ def apply_sequence_defaults(schema: EditorSchema, document: DocumentModel, node:
         return
     node_schema = _node_schema(schema, node.type)
     sequence = node.type_slot or node.sequence_no or 1
-    target_idle = sequence if node_schema.auto_rules.use_sequence_for_target_idle else _coerce_int(node.fields.get("target_idle"), sequence)
+    fixed_target = node_schema.auto_rules.fixed_target_idle
+    target_idle = (
+        fixed_target
+        if fixed_target is not None
+        else (
+            sequence
+            if node_schema.auto_rules.use_sequence_for_target_idle
+            else _coerce_int(node.fields.get("target_idle"), sequence)
+        )
+    )
     node.fields["draw_able_name"] = node_schema.auto_rules.draw_template.format(sequence=sequence, target_idle=target_idle)
     node.fields["target_idle"] = target_idle
-    node.fields["parameter"] = _expected_parameter(node_schema, target_idle)
+    node.fields["parameter"] = _expected_parameter(node_schema, target_idle, sequence=int(sequence))
     action, active = _infer_expected_actions(schema, node)
     node.fields["action_trigger"] = action
     node.fields["action_trigger_active"] = active
     node.manual_fields.difference_update({"parameter", "action_trigger"})
+    _refresh_trigger_interface_fields(node)
+
+
+def _increment_manual_sequence_value(
+    document: DocumentModel,
+    key: str,
+    value: Any,
+    offset: int,
+) -> Any:
+    text = _text(value)
+    action_name = _action_name_from_raw(text) if key == "action_trigger" else text
+    match = TRAILING_INT_PATTERN.search(action_name)
+    if not match:
+        return value
+    occupied = {
+        _text(existing.fields.get(key))
+        for existing in document.nodes
+        if _text(existing.fields.get(key)).strip()
+    }
+    increment = max(1, int(offset))
+    while True:
+        replacement = str(_coerce_int(match.group(1), 0) + increment)
+        incremented_name = action_name[: match.start(1)] + replacement + action_name[match.end(1) :]
+        candidate = (
+            text.replace(f"'{action_name}'", f"'{incremented_name}'", 1)
+            if key == "action_trigger"
+            else incremented_name
+        )
+        if candidate not in occupied:
+            return candidate
+        increment += 1
+
+
+def apply_clone_sequence_fields(
+    schema: EditorSchema,
+    document: DocumentModel,
+    node: NodeRecord,
+    source: NodeRecord,
+    *,
+    source_type_slot: int | None = None,
+) -> None:
+    """Regenerate canonical sequence fields while advancing explicit numbered overrides."""
+
+    if node.type not in function_node_types(schema):
+        return
+    node_schema = _node_schema(schema, node.type)
+    sequence = int(node.type_slot or node.sequence_no or 1)
+    source_sequence = int(source_type_slot or source.type_slot or source.sequence_no or 0)
+    fixed_target = node_schema.auto_rules.fixed_target_idle
+    source_target = fixed_target if fixed_target is not None else normalized_target_idle(source)
+    canonical_source_target = (
+        fixed_target
+        if fixed_target is not None
+        else source_sequence if node_schema.auto_rules.use_sequence_for_target_idle else source_target
+    )
+    inferred_manual_fields = set(source.manual_fields)
+    expected_source_draw = node_schema.auto_rules.draw_template.format(
+        sequence=source_sequence or 1,
+        target_idle=canonical_source_target,
+    )
+    expected_source_parameter = _expected_parameter(
+        node_schema,
+        canonical_source_target,
+        sequence=source_sequence or 1,
+    )
+    expected_source_action, _expected_source_active = _infer_expected_actions(schema, source)
+    for key, expected in (
+        ("draw_able_name", expected_source_draw),
+        ("parameter", expected_source_parameter),
+        ("action_trigger", expected_source_action),
+    ):
+        if _text(source.fields.get(key)) != _text(expected):
+            inferred_manual_fields.add(key)
+    if fixed_target is not None:
+        target_idle = fixed_target
+    elif node_schema.auto_rules.use_sequence_for_target_idle and source_target == canonical_source_target:
+        target_idle = sequence
+    else:
+        target_idle = source_target
+
+    node.fields["draw_able_name"] = node_schema.auto_rules.draw_template.format(
+        sequence=sequence,
+        target_idle=target_idle,
+    )
+    node.fields["target_idle"] = target_idle
+    node.fields["parameter"] = _expected_parameter(node_schema, target_idle, sequence=sequence)
+    if _is_touchdrag_value_like(node):
+        node.fields["target_idle"] = 0
+        node.fields["action_trigger"] = ""
+        node.fields["action_trigger_active"] = ""
+    else:
+        action, active = _infer_expected_actions(schema, node)
+        node.fields["action_trigger"] = action
+        node.fields["action_trigger_active"] = active
+
+    offset = max(1, sequence - source_sequence) if source_sequence else 1
+    node.manual_fields = inferred_manual_fields
+    for key in ("draw_able_name", "parameter", "action_trigger"):
+        if key in inferred_manual_fields:
+            node.fields[key] = _increment_manual_sequence_value(
+                document,
+                key,
+                source.fields.get(key, ""),
+                offset,
+            )
     _refresh_trigger_interface_fields(node)
 
 
@@ -976,13 +1083,20 @@ def apply_auto_rules(
 ) -> None:
     if node.type == "Initial":
         return
+    if _node_schema(schema, node.type).category == "root":
+        node.fields.clear()
+        return
     if "parts_data" in node.fields:
         node.fields["parts_data"] = canonicalize_parts_data(node.fields.get("parts_data", ""))
     _update_drag_offsets(node, changed_key, source_mode)
     _update_range_abs(node)
     if node.type not in function_node_types(schema):
         return
-    if source_mode == "simple" and node_numeric_linkage_enabled(node):
+    node_schema = _node_schema(schema, node.type)
+    fixed_target = node_schema.auto_rules.fixed_target_idle
+    if fixed_target is not None:
+        node.fields["target_idle"] = fixed_target
+    if fixed_target is None and source_mode == "simple" and node_numeric_linkage_enabled(node):
         linked_target_idle = _linked_target_idle_for_field(node, changed_key)
         if linked_target_idle is not None:
             _apply_simple_linked_field_updates(
@@ -992,7 +1106,7 @@ def apply_auto_rules(
                 preserve_key=changed_key,
             )
             return
-    target_idle = (
+    target_idle = fixed_target if fixed_target is not None else (
         _coerce_int(node.fields.get("target_idle"), normalized_target_idle(node))
         if changed_key in {"target_idle", "transition_type"}
         else normalized_target_idle(node)
@@ -1008,12 +1122,22 @@ def apply_auto_rules(
         node.manual_fields.discard("action_trigger")
         _refresh_trigger_interface_fields(node)
         return
+    if fixed_target is not None:
+        expected_action, expected_active = _infer_expected_actions(schema, node)
+        if force_generated or "action_trigger" not in node.manual_fields:
+            node.fields["action_trigger"] = expected_action
+        node.fields["action_trigger_active"] = expected_active
+        _refresh_trigger_interface_fields(node)
+        return
     if not node_numeric_linkage_enabled(node):
         _refresh_trigger_interface_fields(node)
         return
-    node_schema = _node_schema(schema, node.type)
     if force_generated or "parameter" not in node.manual_fields:
-        node.fields["parameter"] = _expected_parameter(node_schema, target_idle)
+        node.fields["parameter"] = _expected_parameter(
+            node_schema,
+            target_idle,
+            sequence=int(node.type_slot or node.sequence_no or target_idle),
+        )
     expected_action, expected_active = _infer_expected_actions(schema, node)
     if force_generated or "action_trigger" not in node.manual_fields:
         node.fields["action_trigger"] = expected_action
@@ -1082,41 +1206,26 @@ def create_node(
 
 
 def sync_meta_from_initial(document: DocumentModel) -> None:
-    initial = next((node for node in document.nodes if node.type == "Initial"), None)
-    if not initial:
-        return
-    document.meta = MetaRecord(
-        version=str(initial.fields.get("version", "2099-09-09")),
-        author=str(initial.fields.get("author", "")),
-        ship_skin_id=int(initial.fields.get("ship_skin_id") or 0),
-        memo=str(initial.fields.get("memo", "")),
-        react_condition=normalize_react_condition_list(initial.fields.get("react_condition", "")),
-        tips=str(initial.fields.get("tips", "")),
-        CharName=str(initial.fields.get("CharName", "")),
-    )
+    """Legacy API retained; metadata is now the sole runtime source of truth."""
+
+    del document
 
 
 def sync_initial_from_meta(schema: EditorSchema, document: DocumentModel) -> None:
-    initial = next((node for node in document.nodes if node.type == "Initial"), None)
-    if not initial:
-        initial = create_node(schema, document, "Initial", (60.0, 60.0))
-        document.nodes.insert(0, initial)
-    initial.fields.update(
-        {
-            "version": document.meta.version,
-            "author": document.meta.author,
-            "ship_skin_id": document.meta.ship_skin_id,
-            "memo": document.meta.memo,
-            "react_condition": document.meta.react_condition,
-            "tips": document.meta.tips,
-            "CharName": document.meta.CharName,
-        }
-    )
-    initial.fields.pop("defaultState", None)
+    """Legacy API retained without recreating the removed Initial node."""
+
+    idle0 = next((node for node in document.nodes if node.type == "Idle0"), None)
+    legacy_initials = [node for node in document.nodes if node.type == "Initial"]
+    if idle0 is None and legacy_initials:
+        idle0 = legacy_initials[0]
+        idle0.type = "Idle0"
+        idle0.fields.clear()
+    document.nodes = [node for node in document.nodes if node.type != "Initial"]
+    if idle0 is None:
+        document.nodes.insert(0, create_node(schema, document, "Idle0", (72.0, 72.0)))
 
 
 def recompute_document_state(schema: EditorSchema, document: DocumentModel) -> None:
-    sync_meta_from_initial(document)
     missing: list[str] = []
     for field in schema.required_meta_fields:
         value = getattr(document.meta, field, None)
@@ -1133,19 +1242,28 @@ def recompute_document_state(schema: EditorSchema, document: DocumentModel) -> N
 def create_document(schema: EditorSchema | None = None) -> DocumentModel:
     active_schema = schema or get_default_schema()
     document = DocumentModel(global_mode="simple")
-    document.nodes.append(create_node(active_schema, document, "Initial", (72.0, 72.0)))
-    sync_meta_from_initial(document)
+    document.nodes.append(create_node(active_schema, document, "Idle0", (72.0, 72.0)))
     reassign_function_ids(active_schema, document)
     recompute_document_state(active_schema, document)
     return document
 
 
 def normalized_document_groups(document: DocumentModel) -> list[GroupRecord]:
-    existing_node_ids = {node.uuid for node in document.nodes}
+    existing_node_ids = {
+        node.uuid
+        for node in document.nodes
+        if node.type not in {"Initial", "Idle0"}
+    }
+    claimed_node_ids: set[str] = set()
     normalized: list[GroupRecord] = []
     for group in document.groups:
-        member_ids = [node_uuid for node_uuid in group.node_uuids if node_uuid in existing_node_ids]
-        if not member_ids:
+        member_ids: list[str] = []
+        for node_uuid in group.node_uuids:
+            if node_uuid not in existing_node_ids or node_uuid in claimed_node_ids:
+                continue
+            claimed_node_ids.add(node_uuid)
+            member_ids.append(node_uuid)
+        if not member_ids and not (group.ui_position and group.ui_size):
             continue
         normalized.append(
             GroupRecord(
@@ -1155,6 +1273,8 @@ def normalized_document_groups(document: DocumentModel) -> list[GroupRecord]:
                 theme_body_color=group.theme_body_color,
                 theme_border_color=group.theme_border_color,
                 theme_text_color=group.theme_text_color,
+                ui_position=dict(group.ui_position) if group.ui_position else None,
+                ui_size=dict(group.ui_size) if group.ui_size else None,
             )
         )
     return normalized
@@ -1223,7 +1343,6 @@ def groups_from_legacy_drawframes(raw_nodes: list[dict[str, Any]], document: Doc
 
 
 def reassign_function_ids(schema: EditorSchema, document: DocumentModel) -> None:
-    sync_meta_from_initial(document)
     base = document.meta.ship_skin_id or 0
     backfill_slots(schema, document)
     for node in document.nodes:
@@ -1316,7 +1435,6 @@ def _should_persist_target_idle(node: NodeRecord) -> bool:
 
 
 def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[str, Any]:
-    sync_meta_from_initial(document)
     reassign_function_ids(schema, document)
     function_types = set(function_node_types(schema))
     serialized_nodes = []
@@ -1337,6 +1455,8 @@ def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[
             payload["ui_size"] = node.ui_size
         if node.type in function_types:
             payload["numeric_linkage_enabled"] = bool(node.numeric_linkage_enabled)
+        if node.manual_fields:
+            payload["manual_fields"] = sorted(node.manual_fields)
         payload.update(_export_node_fields(node))
         if _should_persist_target_idle(node):
             payload["target_idle"] = _coerce_int(node.fields.get("target_idle"), 0)
@@ -1344,12 +1464,14 @@ def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[
     serialized_groups = [asdict(group) for group in normalized_document_groups(document)]
     return {
         "editor_signature": EDITOR_DOCUMENT_SIGNATURE,
+        "format_version": EDITOR_DOCUMENT_FORMAT_VERSION,
         "global_mode": document.global_mode,
         "interaction_creation_mode": document.interaction_creation_mode,
         "editor_settings": asdict(document.editor_settings),
         "meta": asdict(document.meta),
         "nodes": serialized_nodes,
         "groups": serialized_groups,
+        "canvas_images": [asdict(image) for image in document.canvas_images],
         "connections": [asdict(connection) for connection in document.connections],
         "trash_bin": [asdict(entry) for entry in document.trash_bin],
         "canvas_view": asdict(document.canvas_view),
@@ -1362,6 +1484,57 @@ def save_document(schema: EditorSchema, document: DocumentModel, path: str | Pat
     document.path = str(path)
 
 
+def _finite_float(value: Any, default: float) -> float:
+    try:
+        resolved = float(value)
+    except (TypeError, ValueError):
+        return default
+    return resolved if math.isfinite(resolved) else default
+
+
+def _load_canvas_image_records(payload: list[Any]) -> list[CanvasImageRecord]:
+    records: list[CanvasImageRecord] = []
+    total_bytes = 0
+    total_pixels = 0.0
+    for item in payload[: MAX_REFERENCE_IMAGE_COUNT * 4]:
+        if len(records) >= MAX_REFERENCE_IMAGE_COUNT:
+            break
+        if not isinstance(item, dict):
+            continue
+        canonical = canonicalize_reference_image(
+            str(item.get("data_base64") or ""),
+            str(item.get("mime_type") or "image/png"),
+        )
+        if canonical is None:
+            continue
+        data_base64, size, byte_size = canonical
+        if total_bytes + byte_size > MAX_DOCUMENT_REFERENCE_IMAGE_BYTES:
+            continue
+        pixels = size[0] * size[1]
+        if total_pixels + pixels > MAX_DOCUMENT_REFERENCE_IMAGE_PIXELS:
+            continue
+        position = item.get("ui_position") if isinstance(item.get("ui_position"), dict) else {}
+        opacity = min(1.0, max(0.0, _finite_float(item.get("opacity", 1.0), 1.0)))
+        records.append(
+            CanvasImageRecord(
+                uuid=str(item.get("uuid") or new_uuid()),
+                data_base64=data_base64,
+                mime_type="image/png",
+                name=str(item.get("name") or "参考图")[:256],
+                ui_position={
+                    "x": _finite_float(position.get("x", 0.0), 0.0),
+                    "y": _finite_float(position.get("y", 0.0), 0.0),
+                },
+                ui_size={"width": size[0], "height": size[1]},
+                opacity=opacity,
+                locked=bool(item.get("locked", False)),
+            )
+        )
+        total_bytes += byte_size
+        total_pixels += pixels
+    return records
+
+
 def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if not is_editor_document_payload(payload):
@@ -1369,13 +1542,42 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
     meta_payload = payload.get("meta", {})
     if not isinstance(meta_payload, dict):
         meta_payload = {}
+    raw_nodes = payload.get("nodes", [])
+    if not isinstance(raw_nodes, list):
+        raw_nodes = []
+    legacy_initial = next(
+        (raw for raw in raw_nodes if isinstance(raw, dict) and raw.get("type") == "Initial"),
+        None,
+    )
+    existing_idle = next(
+        (raw for raw in raw_nodes if isinstance(raw, dict) and raw.get("type") == "Idle0"),
+        None,
+    )
+    legacy_meta = {
+        "version": (legacy_initial or {}).get("version", "2099-09-09"),
+        "author": (legacy_initial or {}).get("author", ""),
+        "ship_skin_id": (legacy_initial or {}).get("ship_skin_id", 0),
+        "memo": (legacy_initial or {}).get("memo", ""),
+        "default_state": (legacy_initial or {}).get("defaultState", "idle0"),
+        "react_condition": (legacy_initial or {}).get("react_condition", ""),
+        "tips": (legacy_initial or {}).get("tips", ""),
+        "CharName": (legacy_initial or {}).get("CharName", ""),
+    }
     settings_payload = payload.get("editor_settings", {})
     if not isinstance(settings_payload, dict):
         settings_payload = {}
     groups_payload = payload.get("groups", [])
     if not isinstance(groups_payload, list):
         groups_payload = []
+    canvas_images_payload = payload.get("canvas_images", [])
+    if not isinstance(canvas_images_payload, list):
+        canvas_images_payload = []
     meta_keys = set(MetaRecord.__dataclass_fields__.keys())
+    resolved_meta = {
+        key: meta_payload[key] if key in meta_payload else legacy_meta[key]
+        for key in meta_keys
+    }
+    resolved_meta["default_state"] = "idle0"
     document = DocumentModel(
         global_mode=str(payload.get("global_mode", "simple")),
         interaction_creation_mode=str(payload.get("interaction_creation_mode", "auto") or "auto"),
@@ -1383,7 +1585,8 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
             numeric_linkage_enabled=bool(settings_payload.get("numeric_linkage_enabled", False)),
             trash_enabled=bool(settings_payload.get("trash_enabled", False)),
         ),
-        meta=MetaRecord(**{key: value for key, value in meta_payload.items() if key in meta_keys}),
+        meta=MetaRecord(**resolved_meta),
+        canvas_images=_load_canvas_image_records(canvas_images_payload),
         connections=[ConnectionRecord(**item) for item in payload.get("connections", [])],
         trash_bin=[TrashEntry(**item) for item in payload.get("trash_bin", [])],
         canvas_view=CanvasViewState(**payload.get("canvas_view", {})),
@@ -1391,26 +1594,43 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
     )
     function_types = set(function_node_types(schema))
     sequence_map: dict[str, int] = {}
-    raw_nodes = payload.get("nodes", [])
+    legacy_return_action_uuids: set[str] = set()
+    preferred_root_node: NodeRecord | None = None
     for raw in raw_nodes:
+        if not isinstance(raw, dict) or "type" not in raw:
+            continue
+        raw_node_type = raw["type"]
+        node_type = "Idle0" if raw_node_type == "Initial" else raw_node_type
         fields = {
             key: value
             for key, value in raw.items()
-            if key not in {"uuid", "type", "ui_position", "ui_size", "mode_variant", "locked", "numeric_linkage_enabled"}
+            if key
+            not in {
+                "uuid",
+                "type",
+                "ui_position",
+                "ui_size",
+                "mode_variant",
+                "type_slot",
+                "export_slot",
+                "locked",
+                "numeric_linkage_enabled",
+                "manual_fields",
+            }
         }
-        node_type = raw["type"]
+        if node_type == "Idle0":
+            fields = {}
         if node_type == "DrawFrame":
             continue
         missing_parameter_table_id = node_type == "ParameterTrigger" and not str(fields.get(TABLE_ID_FIELD) or "").strip()
-        if node_type == "Initial":
-            fields.pop("defaultState", None)
         if "target_idle" not in fields:
             raw_target_idle = _target_idle_from_raw(fields.get("action_trigger_active"))
             if raw_target_idle is not None:
                 fields["target_idle"] = raw_target_idle
         sequence_map[node_type] = sequence_map.get(node_type, 0) + 1
+        node_uuid = raw.get("uuid") or new_uuid()
         node = NodeRecord(
-            uuid=raw.get("uuid") or new_uuid(),
+            uuid=node_uuid,
             type=node_type,
             fields=fields,
             ui_position=raw.get("ui_position", {"x": 0.0, "y": 0.0}),
@@ -1424,16 +1644,59 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
                 if node_type in function_types
                 else False
             ),
+            manual_fields={str(key) for key in raw.get("manual_fields", []) if str(key or "").strip()},
         )
+        if (
+            node.type == "ReturnDefaultIdle"
+            and node.fields.get("transition_type", "animated") != "hard"
+            and "action_trigger" not in node.manual_fields
+            and str(node.fields.get("action_trigger", "")).strip()
+            == _animated_action(schema, _node_schema(schema, node.type), 0, action_name="touch_idle0")[0]
+        ):
+            legacy_return_action_uuids.add(node.uuid)
         apply_node_appearance_defaults(schema, node)
         sync_comment_legacy_appearance(node)
         ensure_parameter_table_metadata(node)
         if missing_parameter_table_id:
             node.fields.pop(TABLE_ID_FIELD, None)
-        infer_manual_fields(schema, node, document)
+        if "manual_fields" not in raw:
+            infer_manual_fields(schema, node, document)
+        if node.uuid in legacy_return_action_uuids:
+            node.manual_fields.discard("action_trigger")
         apply_auto_rules(schema, document, node, source_mode="advanced", force_generated=False)
         document.nodes.append(node)
+        if raw is existing_idle:
+            preferred_root_node = node
     _restore_missing_parameter_table_groups(document)
+    idle_roots = [node for node in document.nodes if node.type == "Idle0"]
+    if not idle_roots:
+        primary_root = create_node(schema, document, "Idle0", (60.0, 60.0))
+        document.nodes.insert(0, primary_root)
+    else:
+        primary_root = preferred_root_node if preferred_root_node is not None else idle_roots[0]
+    duplicate_roots = [node for node in idle_roots if node is not primary_root]
+    duplicate_root_uuids = {node.uuid for node in duplicate_roots}
+    if duplicate_roots:
+        duplicate_root_object_ids = {id(node) for node in duplicate_roots}
+        document.nodes = [node for node in document.nodes if id(node) not in duplicate_root_object_ids]
+    existing_node_uuids = {node.uuid for node in document.nodes}
+    normalized_connections: list[ConnectionRecord] = []
+    seen_connections: set[tuple[str, str]] = set()
+    for connection in document.connections:
+        from_uuid = primary_root.uuid if connection.from_uuid in duplicate_root_uuids else connection.from_uuid
+        to_uuid = primary_root.uuid if connection.to_uuid in duplicate_root_uuids else connection.to_uuid
+        pair = (from_uuid, to_uuid)
+        if (
+            from_uuid not in existing_node_uuids
+            or to_uuid not in existing_node_uuids
+            or to_uuid == primary_root.uuid
+            or from_uuid == to_uuid
+            or pair in seen_connections
+        ):
+            continue
+        seen_connections.add(pair)
+        normalized_connections.append(ConnectionRecord(from_uuid=from_uuid, to_uuid=to_uuid))
+    document.connections = normalized_connections
     parsed_groups: list[GroupRecord] = []
     for raw_group in groups_payload:
         if not isinstance(raw_group, dict):
@@ -1446,6 +1709,8 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
                 theme_body_color=str(raw_group.get("theme_body_color") or "#dfeada"),
                 theme_border_color=str(raw_group.get("theme_border_color") or "#69b070"),
                 theme_text_color=str(raw_group.get("theme_text_color") or "#ffffff"),
+                ui_position=dict(raw_group["ui_position"]) if isinstance(raw_group.get("ui_position"), dict) else None,
+                ui_size=dict(raw_group["ui_size"]) if isinstance(raw_group.get("ui_size"), dict) else None,
             )
         )
     if parsed_groups:
@@ -1453,8 +1718,11 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
     else:
         document.groups = groups_from_legacy_drawframes(raw_nodes, document)
     document.groups = normalized_document_groups(document)
-    sync_initial_from_meta(schema, document)
     backfill_slots(schema, document)
+    for node in document.nodes:
+        if node.uuid in legacy_return_action_uuids:
+            node.manual_fields.discard("action_trigger")
+            node.fields["action_trigger"] = _infer_expected_actions(schema, node)[0]
     reassign_function_ids(schema, document)
     recompute_document_state(schema, document)
     return document
@@ -1481,7 +1749,6 @@ def _csv_value_for_mapping(mapping, document: DocumentModel, node: NodeRecord) -
 
 
 def document_to_csv_rows(schema: EditorSchema, document: DocumentModel) -> list[CsvPreviewRow]:
-    sync_meta_from_initial(document)
     reassign_function_ids(schema, document)
     rows: list[CsvPreviewRow] = []
     for row_index, node in enumerate(_function_nodes(schema, document)):
@@ -1609,9 +1876,9 @@ def _draw_conflict_issues(schema: EditorSchema, group: list[NodeRecord]) -> list
 
 def validate_document(schema: EditorSchema, document: DocumentModel) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
-    initial_nodes = [node for node in document.nodes if node.type == "Initial"]
-    if len(initial_nodes) > 1:
-        issues.extend(_issue_for_group(schema, "Duplicate Initial nodes", [], initial_nodes))
+    idle0_nodes = [node for node in document.nodes if node.type == "Idle0"]
+    if len(idle0_nodes) != 1:
+        issues.extend(_issue_for_group(schema, "Idle0 root must be unique", [], idle0_nodes))
 
     function_types = set(function_node_types(schema))
     function_nodes = [node for node in document.nodes if node.type in function_types]

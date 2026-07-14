@@ -6,7 +6,8 @@ import os
 import sys
 from pathlib import Path
 
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QSettings
+from PyQt6.QtWidgets import QApplication, QFileDialog
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 
@@ -18,6 +19,7 @@ def _project_root() -> Path:
 
 
 PROJECT_ROOT = _project_root()
+SETTINGS_WORKSPACE_ROOT = "workspace_root"
 
 if __package__ in {None, ""}:
     if str(PROJECT_ROOT) not in sys.path:
@@ -27,6 +29,29 @@ if __package__ in {None, ""}:
 else:
     from .main_window import MainWindow
     from .styles import APP_STYLE
+
+
+def resolve_initial_workspace(default: str | Path) -> Path | None:
+    """Return the persisted workspace, or require a first-run selection."""
+
+    settings = QSettings("OpenAI", "L2DConfigEditor")
+    raw = settings.value(SETTINGS_WORKSPACE_ROOT)
+    if raw not in (None, ""):
+        candidate = Path(str(raw)).expanduser()
+        if candidate.is_dir():
+            return candidate.resolve()
+
+    chosen = QFileDialog.getExistingDirectory(
+        None,
+        "选择 JSON 配置文件工作区",
+        str(Path(default).resolve()),
+    )
+    if not chosen:
+        return None
+    workspace = Path(chosen).resolve()
+    settings.setValue(SETTINGS_WORKSPACE_ROOT, str(workspace))
+    settings.sync()
+    return workspace
 
 
 def main() -> int:
@@ -47,7 +72,10 @@ def main() -> int:
     app.setApplicationName("L2D Config Editor")
     app.setStyle("Fusion")
     app.setStyleSheet(APP_STYLE)
-    window = MainWindow(PROJECT_ROOT)
+    workspace = resolve_initial_workspace(PROJECT_ROOT)
+    if workspace is None:
+        return 0
+    window = MainWindow(workspace, prefer_saved_workspace=False)
     window.show()
     return app.exec()
 

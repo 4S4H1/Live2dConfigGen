@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import copy
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -11,10 +13,13 @@ from PyQt6.QtGui import QUndoStack
 
 from .commands import (
     AddConnectionCommand,
+    AddCanvasImagesCommand,
     AddNodesCommand,
+    MoveCanvasImagesCommand,
     MoveNodeCommand,
     MoveNodesCommand,
     RemoveConnectionCommand,
+    RemoveCanvasImagesCommand,
     RemoveNodesCommand,
     SetGroupsCommand,
     UpdateEditorSettingsCommand,
@@ -26,6 +31,7 @@ from .commands import (
 from .constants import CLIPBOARD_MIME
 from .logic import (
     _should_persist_target_idle,
+    apply_clone_sequence_fields,
     apply_auto_rules,
     apply_node_appearance_defaults,
     create_document,
@@ -62,8 +68,16 @@ from .logic import (
     TABLE_BORDER_COLOR_FIELD,
     TABLE_TEXT_COLOR_FIELD,
 )
-from .models import ConnectionRecord, DocumentModel, EditorPreferences, GroupRecord, NodeRecord
+from .models import CanvasImageRecord, ConnectionRecord, DocumentModel, EditorPreferences, GroupRecord, NodeRecord
 from .perf_tools import get_performance_recorder
+from .reference_images import (
+    MAX_DOCUMENT_REFERENCE_IMAGE_BYTES,
+    MAX_DOCUMENT_REFERENCE_IMAGE_PIXELS,
+    MAX_REFERENCE_IMAGE_BYTES,
+    MAX_REFERENCE_IMAGE_COUNT,
+    canonicalize_reference_image,
+    trusted_reference_image_size,
+)
 from .schema import load_editor_schema
 
 performance_recorder = get_performance_recorder()
@@ -90,6 +104,7 @@ class EditorController(QObject):
     metaActionBlocked = pyqtSignal(str)
     editorSettingsChanged = pyqtSignal(object)
     groupsChanged = pyqtSignal()
+    canvasImagesChanged = pyqtSignal()
 
     def __init__(self, parent: QObject | None = None, schema_path: str | None = None) -> None:
         super().__init__(parent)
@@ -297,6 +312,84 @@ class EditorController(QObject):
     def get_node(self, node_uuid: str) -> NodeRecord | None:
         return next((node for node in self.document.nodes if node.uuid == node_uuid), None)
 
+    def get_canvas_image(self, image_uuid: str) -> CanvasImageRecord | None:
+        return next((image for image in self.document.canvas_images if image.uuid == image_uuid), None)
+
+    def add_canvas_image(
+        self,
+        data_base64: str,
+        size: tuple[float, float],
+        position: tuple[float, float],
+        *,
+        name: str = "参考图",
+        mime_type: str = "image/png",
+    ) -> str | None:
+        if len(self.document.canvas_images) >= MAX_REFERENCE_IMAGE_COUNT:
+            return None
+        try:
+            position_x = float(position[0])
+            position_y = float(position[1])
+        except (IndexError, OverflowError, TypeError, ValueError):
+            return None
+        if not math.isfinite(position_x) or not math.isfinite(position_y):
+            return None
+        canonical = canonicalize_reference_image(data_base64, mime_type)
+        if canonical is None:
+            return None
+        encoded, actual_size, byte_size = canonical
+        current_bytes = sum(
+            trusted_reference_image_size(record.data_base64) or MAX_REFERENCE_IMAGE_BYTES
+            for record in self.document.canvas_images
+        )
+        if current_bytes + byte_size > MAX_DOCUMENT_REFERENCE_IMAGE_BYTES:
+            return None
+        current_pixels = 0.0
+        for record in self.document.canvas_images:
+            try:
+                width = max(1.0, float(record.ui_size.get("width", 1.0)))
+                height = max(1.0, float(record.ui_size.get("height", 1.0)))
+            except (AttributeError, OverflowError, TypeError, ValueError):
+                return None
+            if not math.isfinite(width) or not math.isfinite(height):
+                return None
+            current_pixels += width * height
+        if current_pixels + actual_size[0] * actual_size[1] > MAX_DOCUMENT_REFERENCE_IMAGE_PIXELS:
+            return None
+        image = CanvasImageRecord(
+            uuid=new_uuid(),
+            data_base64=encoded,
+            mime_type="image/png",
+            name=str(name or "参考图"),
+            ui_position={"x": position_x, "y": position_y},
+            ui_size={"width": actual_size[0], "height": actual_size[1]},
+        )
+        self.undo_stack.push(AddCanvasImagesCommand(self, [image]))
+        return image.uuid
+
+    def remove_canvas_images(self, image_uuids: list[str]) -> None:
+        selected = set(image_uuids)
+        images = [image for image in self.document.canvas_images if image.uuid in selected and not image.locked]
+        if images:
+            self.undo_stack.push(RemoveCanvasImagesCommand(self, images))
+
+    def move_canvas_image(self, image_uuid: str, position: tuple[float, float]) -> None:
+        image = self.get_canvas_image(image_uuid)
+        if not image or image.locked:
+            return
+        try:
+            position_x = float(position[0])
+            position_y = float(position[1])
+        except (IndexError, OverflowError, TypeError, ValueError):
+            return
+        if not math.isfinite(position_x) or not math.isfinite(position_y):
+            return
+        old_position = (float(image.ui_position["x"]), float(image.ui_position["y"]))
+        new_position = (position_x, position_y)
+        if old_position != new_position:
+            self.undo_stack.push(
+                MoveCanvasImagesCommand(self, {image_uuid: old_position}, {image_uuid: new_position})
+            )
+
     def set_selected_node(self, node_uuid: str | None) -> None:
         self.selected_node_uuid = node_uuid
         self.selectionChanged.emit(node_uuid)
@@ -309,13 +402,16 @@ class EditorController(QObject):
 
     def can_edit_node(self, node_uuid: str) -> bool:
         node = self.get_node(node_uuid)
-        return bool(node and not node.locked)
+        if not node or node.locked:
+            return False
+        definition = self.schema.nodes.get(node.type)
+        return bool(definition and definition.category not in {"root", "meta"})
 
     def can_create_graph_content(self) -> tuple[bool, str]:
         if self.document.state.is_meta_ready:
             return True, ""
         missing = " / ".join(self.document.state.meta_missing_fields)
-        return False, f"请先在初始节点完成以下字段：{missing}"
+        return False, f"当前配置底座缺少必要信息：{missing}。请通过“批量创建配置底座”重新创建。"
 
     def _emit_meta_blocked(self, reason: str) -> None:
         self.statusMessage.emit(reason)
@@ -328,11 +424,13 @@ class EditorController(QObject):
         node.manual_fields.add("parameter")
 
     def create_node(self, node_type: str, position: tuple[float, float], base_node: NodeRecord | None = None) -> str | None:
-        if node_type != "Initial":
-            allowed, reason = self.can_create_graph_content()
-            if not allowed:
-                self._emit_meta_blocked(reason)
-                return None
+        definition = self.schema.nodes.get(node_type)
+        if definition is None or definition.category in {"root", "meta"}:
+            return None
+        allowed, reason = self.can_create_graph_content()
+        if not allowed:
+            self._emit_meta_blocked(reason)
+            return None
         node = create_node(self.schema, self.document, node_type, position, base_node=base_node)
         self._apply_simple_touchidle_defaults(node)
         self.undo_stack.push(AddNodesCommand(self, [node], []))
@@ -340,6 +438,9 @@ class EditorController(QObject):
         return node.uuid
 
     def create_node_with_connection(self, from_uuid: str, node_type: str, position: tuple[float, float]) -> str | None:
+        definition = self.schema.nodes.get(node_type)
+        if definition is None or definition.category in {"root", "meta"} or self.get_node(from_uuid) is None:
+            return None
         allowed, reason = self.can_create_graph_content()
         if not allowed:
                 self._emit_meta_blocked(reason)
@@ -351,12 +452,21 @@ class EditorController(QObject):
         self.set_selected_node(node.uuid)
         return node.uuid
 
-    def create_group(self, node_uuids: list[str], title: str | None = None) -> str | None:
+    def create_group(
+        self,
+        node_uuids: list[str],
+        title: str | None = None,
+        bounds: tuple[float, float, float, float] | None = None,
+    ) -> str | None:
         unique_ids: list[str] = []
         seen: set[str] = set()
         for node_uuid in node_uuids:
             node = self.get_node(node_uuid)
             if not node or node_uuid in seen:
+                continue
+            if self.schema.nodes[node.type].category == "root":
+                continue
+            if node.type in {"Initial", "Idle0"}:
                 continue
             if node.type == "ParameterTrigger":
                 for row in self.parameter_table_rows(parameter_table_id(node)):
@@ -372,9 +482,29 @@ class EditorController(QObject):
         existing_group_id = self._single_group_for_selection(unique_ids)
         if existing_group_id is not None:
             return existing_group_id
-        group = GroupRecord(uuid=new_uuid(), title=str(title or "").strip() or DEFAULT_GROUP_TITLE, node_uuids=unique_ids)
         old_groups = self.group_records()
-        new_groups = old_groups + [group]
+        ui_position = None
+        ui_size = None
+        if bounds is not None:
+            x, y, width, height = (float(value) for value in bounds)
+            if width > 0.0 and height > 0.0:
+                ui_position = {"x": x, "y": y}
+                ui_size = {"width": width, "height": height}
+        group = GroupRecord(
+            uuid=new_uuid(),
+            title=str(title or "").strip() or DEFAULT_GROUP_TITLE,
+            node_uuids=unique_ids,
+            ui_position=ui_position,
+            ui_size=ui_size,
+        )
+        selected_ids = set(unique_ids)
+        new_groups: list[GroupRecord] = []
+        for current in old_groups:
+            updated = current.clone()
+            updated.node_uuids = [node_uuid for node_uuid in updated.node_uuids if node_uuid not in selected_ids]
+            if updated.node_uuids or (updated.ui_position and updated.ui_size):
+                new_groups.append(updated)
+        new_groups.append(group)
         self.undo_stack.push(SetGroupsCommand(self, old_groups, new_groups, label="创建分组"))
         return group.uuid
 
@@ -393,6 +523,44 @@ class EditorController(QObject):
         self.undo_stack.push(SetGroupsCommand(self, old_groups, new_groups, label="重命名分组"))
         return True
 
+    def initialize_group_geometry(self, group_uuid: str, bounds: tuple[float, float, float, float]) -> GroupRecord | None:
+        group = self.get_group(group_uuid)
+        if not group:
+            return None
+        if not (group.ui_position and group.ui_size):
+            x, y, width, height = (float(value) for value in bounds)
+            if width <= 0.0 or height <= 0.0:
+                return None
+            group.ui_position = {"x": x, "y": y}
+            group.ui_size = {"width": width, "height": height}
+        return group.clone()
+
+    def set_group_geometry(
+        self,
+        group_uuid: str,
+        bounds: tuple[float, float, float, float],
+        label: str = "调整分组范围",
+    ) -> bool:
+        x, y, width, height = (float(value) for value in bounds)
+        if width <= 0.0 or height <= 0.0:
+            return False
+        old_groups = self.group_records()
+        changed = False
+        new_groups: list[GroupRecord] = []
+        for group in old_groups:
+            updated = group.clone()
+            if updated.uuid == group_uuid:
+                position = {"x": x, "y": y}
+                size = {"width": width, "height": height}
+                changed = updated.ui_position != position or updated.ui_size != size
+                updated.ui_position = position
+                updated.ui_size = size
+            new_groups.append(updated)
+        if not changed:
+            return False
+        self.undo_stack.push(SetGroupsCommand(self, old_groups, new_groups, label=label))
+        return True
+
     def remove_group(self, group_uuid: str) -> bool:
         old_groups = self.group_records()
         new_groups = [group.clone() for group in old_groups if group.uuid != group_uuid]
@@ -408,6 +576,8 @@ class EditorController(QObject):
         for node_uuid, target_group_uuid in memberships.items():
             node = self.get_node(node_uuid)
             if not node:
+                continue
+            if self.schema.nodes[node.type].category == "root":
                 continue
             normalized_target = str(target_group_uuid).strip() if target_group_uuid else None
             if normalized_target and normalized_target not in existing_group_ids:
@@ -481,11 +651,16 @@ class EditorController(QObject):
             if connection.from_uuid in node_uuid_set or connection.to_uuid in node_uuid_set
         ]
         trash_entries = [make_trash_entry(self.schema, node) for node in nodes] if self.document.editor_settings.trash_enabled else []
-        self.undo_stack.push(RemoveNodesCommand(self, nodes, connections, trash_entries))
+        self.undo_stack.push(RemoveNodesCommand(self, nodes, connections, trash_entries, self.group_records()))
 
     def update_field(self, node_uuid: str, key: str, value: Any, source_mode: str | None = None) -> None:
         node = self.get_node(node_uuid)
         if not node:
+            return
+        definition = self.schema.nodes[node.type]
+        if definition.category in {"root", "meta"}:
+            return
+        if definition.auto_rules.fixed_target_idle is not None and key in {"target_idle", "action_trigger_active"}:
             return
         if node.locked:
             self.statusMessage.emit("当前节点已锁定")
@@ -502,6 +677,13 @@ class EditorController(QObject):
         node = self.get_node(node_uuid)
         if not node or not values:
             return
+        definition = self.schema.nodes[node.type]
+        if definition.category in {"root", "meta"}:
+            return
+        if definition.auto_rules.fixed_target_idle is not None:
+            values = {key: value for key, value in values.items() if key not in {"target_idle", "action_trigger_active"}}
+            if not values:
+                return
         if node.locked:
             self.statusMessage.emit("当前节点已锁定")
             return
@@ -534,8 +716,18 @@ class EditorController(QObject):
             node = self.get_node(node_uuid)
             if not node or node.locked:
                 continue
+            definition = self.schema.nodes[node.type]
+            if definition.category in {"root", "meta"}:
+                continue
+            editable_values = values
+            if definition.auto_rules.fixed_target_idle is not None:
+                editable_values = {
+                    key: value
+                    for key, value in values.items()
+                    if key not in {"target_idle", "action_trigger_active"}
+                }
             updates: list[tuple[str, Any, Any]] = []
-            for key, value in values.items():
+            for key, value in editable_values.items():
                 normalized_value = normalize_field_input(self.schema, node, key, value)
                 old_value = node.fields.get(key)
                 if old_value != normalized_value:
@@ -570,12 +762,42 @@ class EditorController(QObject):
             return
         self.undo_stack.push(MoveNodesCommand(self, current_positions, new_positions, label=label))
 
+    def move_nodes_with_group_memberships(
+        self,
+        positions: dict[str, tuple[float, float]],
+        memberships: dict[str, str | None],
+        label: str = "移动节点并更新分组",
+    ) -> None:
+        self.undo_stack.beginMacro(label)
+        try:
+            self.move_nodes(positions, label=label)
+            self.set_node_group_memberships(memberships, label="更新分组成员")
+        finally:
+            self.undo_stack.endMacro()
+
+    def move_group_with_nodes(
+        self,
+        group_uuid: str,
+        positions: dict[str, tuple[float, float]],
+        bounds: tuple[float, float, float, float],
+    ) -> None:
+        self.undo_stack.beginMacro("移动分组")
+        try:
+            self.move_nodes(positions, label="移动分组成员")
+            self.set_group_geometry(group_uuid, bounds, label="移动分组范围")
+        finally:
+            self.undo_stack.endMacro()
+
     def add_connection(self, from_uuid: str, to_uuid: str) -> None:
         allowed, reason = self.can_create_graph_content()
         if not allowed:
             self._emit_meta_blocked(reason)
             return
         if from_uuid == to_uuid:
+            return
+        from_node = self.get_node(from_uuid)
+        to_node = self.get_node(to_uuid)
+        if not from_node or not to_node or self.schema.nodes[to_node.type].category == "root":
             return
         if any(connection.from_uuid == from_uuid and connection.to_uuid == to_uuid for connection in self.document.connections):
             return
@@ -621,14 +843,87 @@ class EditorController(QObject):
             if connection.from_uuid in selected_set and connection.to_uuid in selected_set
         ]
         payload = {
+            "clipboard_version": 2,
             "nodes": [self._serialize_node(node) for node in selected_nodes],
             "connections": connections,
             "source_bounds": {"min_x": min_x, "min_y": min_y, "max_x": max_x, "max_y": max_y},
         }
         return json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
+    @staticmethod
+    def _decode_clipboard_document(payload: bytes) -> dict[str, Any]:
+        try:
+            raw = json.loads(payload.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise ValueError("节点剪贴板数据不是有效 JSON") from exc
+        if not isinstance(raw, dict):
+            raise ValueError("节点剪贴板数据必须是对象")
+        raw_nodes = raw.get("nodes", [])
+        raw_connections = raw.get("connections", [])
+        raw_bounds = raw.get("source_bounds", {})
+        if not isinstance(raw_nodes, list) or not isinstance(raw_connections, list) or not isinstance(raw_bounds, dict):
+            raise ValueError("节点剪贴板数据结构无效")
+
+        nodes: list[dict[str, Any]] = []
+        for item in raw_nodes:
+            if not isinstance(item, dict):
+                raise ValueError("节点剪贴板包含无效节点")
+            node_uuid = item.get("uuid")
+            node_type = item.get("type")
+            position = item.get("ui_position", {"x": 0.0, "y": 0.0})
+            if not isinstance(node_uuid, str) or not node_uuid or not isinstance(node_type, str) or not node_type:
+                raise ValueError("节点剪贴板缺少节点标识或类型")
+            if not isinstance(position, dict):
+                raise ValueError("节点剪贴板位置无效")
+            try:
+                position_x = float(position.get("x", 0.0))
+                position_y = float(position.get("y", 0.0))
+            except (OverflowError, TypeError, ValueError) as exc:
+                raise ValueError("节点剪贴板位置无效") from exc
+            if not math.isfinite(position_x) or not math.isfinite(position_y):
+                raise ValueError("节点剪贴板位置无效")
+            ui_size = item.get("ui_size")
+            if ui_size is not None and not isinstance(ui_size, dict):
+                raise ValueError("节点剪贴板尺寸无效")
+            manual_fields = item.get("manual_fields", [])
+            if not isinstance(manual_fields, list) or not all(isinstance(key, str) for key in manual_fields):
+                raise ValueError("节点剪贴板手工字段列表无效")
+            normalized = dict(item)
+            normalized["ui_position"] = {"x": position_x, "y": position_y}
+            if ui_size is not None:
+                try:
+                    width = float(ui_size.get("width", 0.0))
+                    height = float(ui_size.get("height", 0.0))
+                except (OverflowError, TypeError, ValueError) as exc:
+                    raise ValueError("节点剪贴板尺寸无效") from exc
+                if not math.isfinite(width) or not math.isfinite(height) or width <= 0.0 or height <= 0.0:
+                    raise ValueError("节点剪贴板尺寸无效")
+                normalized["ui_size"] = {"width": width, "height": height}
+            nodes.append(normalized)
+
+        connections: list[dict[str, str]] = []
+        for item in raw_connections:
+            if not isinstance(item, dict):
+                raise ValueError("节点剪贴板包含无效连线")
+            from_uuid = item.get("from_uuid")
+            to_uuid = item.get("to_uuid")
+            if not isinstance(from_uuid, str) or not from_uuid or not isinstance(to_uuid, str) or not to_uuid:
+                raise ValueError("节点剪贴板连线端点无效")
+            connections.append({"from_uuid": from_uuid, "to_uuid": to_uuid})
+
+        bounds: dict[str, float] = {}
+        for key in ("min_x", "min_y", "max_x", "max_y"):
+            try:
+                value = float(raw_bounds.get(key, 0.0))
+            except (OverflowError, TypeError, ValueError) as exc:
+                raise ValueError("节点剪贴板范围无效") from exc
+            if not math.isfinite(value):
+                raise ValueError("节点剪贴板范围无效")
+            bounds[key] = value
+        return {**raw, "nodes": nodes, "connections": connections, "source_bounds": bounds}
+
     def clipboard_bounds(self, payload: bytes) -> tuple[float, float, float, float]:
-        raw = json.loads(payload.decode("utf-8"))
+        raw = self._decode_clipboard_document(payload)
         bounds = raw.get("source_bounds") or {}
         return (
             float(bounds.get("min_x", 0.0)),
@@ -638,15 +933,28 @@ class EditorController(QObject):
         )
 
     def deserialize_clipboard(self, payload: bytes, position: tuple[float, float] | None = None) -> tuple[list[NodeRecord], list[ConnectionRecord]]:
-        raw = json.loads(payload.decode("utf-8"))
+        raw = self._decode_clipboard_document(payload)
         nodes: list[NodeRecord] = []
+        staging_document = copy.copy(self.document)
+        staging_document.nodes = list(self.document.nodes)
         uuid_map: dict[str, str] = {}
         table_id_map: dict[str, str] = {}
         source_positions = [item.get("ui_position", {"x": 0.0, "y": 0.0}) for item in raw.get("nodes", [])]
         min_x = min((item.get("x", 0.0) for item in source_positions), default=0.0)
         min_y = min((item.get("y", 0.0) for item in source_positions), default=0.0)
-        base_position = position or (min_x, min_y)
+        if position is None:
+            base_position = (min_x, min_y)
+        else:
+            try:
+                base_position = (float(position[0]), float(position[1]))
+            except (IndexError, OverflowError, TypeError, ValueError) as exc:
+                raise ValueError("节点粘贴位置无效") from exc
+            if not math.isfinite(base_position[0]) or not math.isfinite(base_position[1]):
+                raise ValueError("节点粘贴位置无效")
         for item in raw.get("nodes", []):
+            definition = self.schema.nodes.get(str(item.get("type") or ""))
+            if definition is None or definition.category in {"root", "meta"}:
+                continue
             old_uuid = item["uuid"]
             template = NodeRecord(
                 uuid=new_uuid(),
@@ -654,7 +962,20 @@ class EditorController(QObject):
                 fields={
                     key: value
                     for key, value in item.items()
-                    if key not in {"uuid", "type", "ui_position", "ui_size", "locked", "numeric_linkage_enabled"}
+                    if key
+                    not in {
+                        "uuid",
+                        "type",
+                        "ui_position",
+                        "ui_size",
+                        "locked",
+                        "numeric_linkage_enabled",
+                        "manual_fields",
+                        "type_slot",
+                        "export_slot",
+                        "copy_source_type_slot",
+                        "copy_source_sequence_no",
+                    }
                 },
                 ui_position={"x": 0.0, "y": 0.0},
                 ui_size=item.get("ui_size"),
@@ -675,18 +996,45 @@ class EditorController(QObject):
                 else:
                     template.fields[TABLE_ID_FIELD] = new_uuid()
                 template.fields.setdefault(TABLE_TITLE_FIELD, DEFAULT_PARAMETER_TABLE_TITLE)
-            if not template.manual_fields:
-                infer_manual_fields(self.schema, template, self.document)
             new_node = create_node(
                 self.schema,
-                self.document,
+                staging_document,
                 template.type,
                 (
                     base_position[0] + (item.get("ui_position", {}).get("x", 0.0) - min_x),
                     base_position[1] + (item.get("ui_position", {}).get("y", 0.0) - min_y),
                 ),
-                base_node=template,
             )
+            new_node.ui_size = dict(template.ui_size) if template.ui_size else None
+            new_node.locked = template.locked
+            new_node.numeric_linkage_enabled = template.numeric_linkage_enabled
+            generated_keys = {
+                "id",
+                "draw_able_name",
+                "parameter",
+                "action_trigger",
+                "action_trigger_active",
+                "target_idle",
+                "action_trigger_kind_ui",
+                "action_trigger_reserved_ui",
+                "action_trigger_active_kind_ui",
+                "action_trigger_active_reserved_ui",
+            }
+            for key, value in template.fields.items():
+                if key not in generated_keys:
+                    new_node.fields[key] = value
+            if new_node.type in function_node_types(self.schema):
+                apply_clone_sequence_fields(
+                    self.schema,
+                    staging_document,
+                    new_node,
+                    template,
+                    source_type_slot=item.get("copy_source_type_slot"),
+                )
+            else:
+                new_node.fields.update(template.fields)
+                new_node.manual_fields = set(template.manual_fields)
+            staging_document.nodes.append(new_node)
             nodes.append(new_node)
             uuid_map[old_uuid] = new_node.uuid
         connections = [
@@ -740,6 +1088,8 @@ class EditorController(QObject):
             "type": node.type,
             "ui_position": dict(node.ui_position),
             "locked": node.locked,
+            "copy_source_type_slot": node.type_slot,
+            "copy_source_sequence_no": node.sequence_no,
         }
         if node.ui_size:
             payload["ui_size"] = dict(node.ui_size)
@@ -828,6 +1178,13 @@ class EditorController(QObject):
         node = self.get_node(node_uuid)
         if not node or not values:
             return
+        definition = self.schema.nodes[node.type]
+        if definition.category in {"root", "meta"}:
+            return
+        if definition.auto_rules.fixed_target_idle is not None:
+            values = {key: value for key, value in values.items() if key not in {"target_idle", "action_trigger_active"}}
+            if not values:
+                return
         for key, value in values.items():
             node.fields[key] = value
         apply_node_appearance_defaults(self.schema, node)
@@ -859,6 +1216,17 @@ class EditorController(QObject):
             node = self.get_node(node_uuid)
             if not node or not values:
                 continue
+            definition = self.schema.nodes[node.type]
+            if definition.category in {"root", "meta"}:
+                continue
+            if definition.auto_rules.fixed_target_idle is not None:
+                values = {
+                    key: value
+                    for key, value in values.items()
+                    if key not in {"target_idle", "action_trigger_active"}
+                }
+                if not values:
+                    continue
             for key, value in values.items():
                 node.fields[key] = value
             apply_node_appearance_defaults(self.schema, node)
@@ -911,6 +1279,23 @@ class EditorController(QObject):
     def _set_groups(self, groups: list[GroupRecord]) -> None:
         self.document.groups = [group.clone() for group in groups]
         self.refresh_derived()
+
+    def _insert_canvas_images(self, images: list[CanvasImageRecord]) -> None:
+        existing = {image.uuid for image in self.document.canvas_images}
+        self.document.canvas_images.extend(image for image in images if image.uuid not in existing)
+        self.canvasImagesChanged.emit()
+
+    def _remove_canvas_images(self, image_uuids: list[str]) -> None:
+        selected = set(image_uuids)
+        self.document.canvas_images = [image for image in self.document.canvas_images if image.uuid not in selected]
+        self.canvasImagesChanged.emit()
+
+    def _move_canvas_images(self, positions: dict[str, tuple[float, float]]) -> None:
+        for image_uuid, position in positions.items():
+            image = self.get_canvas_image(image_uuid)
+            if image is not None:
+                image.ui_position = {"x": float(position[0]), "y": float(position[1])}
+        self.canvasImagesChanged.emit()
 
     def _move_node(self, node_uuid: str, position: tuple[float, float]) -> None:
         node = self.get_node(node_uuid)

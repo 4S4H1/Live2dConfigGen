@@ -25,7 +25,6 @@ from l2d_config_editor.logic import (
     export_document_dict,
     get_default_schema,
     load_document,
-    load_template_csv_rows,
     normalize_field_input,
     node_title,
     reassign_function_ids,
@@ -36,6 +35,7 @@ from l2d_config_editor.logic import (
 from l2d_config_editor.main_window import MainWindow
 from l2d_config_editor.models import ConnectionRecord
 from l2d_config_editor.schema import load_editor_schema
+from l2d_config_editor.template_batch import BaseTemplateSpec, create_base_template_files
 from l2d_config_editor.widgets import ColorChoiceButton, ColorSchemePicker, CommentAppearanceDialog, NodeAppearanceDialog, NodeFormWidget
 
 
@@ -54,6 +54,38 @@ def _close_top_level_widgets(app: QApplication) -> None:
         app.processEvents()
 
 
+def _set_ready_document_meta(
+    document,
+    *,
+    author: str = "asahi",
+    ship_skin_id: int = 302291,
+    memo: str = "mingji_2",
+    char_name: str = "??",
+) -> None:
+    document.meta.author = author
+    document.meta.ship_skin_id = ship_skin_id
+    document.meta.memo = memo
+    document.meta.CharName = char_name
+
+
+def _set_ready_controller_meta(
+    controller,
+    *,
+    author: str = "asahi",
+    ship_skin_id: int = 302291,
+    memo: str = "mingji_2",
+    char_name: str = "??",
+) -> None:
+    _set_ready_document_meta(
+        controller.document,
+        author=author,
+        ship_skin_id=ship_skin_id,
+        memo=memo,
+        char_name=char_name,
+    )
+    controller.refresh_derived()
+
+
 class LogicTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -66,11 +98,7 @@ class LogicTests(unittest.TestCase):
     def make_ready_document(self):
         document = create_document(self.schema)
         document.editor_settings.numeric_linkage_enabled = True
-        initial = next(node for node in document.nodes if node.type == "Initial")
-        initial.fields["author"] = "asahi"
-        initial.fields["ship_skin_id"] = 302291
-        initial.fields["memo"] = "mingji_2"
-        initial.fields["CharName"] = "??"
+        _set_ready_document_meta(document)
         reassign_function_ids(self.schema, document)
         return document
 
@@ -89,14 +117,15 @@ class LogicTests(unittest.TestCase):
         self.assertEqual("#b5a1ff", drag.fields["theme_border_color"])
         self.assertEqual("#faf7ff", drag.fields["theme_text_color"])
 
-    def test_default_document_contains_initial_and_gate(self) -> None:
+    def test_default_document_contains_idle0_and_gate(self) -> None:
         document = create_document(self.schema)
-        self.assertEqual(1, len([node for node in document.nodes if node.type == "Initial"]))
+        self.assertEqual(["Idle0"], [node.type for node in document.nodes])
+        self.assertEqual("idle0", document.meta.default_state)
         self.assertEqual("simple", document.global_mode)
         self.assertFalse(document.editor_settings.numeric_linkage_enabled)
         self.assertFalse(document.editor_settings.trash_enabled)
         self.assertFalse(document.state.is_meta_ready)
-        self.assertIn("作者", document.state.meta_missing_fields)
+        self.assertNotIn("作者", document.state.meta_missing_fields)
 
     def test_new_touchidle_defaults_use_sequence(self) -> None:
         document = self.make_ready_document()
@@ -385,18 +414,7 @@ class LogicTests(unittest.TestCase):
         self.assertEqual("20260520", build_template_version_folder_name("2026-05-20"))
         self.assertEqual("20260528", build_template_version_folder_name("2026-05-28"))
 
-    def test_load_template_csv_rows_reads_required_columns(self) -> None:
-        csv_text = "版本,角色名,角色资源名,角色id\n2026-05-20,测试角色,test_role,123456\n"
-        with tempfile.TemporaryDirectory() as temp_dir:
-            csv_path = Path(temp_dir) / "template.csv"
-            csv_path.write_text(csv_text, encoding="utf-8-sig")
-            rows = load_template_csv_rows(csv_path)
-        self.assertEqual(
-            [{"version": "2026-05-20", "CharName": "测试角色", "memo": "test_role", "ship_skin_id": 123456}],
-            rows,
-        )
-
-    def test_create_template_document_prefills_initial_node_only(self) -> None:
+    def test_create_template_document_prefills_hidden_meta_and_idle0_only(self) -> None:
         document = create_template_document(
             self.schema,
             version="2026-05-20",
@@ -406,12 +424,12 @@ class LogicTests(unittest.TestCase):
         )
         self.assertFalse(document.editor_settings.numeric_linkage_enabled)
         self.assertEqual(1, len(document.nodes))
-        initial = next(node for node in document.nodes if node.type == "Initial")
-        self.assertEqual("2026-05-20", initial.fields["version"])
-        self.assertEqual("测试角色", initial.fields["CharName"])
-        self.assertEqual("test_role", initial.fields["memo"])
-        self.assertEqual(123456, initial.fields["ship_skin_id"])
-        self.assertEqual("", initial.fields["author"])
+        self.assertEqual(["Idle0"], [node.type for node in document.nodes])
+        self.assertEqual("2026-05-20", document.meta.version)
+        self.assertEqual("测试角色", document.meta.CharName)
+        self.assertEqual("test_role", document.meta.memo)
+        self.assertEqual(123456, document.meta.ship_skin_id)
+        self.assertEqual("", document.meta.author)
 
     def test_validation_catches_invalid_parts_data(self) -> None:
         document = self.make_ready_document()
@@ -462,8 +480,7 @@ class LogicTests(unittest.TestCase):
 
     def test_csv_preview_wraps_react_condition_idle_list(self) -> None:
         document = self.make_ready_document()
-        initial = next(node for node in document.nodes if node.type == "Initial")
-        initial.fields["react_condition"] = "0,17"
+        document.meta.react_condition = "0,17"
         node = create_node(self.schema, document, "TouchIdle")
         document.nodes.append(node)
         rows = document_to_csv_rows(self.schema, document)
@@ -471,8 +488,7 @@ class LogicTests(unittest.TestCase):
 
     def test_csv_preview_only_writes_react_condition_on_first_row(self) -> None:
         document = self.make_ready_document()
-        initial = next(node for node in document.nodes if node.type == "Initial")
-        initial.fields["react_condition"] = "0,17"
+        document.meta.react_condition = "0,17"
         first = create_node(self.schema, document, "TouchIdle")
         second = create_node(self.schema, document, "TouchIdle")
         document.nodes.extend([first, second])
@@ -599,11 +615,7 @@ class LogicTests(unittest.TestCase):
     def test_controller_translates_display_action_fields_to_raw(self) -> None:
         controller = EditorController()
         controller.document.editor_settings.numeric_linkage_enabled = True
-        initial = next(node for node in controller.document.nodes if node.type == "Initial")
-        controller.update_field(initial.uuid, "author", "asahi", "simple")
-        controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-        controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-        controller.update_field(initial.uuid, "CharName", "??", "simple")
+        _set_ready_controller_meta(controller)
         node_uuid = controller.create_node("TouchIdle", (100, 100))
         self.assertIsNotNone(node_uuid)
         node = controller.get_node(node_uuid)
@@ -617,11 +629,7 @@ class LogicTests(unittest.TestCase):
     def test_touchidle_zero_target_idle_is_not_treated_as_empty(self) -> None:
         controller = EditorController()
         controller.document.editor_settings.numeric_linkage_enabled = True
-        initial = next(node for node in controller.document.nodes if node.type == "Initial")
-        controller.update_field(initial.uuid, "author", "asahi", "simple")
-        controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-        controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-        controller.update_field(initial.uuid, "CharName", "??", "simple")
+        _set_ready_controller_meta(controller)
         node_uuid = controller.create_node("TouchIdle", (100, 100))
         controller.update_field(node_uuid, "action_trigger_active", 0, "simple")
         node = controller.get_node(node_uuid)
@@ -634,11 +642,7 @@ class LogicTests(unittest.TestCase):
     def test_touchdrag_action_trigger_edit_updates_internal_target_idle(self) -> None:
         controller = EditorController()
         controller.document.editor_settings.numeric_linkage_enabled = True
-        initial = next(node for node in controller.document.nodes if node.type == "Initial")
-        controller.update_field(initial.uuid, "author", "asahi", "simple")
-        controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-        controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-        controller.update_field(initial.uuid, "CharName", "??", "simple")
+        _set_ready_controller_meta(controller)
         node_uuid = controller.create_node("TouchDrag", (100, 100))
         self.assertIsNotNone(node_uuid)
         node = controller.get_node(node_uuid)
@@ -653,11 +657,7 @@ class LogicTests(unittest.TestCase):
     def test_touchidle_parameter_edit_updates_linked_fields_in_simple_mode(self) -> None:
         controller = EditorController()
         controller.document.editor_settings.numeric_linkage_enabled = True
-        initial = next(node for node in controller.document.nodes if node.type == "Initial")
-        controller.update_field(initial.uuid, "author", "asahi", "simple")
-        controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-        controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-        controller.update_field(initial.uuid, "CharName", "??", "simple")
+        _set_ready_controller_meta(controller)
         node_uuid = controller.create_node("TouchIdle", (100, 100))
         controller.update_field(node_uuid, "parameter", "Paramtouch_idle11", "simple")
         node = controller.get_node(node_uuid)
@@ -670,11 +670,7 @@ class LogicTests(unittest.TestCase):
     def test_numeric_linkage_toggle_applies_to_existing_nodes_globally(self) -> None:
         controller = EditorController()
         controller.document.editor_settings.numeric_linkage_enabled = True
-        initial = next(node for node in controller.document.nodes if node.type == "Initial")
-        controller.update_field(initial.uuid, "author", "asahi", "simple")
-        controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-        controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-        controller.update_field(initial.uuid, "CharName", "??", "simple")
+        _set_ready_controller_meta(controller)
 
         first_uuid = controller.create_node("TouchIdle", (100, 100))
         controller.set_numeric_linkage_enabled(False)
@@ -699,11 +695,7 @@ class LogicTests(unittest.TestCase):
     def test_touchdrag_roundtrip_without_action_trigger_active(self) -> None:
         controller = EditorController()
         controller.document.editor_settings.numeric_linkage_enabled = True
-        initial = next(node for node in controller.document.nodes if node.type == "Initial")
-        controller.update_field(initial.uuid, "author", "asahi", "simple")
-        controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-        controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-        controller.update_field(initial.uuid, "CharName", "??", "simple")
+        _set_ready_controller_meta(controller)
         node_uuid = controller.create_node("TouchDrag", (100, 100))
         node = controller.get_node(node_uuid)
         controller.update_field(node.uuid, "action_trigger", "touch_idle9", "simple")
@@ -719,16 +711,18 @@ class LogicTests(unittest.TestCase):
         self.assertIn("idle = 9", loaded_node.fields["action_trigger_active"])
 
     def test_schema_supports_label_html(self) -> None:
-        schema_payload = json.loads(Path("l2d_config_editor/editor_schema.json").read_text(encoding="utf-8"))
-        schema_payload["nodes"]["Initial"]["fields"][0]["label_html"] = "<b><font color='#ffcc66'>备注</font></b>"
+        schema_path = Path(__file__).resolve().parents[1] / "l2d_config_editor" / "editor_schema.json"
+        schema_payload = json.loads(schema_path.read_text(encoding="utf-8"))
+        schema_payload["nodes"]["TouchIdle"]["fields"][0]["label_html"] = "<b><font color='#ffcc66'>备注</font></b>"
         with tempfile.TemporaryDirectory() as temp_dir:
             schema_path = Path(temp_dir) / "schema.json"
             schema_path.write_text(json.dumps(schema_payload, ensure_ascii=False, indent=2), encoding="utf-8")
             schema = load_editor_schema(schema_path)
         document = create_document(schema)
-        initial = next(node for node in document.nodes if node.type == "Initial")
+        _set_ready_document_meta(document)
+        node = create_node(schema, document, "TouchIdle")
         form = NodeFormWidget(schema, inline=False)
-        form.set_node(initial, "simple")
+        form.set_node(node, "simple")
         label = form._form.itemAt(0, form._form.ItemRole.LabelRole).widget()
         self.assertEqual(Qt.TextFormat.RichText, label.textFormat())
         self.assertEqual("<b><font color='#ffcc66'>备注</font></b>", label.text())
@@ -745,23 +739,19 @@ class LogicTests(unittest.TestCase):
 
     def test_form_can_show_json_field_names(self) -> None:
         document = self.make_ready_document()
-        initial = next(node for node in document.nodes if node.type == "Initial")
+        node = create_node(self.schema, document, "TouchIdle")
         form = NodeFormWidget(self.schema, inline=False)
-        form.set_node(initial, "simple", show_json_field_names=True)
+        form.set_node(node, "simple", show_json_field_names=True)
         labels = []
         for row in range(form._form.rowCount()):
             item = form._form.itemAt(row, form._form.ItemRole.LabelRole)
             if item and item.widget():
                 labels.append(item.widget().text())
-        self.assertIn("author", labels)
+        self.assertTrue(any("parameter" in label for label in labels))
 
     def test_clipboard_copy_strips_tips_from_function_nodes(self) -> None:
         controller = EditorController()
-        initial = next(node for node in controller.document.nodes if node.type == "Initial")
-        controller.update_field(initial.uuid, "author", "asahi", "simple")
-        controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-        controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-        controller.update_field(initial.uuid, "CharName", "??", "simple")
+        _set_ready_controller_meta(controller)
         node_uuid = controller.create_node("TouchIdle", (100, 100))
         node = controller.get_node(node_uuid)
         controller.update_field(node.uuid, "tips", "不要复制", "simple")
@@ -772,11 +762,7 @@ class LogicTests(unittest.TestCase):
     def test_remove_nodes_writes_trash_bin_and_persists(self) -> None:
         controller = EditorController()
         controller.document.editor_settings.trash_enabled = True
-        initial = next(node for node in controller.document.nodes if node.type == "Initial")
-        controller.update_field(initial.uuid, "author", "asahi", "simple")
-        controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-        controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-        controller.update_field(initial.uuid, "CharName", "??", "simple")
+        _set_ready_controller_meta(controller)
         node_uuid = controller.create_node("TouchIdle", (100, 100))
         controller.remove_nodes([node_uuid])
         self.assertEqual(1, len(controller.document.trash_bin))
@@ -792,11 +778,7 @@ class LogicTests(unittest.TestCase):
     def test_disabling_trash_clears_bin_and_reuses_slots(self) -> None:
         controller = EditorController()
         controller.document.editor_settings.trash_enabled = True
-        initial = next(node for node in controller.document.nodes if node.type == "Initial")
-        controller.update_field(initial.uuid, "author", "asahi", "simple")
-        controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-        controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-        controller.update_field(initial.uuid, "CharName", "??", "simple")
+        _set_ready_controller_meta(controller)
         first_uuid = controller.create_node("TouchIdle", (100, 100))
         controller.remove_nodes([first_uuid])
         self.assertEqual(1, len(controller.document.trash_bin))
@@ -809,11 +791,7 @@ class LogicTests(unittest.TestCase):
 
     def test_locked_node_rejects_field_updates_and_moves(self) -> None:
         controller = EditorController()
-        initial = next(node for node in controller.document.nodes if node.type == "Initial")
-        controller.update_field(initial.uuid, "author", "asahi", "simple")
-        controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-        controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-        controller.update_field(initial.uuid, "CharName", "??", "simple")
+        _set_ready_controller_meta(controller)
         node_uuid = controller.create_node("TouchIdle", (100, 100))
         node = controller.get_node(node_uuid)
         controller.set_node_locked(node_uuid, True)
@@ -826,11 +804,7 @@ class LogicTests(unittest.TestCase):
     def test_manual_mode_paste_preserves_explicit_sequence_values(self) -> None:
         controller = EditorController()
         controller.document.editor_settings.numeric_linkage_enabled = True
-        initial = next(node for node in controller.document.nodes if node.type == "Initial")
-        controller.update_field(initial.uuid, "author", "asahi", "simple")
-        controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-        controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-        controller.update_field(initial.uuid, "CharName", "测试", "simple")
+        _set_ready_controller_meta(controller, char_name="测试")
         controller.set_interaction_creation_mode("manual")
         node_uuid = controller.create_node("TouchIdle", (100, 100))
         source_node = controller.get_node(node_uuid)
@@ -900,11 +874,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
 
     def test_main_window_smoke(self) -> None:
         window = MainWindow("/Users/asahi/Live2dConfigGen", prefer_saved_workspace=False)
-        initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-        window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-        window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-        window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-        window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+        _set_ready_controller_meta(window.controller)
         created = window.controller.create_node("TouchIdle", (200, 120))
         self.assertIsNotNone(created)
         window.controller.set_global_mode("advanced")
@@ -932,7 +902,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertIsNotNone(splitter)
             self.assertEqual(2, splitter.count())
             self.assertIsNotNone(toolbar)
-            self.assertTrue(window.simple_mode_radio.isVisible())
+            self.assertFalse(hasattr(window, "simple_mode_radio"))
             self.assertTrue(window.auto_create_rule_radio.isVisible())
             self.assertTrue(window.numeric_linkage_checkbox.isVisible())
             self.assertTrue(window.restore_layout_button.isVisible())
@@ -944,11 +914,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             window.controller.set_global_mode("simple")
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("TouchIdle", (200, 120))
             item = window.canvas.node_items[created]
 
@@ -978,11 +944,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             window.controller.set_global_mode("simple")
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("TouchIdle", (200, 120))
             item = window.canvas.node_items[created]
 
@@ -1031,11 +993,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             window.controller.set_global_mode("simple")
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("TouchIdle", (200, 120))
             item = window.canvas.node_items[created]
 
@@ -1057,11 +1015,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             window.controller.set_global_mode("simple")
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("TouchIdle", (200, 120))
             item = window.canvas.node_items[created]
 
@@ -1093,11 +1047,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             window.controller.set_global_mode("simple")
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("TouchIdle", (200, 120))
             item = window.canvas.node_items[created]
 
@@ -1123,11 +1073,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             window.controller.set_global_mode("simple")
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("TouchIdle", (200, 120))
             item = window.canvas.node_items[created]
 
@@ -1172,11 +1118,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             window.controller.set_global_mode("simple")
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("TouchIdle", (200, 120))
             item = window.canvas.node_items[created]
             scene_center = item.mapRectToScene(item.boundingRect()).center()
@@ -1198,11 +1140,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_inline_form_appearance_dialog_uses_main_window_parent(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("TouchIdle", (200, 120))
             item = window.canvas.node_items[created]
 
@@ -1218,11 +1156,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_legacy_theme_nodes_keep_custom_text_color(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("TouchIdle", (200, 120))
             node = window.controller.get_node(created)
             item = window.canvas.node_items[created]
@@ -1236,16 +1170,13 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
             window.close()
 
-    def test_initial_and_comment_do_not_expose_appearance_buttons(self) -> None:
+    def test_idle0_and_comment_do_not_expose_appearance_buttons(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("Comment", (200, 120))
-            initial_item = window.canvas.node_items[initial.uuid]
+            idle0 = next(node for node in window.controller.document.nodes if node.type == "Idle0")
+            initial_item = window.canvas.node_items[idle0.uuid]
             comment_item = window.canvas.node_items[created]
 
             self.assertIsNone(initial_item.form._appearance_button)
@@ -1262,17 +1193,14 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
             window.close()
 
-    def test_right_click_initial_is_disabled_but_comment_opens_appearance_dialog(self) -> None:
+    def test_right_click_idle0_is_disabled_but_comment_opens_appearance_dialog(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             comment_uuid = window.controller.create_node("Comment", (200, 120))
 
-            initial_item = window.canvas.node_items[initial.uuid]
+            idle0 = next(node for node in window.controller.document.nodes if node.type == "Idle0")
+            initial_item = window.canvas.node_items[idle0.uuid]
             comment_item = window.canvas.node_items[comment_uuid]
 
             view_pos = window.canvas.viewport().rect().center()
@@ -1304,11 +1232,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_right_click_comment_opens_appearance_even_when_multi_selected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             comment_uuid = window.controller.create_node("Comment", (200, 120))
             touch_uuid = window.controller.create_node("TouchIdle", (420, 120))
             comment_item = window.canvas.node_items[comment_uuid]
@@ -1335,11 +1259,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_comment_right_click_appearance_uses_node_color_dialog(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("Comment", (200, 120))
             node = window.controller.get_node(created)
             item = window.canvas.node_items[created]
@@ -1367,14 +1287,10 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
             window.close()
 
-    def test_comment_title_is_smaller_and_body_text_is_larger(self) -> None:
+    def test_comment_uses_one_large_inline_title_without_a_body_form(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("Comment", (200, 120))
             window.controller.update_field(created, "content", "This is a long comment title line for readability\nbody", "simple")
             item = window.canvas.node_items[created]
@@ -1384,7 +1300,9 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window.canvas._apply_view_state(0.35, QPointF(0.0, 0.0))
             self.app.processEvents()
             self.assertAlmostEqual(baseline_title_size, item._title_font().pointSizeF(), delta=0.1)
-            self.assertIn("font-size: 22px", item.form.styleSheet())
+            self.assertGreaterEqual(item._comment_content_font().pointSizeF(), 20.0)
+            self.assertFalse(item.form.isVisible())
+            self.assertFalse(item.proxy.isVisible())
             window._mark_saved_checkpoint(saved=True)
             window.close()
 
@@ -1403,11 +1321,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             window.controller.set_global_mode("simple")
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("TouchIdle", (200, 120))
             item = window.canvas.node_items[created]
 
@@ -1438,19 +1352,16 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
             window.close()
 
-    def test_batch_appearance_filters_initial_and_comment_nodes(self) -> None:
+    def test_batch_appearance_filters_idle0_and_comment_nodes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             window.controller.set_global_mode("simple")
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             comment_uuid = window.controller.create_node("Comment", (200, 120))
             touch_uuid = window.controller.create_node("TouchIdle", (420, 120))
 
-            window.canvas.node_items[initial.uuid].setSelected(True)
+            idle0 = next(node for node in window.controller.document.nodes if node.type == "Idle0")
+            window.canvas.node_items[idle0.uuid].setSelected(True)
             window.canvas.node_items[comment_uuid].setSelected(True)
             window.canvas.node_items[touch_uuid].setSelected(True)
 
@@ -1471,7 +1382,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             update_fields_for_nodes.assert_called_once()
             self.assertEqual([touch_uuid], update_fields_for_nodes.call_args.args[0])
             self.assertEqual(values, update_fields_for_nodes.call_args.args[1])
-            self.assertEqual("simple", update_fields_for_nodes.call_args.args[2])
+            self.assertEqual("advanced", update_fields_for_nodes.call_args.args[2])
             window._mark_saved_checkpoint(saved=True)
             window.close()
 
@@ -1479,11 +1390,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             window.controller.set_global_mode("simple")
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             first_uuid = window.controller.create_node("TouchIdle", (200, 120))
             second_uuid = window.controller.create_node("TouchIdle", (520, 120))
             first_item = window.canvas.node_items[first_uuid]
@@ -1519,7 +1426,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             update_fields_for_nodes.assert_called_once()
             self.assertEqual({first_uuid, second_uuid}, set(update_fields_for_nodes.call_args.args[0]))
             self.assertEqual(values, update_fields_for_nodes.call_args.args[1])
-            self.assertEqual("simple", update_fields_for_nodes.call_args.args[2])
+            self.assertEqual("advanced", update_fields_for_nodes.call_args.args[2])
             window._mark_saved_checkpoint(saved=True)
             window.close()
 
@@ -1616,11 +1523,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_inline_summary_order_and_zoom_out_keeps_card_mode(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("TouchIdle", (200, 120))
             node = window.controller.get_node(created)
             item = window.canvas.node_items[created]
@@ -1653,11 +1556,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_hidden_inspector_compat_does_not_surface_as_floating_window(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("TouchIdle", (200, 120))
             window.controller.set_selected_node(created)
             self.app.processEvents()
@@ -1682,11 +1581,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_canvas_snap_positions_handles_multi_node_selection(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             first = window.controller.create_node("TouchIdle", (113, 86))
             second = window.controller.create_node("TouchDrag", (267, 154))
 
@@ -1751,11 +1646,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_node_title_updates_when_draw_name_changes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "测试", "simple")
+            _set_ready_controller_meta(window.controller, char_name="测试")
             created = window.controller.create_node("TouchIdle", (200, 120))
             item = window.canvas.node_items[created]
 
@@ -1768,28 +1659,25 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_node_form_reuses_editors_for_same_node_updates(self) -> None:
         schema = get_default_schema()
         document = create_document(schema)
-        initial = next(node for node in document.nodes if node.type == "Initial")
+        _set_ready_document_meta(document)
+        node = create_node(schema, document, "TouchIdle")
         form = NodeFormWidget(schema, inline=True)
-        form.set_node(initial, "simple")
+        form.set_node(node, "simple")
 
         original_tips = form._bindings["tips"].widget
-        original_author = form._bindings["author"].widget
+        original_parameter = form._bindings["parameter"].widget
 
-        initial.fields["tips"] = "updated"
-        initial.fields["author"] = "tester"
-        form.set_node(initial, "simple")
+        node.fields["tips"] = "updated"
+        node.fields["parameter"] = "Paramtouch_idle99"
+        form.set_node(node, "simple")
 
         self.assertIs(original_tips, form._bindings["tips"].widget)
-        self.assertIs(original_author, form._bindings["author"].widget)
+        self.assertIs(original_parameter, form._bindings["parameter"].widget)
 
     def test_node_frame_encloses_inline_form_content(self) -> None:
         window = MainWindow("/Users/asahi/Live2dConfigGen", prefer_saved_workspace=False)
         window.controller.set_global_mode("simple")
-        initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-        window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-        window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-        window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-        window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+        _set_ready_controller_meta(window.controller)
         created = window.controller.create_node("TouchIdle", (200, 120))
         item = window.canvas.node_items[created]
 
@@ -1806,11 +1694,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_inline_combo_selection_updates_without_breaking_form(self) -> None:
         window = MainWindow("/Users/asahi/Live2dConfigGen", prefer_saved_workspace=False)
         window.controller.set_global_mode("simple")
-        initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-        window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-        window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-        window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-        window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+        _set_ready_controller_meta(window.controller)
         created = window.controller.create_node("TouchIdle", (200, 120))
         item = window.canvas.node_items[created]
         combo = item.form._bindings["control_type"].widget
@@ -1828,11 +1712,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_touchdrag_hides_legacy_target_idle_field(self) -> None:
         window = MainWindow("/Users/asahi/Live2dConfigGen", prefer_saved_workspace=False)
         window.controller.set_global_mode("simple")
-        initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-        window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-        window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-        window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-        window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+        _set_ready_controller_meta(window.controller)
         created = window.controller.create_node("TouchDrag", (200, 120))
         item = window.canvas.node_items[created]
 
@@ -1844,31 +1724,22 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
 
     def test_template_creation_groups_json_by_version_folder(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            csv_path = Path(temp_dir) / "template.csv"
-            csv_path.write_text(
-                "版本,角色名,角色资源名,角色id\n"
-                "2026-05-20,角色A,res_a,1001\n"
-                "2026-05-20,角色B,res_b,1002\n"
-                "2026-05-28,角色C,res_c,1003\n",
-                encoding="utf-8-sig",
-            )
-            created_files, created_folders = window._create_templates_from_csv(csv_path)
-            self.assertEqual(3, created_files)
-            self.assertEqual(2, created_folders)
+            specs = [
+                BaseTemplateSpec("2026-05-20", "tester", "角色A", "res_a", 1001),
+                BaseTemplateSpec("2026-05-20", "tester", "角色B", "res_b", 1002),
+                BaseTemplateSpec("2026-05-28", "tester", "角色C", "res_c", 1003),
+            ]
+            created = create_base_template_files(get_default_schema(), temp_dir, specs)
+            self.assertEqual(3, len(created))
+            self.assertEqual(2, len({path.parent for path in created}))
             self.assertTrue((Path(temp_dir) / "20260520" / "角色A.json").exists())
             self.assertTrue((Path(temp_dir) / "20260520" / "角色B.json").exists())
             self.assertTrue((Path(temp_dir) / "20260528" / "角色C.json").exists())
-            window.close()
 
     def test_node_directory_click_keeps_dialog_open(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "测试角色", "simple")
+            _set_ready_controller_meta(window.controller, char_name="测试角色")
             created = window.controller.create_node("TouchIdle", (200, 120))
             self.assertIsNotNone(created)
             window._show_node_directory_dialog()
@@ -1887,11 +1758,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_node_bounding_rect_covers_full_pin_hit_area(self) -> None:
         window = MainWindow("/Users/asahi/Live2dConfigGen", prefer_saved_workspace=False)
         window.controller.set_global_mode("simple")
-        initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-        window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-        window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-        window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-        window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+        _set_ready_controller_meta(window.controller)
         created = window.controller.create_node("TouchDrag", (200, 120))
         item = window.canvas.node_items[created]
 
@@ -1908,14 +1775,11 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
 
     def test_touchdrag_value_mode_shows_revert_fields_in_advanced(self) -> None:
         window = MainWindow("/Users/asahi/Live2dConfigGen", prefer_saved_workspace=False)
-        window.controller.set_global_mode("advanced")
-        initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-        window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-        window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-        window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-        window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+        _set_ready_controller_meta(window.controller)
         created = window.controller.create_node("TouchDrag", (200, 120))
         window.controller.update_field(created, "result_type", "value", "simple")
+        window.canvas.toggle_node_display_mode(created)
+        self.app.processEvents()
         item = window.canvas.node_items[created]
 
         self.assertIn("revert_action_index", item.form._bindings)
@@ -1927,11 +1791,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_touchdrag_value_result_keeps_action_fields_empty(self) -> None:
         schema = get_default_schema()
         document = create_document(schema)
-        initial = next(node for node in document.nodes if node.type == "Initial")
-        initial.fields["author"] = "asahi"
-        initial.fields["ship_skin_id"] = 302291
-        initial.fields["memo"] = "mingji_2"
-        initial.fields["CharName"] = "??"
+        _set_ready_document_meta(document)
         node = create_node(schema, document, "TouchDrag")
         node.fields["result_type"] = "value"
         node.fields["target_value"] = 3.5
@@ -1942,11 +1802,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_manual_save_keeps_undo_history_available(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("TouchIdle", (200, 120))
             self.assertIsNotNone(created)
             window.controller.document.path = str(Path(temp_dir) / "undo_after_save.json")
@@ -1961,15 +1817,12 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_auto_save_waits_until_canvas_not_busy(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
+            created = window.controller.create_node("TouchIdle", (200, 120))
             window.controller.document.path = str(Path(temp_dir) / "busy_autosave.json")
             window.controller.pathChanged.emit(window.controller.document.path)
             window._mark_saved_checkpoint(saved=True)
-            window.controller.update_field(initial.uuid, "memo", "changed", "simple")
+            window.controller.update_field(created, "tips", "changed", "simple")
             window.canvas._set_interaction_busy("drag", True)
             window._run_auto_save()
             self.assertFalse(Path(window.controller.document.path).exists())
@@ -1986,11 +1839,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             first = window.controller.create_node("TouchIdle", (160, 160))
             second = window.controller.create_node("TouchDrag", (520, 180))
             window.controller.add_connection(first, second)
@@ -2015,11 +1864,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             first = window.controller.create_node("TouchIdle", (160, 160))
             second = window.controller.create_node("TouchDrag", (520, 180))
             window.controller.add_connection(first, second)
@@ -2048,11 +1893,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             first = window.controller.create_node("TouchIdle", (160, 160))
             second = window.controller.create_node("TouchDrag", (520, 180))
             window.controller.add_connection(first, second)
@@ -2079,11 +1920,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_save_commits_pending_line_edit_without_enter(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("TouchIdle", (200, 120))
             node = window.controller.get_node(created)
             window.controller.document.path = str(Path(temp_dir) / "pending_input_save.json")
@@ -2103,15 +1940,12 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_close_prompts_to_save_dirty_document(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
+            created = window.controller.create_node("TouchIdle", (200, 120))
             window.controller.document.path = str(Path(temp_dir) / "close_prompt.json")
             window.controller.pathChanged.emit(window.controller.document.path)
             window._mark_saved_checkpoint(saved=True)
-            window.controller.update_field(initial.uuid, "memo", "changed_before_close", "simple")
+            window.controller.update_field(created, "tips", "changed_before_close", "simple")
 
             def choose_save(box):
                 for button in box.buttons():
@@ -2130,15 +1964,12 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_test_close_policy_bypasses_close_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
+            created = window.controller.create_node("TouchIdle", (200, 120))
             window.controller.document.path = str(Path(temp_dir) / "close_policy.json")
             window.controller.pathChanged.emit(window.controller.document.path)
             window._mark_saved_checkpoint(saved=True)
-            window.controller.update_field(initial.uuid, "memo", "changed_for_discard", "simple")
+            window.controller.update_field(created, "tips", "changed_for_discard", "simple")
 
             with patch.dict(os.environ, {"L2D_CONFIG_EDITOR_TEST_CLOSE_EVENT_POLICY": "", "L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY": "discard"}), patch.object(
                 QMessageBox, "exec", side_effect=AssertionError("should not prompt")
@@ -2147,7 +1978,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
                 self.assertFalse(save_mock.called)
 
             window._mark_saved_checkpoint(saved=True)
-            window.controller.update_field(initial.uuid, "memo", "changed_for_save", "simple")
+            window.controller.update_field(created, "tips", "changed_for_save", "simple")
             with patch.dict(os.environ, {"L2D_CONFIG_EDITOR_TEST_CLOSE_EVENT_POLICY": "", "L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY": "save"}), patch.object(
                 QMessageBox, "exec", side_effect=AssertionError("should not prompt")
             ), patch.object(window, "_save_current_file", wraps=window._save_current_file) as save_mock:
@@ -2157,11 +1988,12 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
-    def test_close_does_not_prompt_when_initial_meta_is_incomplete(self) -> None:
+    def test_close_does_not_prompt_when_hidden_meta_is_incomplete(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "tips", "draft only", "simple")
+            idle0 = next(node for node in window.controller.document.nodes if node.type == "Idle0")
+            old_position = (float(idle0.ui_position["x"]), float(idle0.ui_position["y"]))
+            window.controller.move_node(idle0.uuid, old_position, (old_position[0] + 20.0, old_position[1]))
 
             with patch.dict(os.environ, {"L2D_CONFIG_EDITOR_TEST_CLOSE_EVENT_POLICY": "", "L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY": ""}), patch.object(QMessageBox, "exec", side_effect=AssertionError("should not prompt")), patch.object(
                 window, "_save_current_file", wraps=window._save_current_file
@@ -2217,11 +2049,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_zooming_out_keeps_function_node_position_stable(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("TouchIdle", (200, 120))
             item = window.canvas.node_items[created]
             window.controller.update_field(created, "tips", "这是一个很长很长的标题备注用于测试缩小画布时的头部高度自适应", "simple")
@@ -2233,65 +2061,36 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
-    def test_initial_node_uses_standard_title_size(self) -> None:
+    def test_idle0_node_title_size_stays_stable_during_zoom(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            item = window.canvas.node_items[initial.uuid]
-            self.assertLess(item._title_font().pointSizeF(), item.TITLE_BASE_POINT_SIZE)
-            self.assertAlmostEqual(16.8, item._title_font().pointSizeF(), delta=0.1)
+            idle0 = next(node for node in window.controller.document.nodes if node.type == "Idle0")
+            item = window.canvas.node_items[idle0.uuid]
             baseline_title_size = item._title_font().pointSizeF()
+            self.assertGreater(baseline_title_size, 0.0)
             window.canvas._apply_view_state(0.35, QPointF(0.0, 0.0))
             self.app.processEvents()
-            self.assertAlmostEqual(baseline_title_size, item._title_font().pointSizeF(), delta=0.1)
-            self.assertGreaterEqual(item._title_rect.height(), QFontMetricsF(item._title_font()).height())
-            self.assertLess(item._header_height, 70.0)
+            self.assertAlmostEqual(baseline_title_size, item._title_font().pointSizeF() * 0.35, delta=0.1)
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
-    def test_initial_node_matches_touchidle_main_panel_size(self) -> None:
+    def test_idle0_is_a_fieldless_noneditable_root(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
-            touch_uuid = window.controller.create_node("TouchIdle", (200, 120))
-            initial_item = window.canvas.node_items[initial.uuid]
-            touch_item = window.canvas.node_items[touch_uuid]
+            _set_ready_controller_meta(window.controller)
+            idle0 = next(node for node in window.controller.document.nodes if node.type == "Idle0")
 
-            initial_frame = initial_item._active_frame_rect()
-            touch_frame = touch_item._card_layout["frame"]
-            initial_item.setPos(120.0, 160.0)
-            touch_item.setPos(520.0, 160.0)
-            self.assertAlmostEqual(touch_item._rect.width(), initial_item._rect.width(), delta=0.1)
-            self.assertAlmostEqual(touch_item._rect.height(), initial_item._rect.height(), delta=0.1)
-            self.assertAlmostEqual(touch_item.boundingRect().top(), initial_item.boundingRect().top(), delta=0.1)
-            self.assertAlmostEqual(touch_item.boundingRect().height(), initial_item.boundingRect().height(), delta=0.1)
-            self.assertAlmostEqual(touch_frame.width(), initial_frame.width(), delta=0.1)
-            self.assertAlmostEqual(touch_frame.height(), initial_frame.height(), delta=0.1)
-            self.assertAlmostEqual(touch_frame.left(), initial_frame.left(), delta=0.1)
-            self.assertAlmostEqual(touch_frame.top(), initial_frame.top(), delta=0.1)
-            self.assertAlmostEqual(touch_frame.center().y(), initial_frame.center().y(), delta=0.1)
-            self.assertAlmostEqual(touch_frame.right(), initial_frame.right(), delta=0.1)
-            self.assertAlmostEqual(initial_item.mapToScene(initial_frame.topLeft()).y(), touch_item.mapToScene(touch_frame.topLeft()).y(), delta=0.1)
-            self.assertAlmostEqual(initial_item.input_pin_rect().center().x(), touch_item.input_pin_rect().center().x(), delta=0.1)
-            self.assertAlmostEqual(initial_item.output_pin_rect().center().x(), touch_item.output_pin_rect().center().x(), delta=0.1)
-            self.assertAlmostEqual(initial_item.input_pin_rect().center().y(), touch_item.input_pin_rect().center().y(), delta=0.1)
-            self.assertAlmostEqual(initial_item.output_pin_rect().center().y(), touch_item.output_pin_rect().center().y(), delta=0.1)
-            self.assertAlmostEqual(initial_item.input_pin_scene_pos().y(), touch_item.input_pin_scene_pos().y(), delta=0.1)
+            self.assertEqual({}, idle0.fields)
+            self.assertFalse(window.controller.can_copy_node(idle0.uuid))
+            self.assertFalse(window.controller.can_edit_node(idle0.uuid))
+            self.assertIsNone(window.controller.serialize_selection([idle0.uuid]))
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
     def test_zooming_out_keeps_node_geometry_stable_while_screen_size_shrinks(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("TouchIdle", (200, 120))
             item = window.canvas.node_items[created]
             original_width = item._rect.width()
@@ -2314,11 +2113,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_appearance_update_keeps_compact_note_layout_stable_when_zoomed_out(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("TouchIdle", (200, 120))
             item = window.canvas.node_items[created]
 
@@ -2351,11 +2146,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_zoomed_out_compact_note_does_not_collapse_to_ellipsis(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("TouchIdle", (200, 120))
             item = window.canvas.node_items[created]
 
@@ -2381,11 +2172,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_zoomed_out_long_compact_note_stays_inside_node_width(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("TouchDrag", (200, 120))
             long_title = "compact note title"
             window.controller.update_field(created, "tips", long_title, "simple")
@@ -2408,11 +2195,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_compact_note_layout_does_not_pulse_during_repeated_zoom(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("TouchDrag", (200, 120))
             long_title = "compact note title"
             window.controller.update_field(created, "tips", long_title, "simple")
@@ -2439,11 +2222,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_zooming_out_compensates_title_and_summary_fonts_for_visibility(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("TouchIdle", (200, 120))
             item = window.canvas.node_items[created]
             node = window.controller.get_node(created)
@@ -2494,11 +2273,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_zooming_out_does_not_change_comment_geometry_or_ui_size(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             comment_uuid = window.controller.create_node("Comment", (450, 110))
             comment_node = window.controller.get_node(comment_uuid)
             comment_node.ui_size = {"width": 420.0, "height": 220.0}
@@ -2517,37 +2292,30 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
-    def test_comment_resize_expands_inner_content_panel(self) -> None:
+    def test_comment_resize_expands_the_inline_title_area(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             comment_uuid = window.controller.create_node("Comment", (450, 110))
             comment_node = window.controller.get_node(comment_uuid)
             item = window.canvas.node_items[comment_uuid]
-            baseline_proxy_height = item.proxy.geometry().height()
+            baseline_title_height = item._title_rect.height()
 
             comment_node.ui_size = {"width": 620.0, "height": 420.0}
             window.controller.nodeUpdated.emit(comment_uuid)
             self.app.processEvents()
 
-            expected_height = item._rect.height() - item._margin * 2 - item._header_height - item._content_top_gap
-            self.assertGreater(item.proxy.geometry().height(), baseline_proxy_height + 100.0)
-            self.assertAlmostEqual(item.proxy.geometry().height(), expected_height, delta=4.0)
+            self.assertGreater(item._title_rect.height(), baseline_title_height + 100.0)
+            self.assertAlmostEqual(item._title_rect.height(), item._rect.height() - 42.0, delta=0.1)
+            self.assertAlmostEqual(item._title_rect.width(), item._rect.width() - 58.0, delta=0.1)
+            self.assertFalse(item.proxy.isVisible())
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
     def test_create_group_builds_canvas_group_item_and_wraps_members(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             first_uuid = window.controller.create_node("TouchIdle", (260, 180))
             second_uuid = window.controller.create_node("TouchDrag", (620, 260))
             group_uuid = window.controller.create_group([first_uuid, second_uuid])
@@ -2570,11 +2338,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_dropped_node_inside_group_is_added_to_group(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             first_uuid = window.controller.create_node("TouchIdle", (260, 180))
             second_uuid = window.controller.create_node("TouchDrag", (620, 260))
             dropped_uuid = window.controller.create_node("TouchIdle", (1200, 760))
@@ -2596,11 +2360,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_dropped_node_outside_group_is_removed_from_group(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             first_uuid = window.controller.create_node("TouchIdle", (260, 180))
             second_uuid = window.controller.create_node("TouchDrag", (620, 260))
             group_uuid = window.controller.create_group([first_uuid, second_uuid])
@@ -2618,11 +2378,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_group_title_font_is_30_for_readability(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             first_uuid = window.controller.create_node("TouchIdle", (260, 180))
             second_uuid = window.controller.create_node("TouchDrag", (620, 260))
             group_uuid = window.controller.create_group([first_uuid, second_uuid])
@@ -2634,11 +2390,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_function_node_pins_follow_card_frame_outer_edges(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("TouchIdle", (200, 120))
             item = window.canvas.node_items[created]
             self.assertFalse(window.canvas.should_render_thumbnail_nodes())
@@ -2656,11 +2408,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_zooming_out_does_not_reposition_close_nodes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             first_uuid = window.controller.create_node("TouchIdle", (200, 120))
             second_uuid = window.controller.create_node("TouchIdle", (460, 150))
             first_item = window.canvas.node_items[first_uuid]
@@ -2684,11 +2432,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             window.show()
             self.app.processEvents()
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             first_uuid = window.controller.create_node("TouchIdle", (200, 120))
             second_uuid = window.controller.create_node("TouchIdle", (460, 150))
             second_item = window.canvas.node_items[second_uuid]
@@ -2712,11 +2456,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_selected_overlapped_node_is_raised_above_newer_node(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             old_uuid = window.controller.create_node("TouchIdle", (200, 120))
             new_uuid = window.controller.create_node("TouchDrag", (200, 120))
             old_item = window.canvas.node_items[old_uuid]
@@ -2734,11 +2474,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_connection_preview_path_does_not_block_quick_create_hit_test(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             node_uuid = window.controller.create_node("TouchIdle", (100, 100))
             self.assertIsNotNone(node_uuid)
             window.canvas.rebuild_scene()
@@ -2759,11 +2495,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_connection_preview_snaps_to_input_pin_and_animates(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             source_uuid = window.controller.create_node("TouchIdle", (100, 100))
             target_uuid = window.controller.create_node("TouchIdle", (620, 150))
             self.assertIsNotNone(source_uuid)
@@ -2782,21 +2514,17 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
-    def test_connections_render_as_straight_paths_with_relation_highlight(self) -> None:
+    def test_connections_render_as_curved_paths_with_relation_highlight(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             parent_uuid = window.controller.create_node("TouchIdle", (100, 100))
             child_uuid = window.controller.create_node_with_connection(parent_uuid, "TouchIdle", (600, 180))
             window.canvas.rebuild_scene()
 
             connection_item = window.canvas.connection_items[(parent_uuid, child_uuid)]
             path = connection_item.path()
-            self.assertEqual(2, path.elementCount())
+            self.assertEqual(4, path.elementCount())
             window.controller.set_selected_node(parent_uuid)
             self.assertTrue(window.canvas.is_related_node(child_uuid))
             self.assertTrue(window.canvas.is_related_connection(parent_uuid, child_uuid))
@@ -2810,11 +2538,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_node_hover_glow_does_not_start_flow_timer(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             node_uuid = window.controller.create_node("TouchIdle", (100, 100))
             self.assertIsNotNone(node_uuid)
             window.canvas.rebuild_scene()
@@ -2832,11 +2556,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_function_node_card_layout_survives_zoom_in(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("TouchDrag", (200, 120))
             item = window.canvas.node_items[created]
             window.controller.update_field(created, "tips", "大方向深V的鬼斧神工都是方法是大哥", "simple")
@@ -2853,11 +2573,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_compact_card_text_layout_fits_bounds_when_zoomed_out(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = window.controller.create_node("TouchDrag", (200, 120))
             item = window.canvas.node_items[created]
             window.controller.update_field(created, "draw_able_name", "TouchDrag_very_long_compact_title_123456789", "simple")
@@ -2890,11 +2606,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_fast_rendering_keeps_compact_card_content_visible(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = None
             for index in range(55):
                 node_uuid = window.controller.create_node("TouchIdle", (200 + index * 260, 120))
@@ -2936,11 +2648,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_zoomed_out_cards_use_item_cache_while_panning(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             created = None
             for index in range(55):
                 node_uuid = window.controller.create_node("TouchIdle", (200 + index * 260, 120))
@@ -2974,12 +2682,12 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
-    def test_new_file_starts_as_unsaved_draft_without_filename_prompt(self) -> None:
+    def test_new_file_opens_the_base_template_workflow(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            window._create_new_file()
-            self.assertIsNone(window.controller.document.path)
-            self.assertFalse(window.save_action.isEnabled())
+            with patch.object(window, "_show_batch_template_dialog") as show_dialog:
+                window._create_new_file()
+            show_dialog.assert_called_once_with()
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
@@ -2987,20 +2695,12 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             doc_a = create_document(get_default_schema())
-            initial_a = next(node for node in doc_a.nodes if node.type == "Initial")
-            initial_a.fields["author"] = "asahi"
-            initial_a.fields["ship_skin_id"] = 302291
-            initial_a.fields["memo"] = "file_a"
-            initial_a.fields["CharName"] = "??A"
+            _set_ready_document_meta(doc_a, memo="file_a", char_name="??A")
             reassign_function_ids(get_default_schema(), doc_a)
             save_document(get_default_schema(), doc_a, root / "a.json")
 
             doc_b = create_document(get_default_schema())
-            initial_b = next(node for node in doc_b.nodes if node.type == "Initial")
-            initial_b.fields["author"] = "asahi"
-            initial_b.fields["ship_skin_id"] = 302292
-            initial_b.fields["memo"] = "file_b"
-            initial_b.fields["CharName"] = "??B"
+            _set_ready_document_meta(doc_b, ship_skin_id=302292, memo="file_b", char_name="??B")
             reassign_function_ids(get_default_schema(), doc_b)
             save_document(get_default_schema(), doc_b, root / "b.json")
 
@@ -3021,11 +2721,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_optimize_layout_keeps_unconnected_nodes_fixed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
 
             first = window.controller.create_node("TouchIdle", (420, 280))
             second = window.controller.create_node("TouchDrag", (80, 120))
@@ -3058,11 +2754,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_optimize_layout_moves_attached_comment_with_component(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
 
             first = window.controller.create_node("TouchIdle", (420, 280))
             second = window.controller.create_node("TouchDrag", (80, 120))
@@ -3087,11 +2779,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_optimize_layout_still_works_when_some_nodes_are_locked(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "测试", "simple")
+            _set_ready_controller_meta(window.controller, char_name="测试")
 
             first = window.controller.create_node("TouchIdle", (420, 280))
             second = window.controller.create_node("TouchDrag", (640, 420))
@@ -3117,11 +2805,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_optimize_layout_reserves_rows_for_branch_subtrees(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
 
             root = window.controller.create_node("TouchIdle", (120, 260))
             branch_a = window.controller.create_node("TouchIdle", (520, 100))
@@ -3158,11 +2842,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_parameter_trigger_renders_as_table_overlay(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             row_uuid = window.controller.create_node("ParameterTrigger", (220, 120))
             self.assertNotIn(row_uuid, window.canvas.node_items)
             table_item = window.canvas.table_row_to_item[row_uuid]
@@ -3202,11 +2882,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_parameter_table_cells_edit_without_connection_pins(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
-            initial = next(node for node in window.controller.document.nodes if node.type == "Initial")
-            window.controller.update_field(initial.uuid, "author", "asahi", "simple")
-            window.controller.update_field(initial.uuid, "ship_skin_id", 302291, "simple")
-            window.controller.update_field(initial.uuid, "memo", "mingji_2", "simple")
-            window.controller.update_field(initial.uuid, "CharName", "??", "simple")
+            _set_ready_controller_meta(window.controller)
             row_uuid = window.controller.create_node("ParameterTrigger", (220, 120))
             table_item = window.canvas.table_row_to_item[row_uuid]
 
@@ -3239,11 +2915,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
     def test_comment_and_legacy_draw_frame_roundtrip_to_group(self) -> None:
         schema = get_default_schema()
         document = create_document(schema)
-        initial = next(node for node in document.nodes if node.type == "Initial")
-        initial.fields["author"] = "asahi"
-        initial.fields["ship_skin_id"] = 302291
-        initial.fields["memo"] = "mingji_2"
-        initial.fields["CharName"] = "??"
+        _set_ready_document_meta(document)
         comment = create_node(schema, document, "Comment", (320, 160))
         comment.fields["theme_body_color"] = "#123456"
         comment.fields["theme_border_color"] = "#345678"

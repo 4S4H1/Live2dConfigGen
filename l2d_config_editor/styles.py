@@ -1,6 +1,62 @@
 """Application stylesheet."""
 
-APP_STYLE = """
+from dataclasses import dataclass
+from enum import Enum
+
+
+class ThemeMode(str, Enum):
+    DARK = "dark"
+    LIGHT = "light"
+
+
+@dataclass(frozen=True, slots=True)
+class ThemePalette:
+    mode: ThemeMode
+    canvas_background: str
+    grid_minor: str
+    grid_major: str
+    canvas_hint: str
+    connection_normal: str
+    connection_preview: str
+    connection_selected: str
+    connection_related: str
+    neutral_panel: str
+    editor_background: str
+    editor_text: str
+
+
+DARK_PALETTE = ThemePalette(
+    ThemeMode.DARK,
+    "#15181e",
+    "#20242c",
+    "#2a3039",
+    "#efeff1",
+    "#7d8aa0",
+    "#6fb6ff",
+    "#2b89ff",
+    "#fff4a8",
+    "#0d0e12",
+    "rgba(13,14,18,242)",
+    "#f8fafc",
+)
+
+LIGHT_PALETTE = ThemePalette(
+    ThemeMode.LIGHT,
+    "#edf1f5",
+    "#dfe5ec",
+    "#c7d0db",
+    "#1f2937",
+    "#64748b",
+    "#0284c7",
+    "#2563eb",
+    "#a16207",
+    "#f8fafc",
+    "rgba(255,255,255,246)",
+    "#111827",
+)
+
+
+DARK_APP_STYLE = """
 QMainWindow, QWidget {
     background: #15181e;
     color: #efeff1;
@@ -324,3 +380,70 @@ QScrollBar::sub-page {
     border: none;
 }
 """
+
+
+LIGHT_COLOR_REPLACEMENTS = {
+    "#15181e": "#f3f5f8",
+    "#1b2028": "#d9e0e8",
+    "#232935": "#cbd5e1",
+    "#efeff1": "#1f2937",
+    "#2a303a": "#cfd6df",
+    "#202631": "#e8eef6",
+    "#171b22": "#ffffff",
+    "#303743": "#cfd6df",
+    "#233452": "#dbeafe",
+    "#11141a": "#e9eef4",
+    "#bfc5cf": "#667085",
+    "#c9ced6": "#475467",
+    "#394150": "#b8c2cf",
+    "#1d222b": "#eef2f7",
+    "#4b5669": "#94a3b8",
+    "#0f1217": "#dfe6ee",
+    "#707887": "#98a2b3",
+    "#2264d6": "#2563eb",
+    "#2b74f0": "#3b82f6",
+    "#4a8eff": "#60a5fa",
+    "#174ba6": "#1d4ed8",
+    "#0d0e12": "#f8fafc",
+    "#12161c": "#eef2f6",
+    "#c7ccd5": "#475467",
+    "#2f3642": "#cfd6df",
+    "rgba(23, 27, 34, 0.96)": "rgba(255, 255, 255, 0.98)",
+    "#f7f8fa": "#111827",
+    "#d5d7db": "#344054",
+    "#8d96a5": "#667085",
+    "#9ea6b3": "#667085",
+    "#b8bec8": "#475467",
+    "#7d8593": "#98a2b3",
+    "#10141b": "#eef4fb",
+    "#344051": "#b8c2cf",
+    "#223452": "#dbeafe",
+    "#262d37": "#d9e0e8",
+    "#5c6575": "#98a2b3",
+    "#4b95ff": "#3b82f6",
+    "#37404d": "#b7c1ce",
+    "#465162": "#94a3b8",
+}
+
+
+def normalize_theme_mode(value: ThemeMode | str | None) -> ThemeMode:
+    try:
+        return value if isinstance(value, ThemeMode) else ThemeMode(str(value or ThemeMode.DARK.value))
+    except ValueError:
+        return ThemeMode.DARK
+
+
+def palette_for_theme(value: ThemeMode | str | None) -> ThemePalette:
+    return LIGHT_PALETTE if normalize_theme_mode(value) is ThemeMode.LIGHT else DARK_PALETTE
+
+
+def stylesheet_for_theme(value: ThemeMode | str | None) -> str:
+    if normalize_theme_mode(value) is ThemeMode.DARK:
+        return DARK_APP_STYLE
+    style = DARK_APP_STYLE
+    for source, target in LIGHT_COLOR_REPLACEMENTS.items():
+        style = style.replace(source, target)
+    return style
+
+
+APP_STYLE = stylesheet_for_theme(ThemeMode.DARK)

@@ -11,6 +11,7 @@ from PyQt6.QtCore import QSettings, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup, QCloseEvent, QDesktopServices, QGuiApplication, QKeySequence, QUndoStack
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -48,26 +49,78 @@ from .constants import CLIPBOARD_MIME
 from .controller import EditorController
 from .logic import (
     build_csv_export_filename,
-    build_template_version_folder_name,
     create_document,
-    create_template_document,
     export_documents_to_csv,
     load_document,
-    load_template_csv_rows,
-    save_document,
 )
 from .perf_tools import PerformanceToolDialog
+from .reference_images import read_reference_image
+from .styles import ThemeMode, normalize_theme_mode, stylesheet_for_theme
+from .svn_tools import SvnCommitRunner, discover_svn_executable
+from .template_batch import BatchTemplateDialog, create_base_template_files
 from .widgets import (
-    ColorFieldWidget,
-    CommitComboBox,
-    CommitLineEdit,
-    CommitPlainTextEdit,
     NodeFormWidget,
-    NumericLineEdit,
     ValidationSummaryWidget,
 )
 
 HELP_PAGE_URL = "https://ooia5293gn.feishu.cn/wiki/YvmxwxAKSitp3WkfFz3cY74Jnvg"
+
+
+class SvnCommitDialog(QDialog):
+    """Visible progress and output for the one-click SVN operation."""
+
+    def __init__(self, runner: SvnCommitRunner, file_path: Path, message: str, parent=None) -> None:
+        super().__init__(parent)
+        self.runner = runner
+        self._running = True
+        self.setWindowTitle("提交当前 JSON 到 SVN")
+        self.resize(760, 480)
+        layout = QVBoxLayout(self)
+        summary = QLabel(f"文件：{file_path}\n提交说明：{message}")
+        summary.setWordWrap(True)
+        layout.addWidget(summary)
+        self.phase_label = QLabel("准备提交…")
+        self.phase_label.setObjectName("sectionTitle")
+        layout.addWidget(self.phase_label)
+        self.log_edit = QPlainTextEdit()
+        self.log_edit.setReadOnly(True)
+        self.log_edit.setPlaceholderText("SVN CLI 输出将显示在这里。")
+        layout.addWidget(self.log_edit, 1)
+        self.action_button = QPushButton("取消")
+        self.action_button.clicked.connect(self._handle_action)
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        button_row.addWidget(self.action_button)
+        layout.addLayout(button_row)
+        runner.phaseChanged.connect(self.phase_label.setText)
+        runner.outputReceived.connect(self._append_output)
+        runner.finished.connect(self._handle_finished)
+
+    def _append_output(self, output: str) -> None:
+        cursor = self.log_edit.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        cursor.insertText(output)
+        self.log_edit.setTextCursor(cursor)
+        self.log_edit.ensureCursorVisible()
+
+    def _handle_finished(self, success: bool, message: str) -> None:
+        self._running = False
+        self.phase_label.setText(("成功：" if success else "失败：") + message)
+        self._append_output(f"\n{message}\n")
+        self.action_button.setText("关闭")
+
+    def _handle_action(self) -> None:
+        if self._running:
+            self.phase_label.setText("正在取消…")
+            self.runner.cancel()
+        else:
+            self.accept()
+
+    def reject(self) -> None:
+        if self._running:
+            self._handle_action()
+            return
+        super().reject()
 
 
 class CsvPreviewDialog(QDialog):
@@ -428,10 +481,13 @@ class MainWindow(QMainWindow):
     SETTINGS_WORKSPACE_ROOT = "workspace_root"
     SETTINGS_LAST_DOCUMENT = "last_document_path"
     SETTINGS_TRASH_ENABLED_DEFAULT = "trash_enabled_default"
+    SETTINGS_THEME_MODE = "ui/theme_mode"
+    SETTINGS_SVN_EXECUTABLE = "tools/svn_executable"
 
     def __init__(self, workdir: str | Path, *, prefer_saved_workspace: bool = True) -> None:
         super().__init__()
         self.settings = QSettings("OpenAI", "L2DConfigEditor")
+        self.theme_mode = normalize_theme_mode(self.settings.value(self.SETTINGS_THEME_MODE, ThemeMode.DARK.value))
         if prefer_saved_workspace:
             self.workdir = self._resolved_workspace_path(workdir)
         else:
@@ -463,6 +519,7 @@ class MainWindow(QMainWindow):
         self._current_session_key: str | None = None
         self._connected_undo_stack: QUndoStack | None = None
         self._refresh_file_list_after_save = False
+        self.svn_commit_dialog: SvnCommitDialog | None = None
 
         self.controller.pathChanged.connect(self._update_window_title)
         self.controller.pathChanged.connect(self._remember_last_opened_document)
@@ -492,8 +549,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("L2D交互图表编辑器")
         self.resize(1680, 980)
         self._build_ui()
-        self._update_workspace_path_display()
         self._build_actions()
+        self._apply_ui_theme(self.theme_mode, persist=False)
         self._build_hidden_inspector_compat()
         self.file_search_edit.textChanged.connect(self._refresh_file_list)
         self.file_list.itemClicked.connect(self._handle_file_list_item_clicked)
@@ -555,9 +612,6 @@ class MainWindow(QMainWindow):
         target = document or self.controller.document
         target.editor_settings.trash_enabled = self._saved_trash_enabled_preference()
 
-    def _update_workspace_path_display(self) -> None:
-        self.workspace_path_edit.setText(str(self.workdir))
-
     def _choose_workspace_directory(self) -> None:
         chosen = QFileDialog.getExistingDirectory(self, "选择 JSON 配置文件所在目录", str(self.workdir))
         if not chosen:
@@ -573,8 +627,11 @@ class MainWindow(QMainWindow):
         self.workdir = new_root
         self.controller.set_workspace_root(self.workdir)
         self.settings.setValue(self.SETTINGS_WORKSPACE_ROOT, str(self.workdir))
+        self.settings.remove(self.SETTINGS_LAST_DOCUMENT)
         self.settings.sync()
-        self._update_workspace_path_display()
+        self._document_sessions.clear()
+        self._current_session_key = None
+        self._create_blank_document_session()
         self._refresh_file_list()
         self._refresh_node_list_panel()
 
@@ -660,25 +717,6 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         toolbar.setFloatable(False)
 
-        mode_widget = QWidget(toolbar)
-        mode_layout = QHBoxLayout(mode_widget)
-        mode_layout.setContentsMargins(0, 0, 0, 0)
-        mode_layout.setSpacing(8)
-        mode_layout.addWidget(QLabel("编辑模式"))
-        self.simple_mode_radio = QRadioButton("简易")
-        self.advanced_mode_radio = QRadioButton("高级")
-        self.mode_button_group = QButtonGroup(self)
-        self.mode_button_group.setExclusive(True)
-        self.mode_button_group.addButton(self.simple_mode_radio)
-        self.mode_button_group.addButton(self.advanced_mode_radio)
-        self.simple_mode_radio.toggled.connect(lambda checked: checked and self.controller.set_global_mode("simple"))
-        self.advanced_mode_radio.toggled.connect(lambda checked: checked and self.controller.set_global_mode("advanced"))
-        mode_layout.addWidget(self.simple_mode_radio)
-        mode_layout.addWidget(self.advanced_mode_radio)
-        toolbar.addWidget(mode_widget)
-
-        toolbar.addSeparator()
-
         rule_widget = QWidget(toolbar)
         rule_layout = QHBoxLayout(rule_widget)
         rule_layout.setContentsMargins(0, 0, 0, 0)
@@ -727,6 +765,15 @@ class MainWindow(QMainWindow):
         self.file_directory_button.clicked.connect(self._show_file_directory_dialog)
         toolbar.addWidget(self.file_directory_button)
 
+        self.create_base_templates_button = QPushButton("创建配置底座")
+        self.create_base_templates_button.clicked.connect(self._show_batch_template_dialog)
+        toolbar.addWidget(self.create_base_templates_button)
+
+        self.svn_commit_button = QPushButton("提交当前 JSON 到 SVN")
+        self.svn_commit_button.setToolTip("自动保存当前文件，必要时执行 svn add，然后提交")
+        self.svn_commit_button.clicked.connect(self._commit_current_json_to_svn)
+        toolbar.addWidget(self.svn_commit_button)
+
         return toolbar
 
     def _create_card(self, object_name: str = "filePanelCard") -> tuple[QFrame, QVBoxLayout]:
@@ -743,36 +790,6 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
-
-        workspace_card, workspace_layout = self._create_card()
-        eyebrow = QLabel("\u5de5\u4f5c\u533a")
-        eyebrow.setObjectName("sectionEyebrow")
-        workspace_layout.addWidget(eyebrow)
-        title = QLabel("\u5df2\u521b\u5efa\u8282\u70b9")
-        title.setObjectName("sectionTitle")
-        workspace_layout.addWidget(title)
-        workspace_hint = QLabel("\u5de6\u4fa7\u9ed8\u8ba4\u7528\u4e8e\u67e5\u770b\u5f53\u524d\u56fe\u5185\u8282\u70b9\uff0c\u914d\u7f6e\u6587\u4ef6\u5207\u6362\u6539\u4e3a\u901a\u8fc7\u9876\u90e8\u5de5\u5177\u680f\u5165\u53e3\u6253\u5f00\u3002")
-        workspace_hint.setObjectName("panelHint")
-        workspace_hint.setWordWrap(True)
-        workspace_layout.addWidget(workspace_hint)
-
-        workspace_row = QHBoxLayout()
-        self.workspace_path_edit = QLineEdit()
-        self.workspace_path_edit.setObjectName("workspacePathField")
-        self.workspace_path_edit.setReadOnly(True)
-        self.workspace_path_edit.setPlaceholderText("\u672a\u9009\u62e9\u5de5\u7a0b\u76ee\u5f55")
-        self.workspace_path_edit.setToolTip("\u5f53\u524d\u5217\u51fa JSON \u914d\u7f6e\u7684\u6839\u76ee\u5f55\uff0c\u53ef\u76f4\u63a5\u590d\u5236\u8def\u5f84")
-        self.choose_workspace_button = QPushButton("\u9009\u62e9\u76ee\u5f55")
-        self.choose_workspace_button.setToolTip("\u9009\u62e9\u5b58\u653e JSON \u914d\u7f6e\u6587\u4ef6\u7684\u76ee\u5f55")
-        self.choose_workspace_button.clicked.connect(self._choose_workspace_directory)
-        self.open_workspace_button = QPushButton("\u6253\u5f00\u6240\u9009\u76ee\u5f55")
-        self.open_workspace_button.setToolTip("\u7528\u8d44\u6e90\u7ba1\u7406\u5668\u6253\u5f00\u5f53\u524d\u5de5\u4f5c\u76ee\u5f55")
-        self.open_workspace_button.clicked.connect(self._open_workspace_directory)
-        workspace_row.addWidget(self.workspace_path_edit, 1)
-        workspace_row.addWidget(self.choose_workspace_button, 0)
-        workspace_row.addWidget(self.open_workspace_button, 0)
-        workspace_layout.addLayout(workspace_row)
-        layout.addWidget(workspace_card)
 
         list_card, list_layout = self._create_card()
         list_eyebrow = QLabel("\u8282\u70b9")
@@ -801,14 +818,14 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
 
-        canvas_top_row = QHBoxLayout()
-        canvas_top_row.setContentsMargins(0, 0, 0, 0)
-        canvas_top_row.setSpacing(8)
-        canvas_top_row.addStretch(1)
+        self.canvas = NodeCanvasView(self.controller.schema, self.controller)
+        self.canvas.selectionSummaryChanged.connect(self._handle_selection_summary)
+        self.canvas.interactionBusyChanged.connect(self._handle_canvas_busy_changed)
+        layout.addWidget(self.canvas, 1)
 
-        self.search_panel = QFrame()
+        self.search_panel = QFrame(self, Qt.WindowType.Popup)
         self.search_panel.setObjectName("searchPanel")
-        self.search_panel.setMaximumWidth(720)
+        self.search_panel.setFixedWidth(620)
         search_layout = QVBoxLayout(self.search_panel)
         search_layout.setContentsMargins(12, 12, 12, 12)
         search_layout.setSpacing(6)
@@ -827,13 +844,7 @@ class MainWindow(QMainWindow):
         self.search_results.hide()
         search_layout.addLayout(search_row)
         search_layout.addWidget(self.search_results)
-        canvas_top_row.addWidget(self.search_panel, 0, Qt.AlignmentFlag.AlignRight)
-        layout.addLayout(canvas_top_row)
-
-        self.canvas = NodeCanvasView(self.controller.schema, self.controller)
-        self.canvas.selectionSummaryChanged.connect(self._handle_selection_summary)
-        self.canvas.interactionBusyChanged.connect(self._handle_canvas_busy_changed)
-        layout.addWidget(self.canvas, 1)
+        self.search_panel.hide()
         return panel
 
     def _build_inspector_panel(self) -> QWidget:
@@ -855,25 +866,6 @@ class MainWindow(QMainWindow):
         mode_eyebrow = QLabel("\u7f16\u8f91")
         mode_eyebrow.setObjectName("sectionEyebrow")
         mode_block.addWidget(mode_eyebrow)
-        mode_label = QLabel("\u7f16\u8f91\u6a21\u5f0f")
-        mode_label.setObjectName("searchTitle")
-        mode_block.addWidget(mode_label)
-
-        mode_row = QHBoxLayout()
-        mode_row.setContentsMargins(0, 0, 0, 0)
-        mode_row.setSpacing(8)
-        self.simple_mode_radio = QRadioButton("\u7b80\u6613")
-        self.advanced_mode_radio = QRadioButton("\u9ad8\u7ea7")
-        self.mode_button_group = QButtonGroup(self)
-        self.mode_button_group.setExclusive(True)
-        self.mode_button_group.addButton(self.simple_mode_radio)
-        self.mode_button_group.addButton(self.advanced_mode_radio)
-        self.simple_mode_radio.toggled.connect(lambda checked: checked and self.controller.set_global_mode("simple"))
-        self.advanced_mode_radio.toggled.connect(lambda checked: checked and self.controller.set_global_mode("advanced"))
-        mode_row.addWidget(self.simple_mode_radio)
-        mode_row.addWidget(self.advanced_mode_radio)
-        mode_row.addStretch(1)
-        mode_block.addLayout(mode_row)
 
         sequence_rule_label = QLabel("\u4e92\u52a8\u5e8f\u53f7\u521b\u5efa\u89c4\u5219")
         sequence_rule_label.setObjectName("searchTitle")
@@ -987,6 +979,18 @@ class MainWindow(QMainWindow):
         tools_menu = self.menuBar().addMenu("工具")
         help_menu = self.menuBar().addMenu("帮助")
 
+        appearance_menu = view_menu.addMenu("外观")
+        self.theme_action_group = QActionGroup(self)
+        self.theme_action_group.setExclusive(True)
+        self.dark_theme_action = QAction("夜间模式", self, checkable=True)
+        self.light_theme_action = QAction("白天模式", self, checkable=True)
+        self.theme_action_group.addAction(self.dark_theme_action)
+        self.theme_action_group.addAction(self.light_theme_action)
+        appearance_menu.addAction(self.dark_theme_action)
+        appearance_menu.addAction(self.light_theme_action)
+        self.dark_theme_action.triggered.connect(lambda checked: checked and self._apply_ui_theme(ThemeMode.DARK))
+        self.light_theme_action.triggered.connect(lambda checked: checked and self._apply_ui_theme(ThemeMode.LIGHT))
+
         open_action = QAction("\u6253\u5f00", self)
         open_action.triggered.connect(self._open_dialog)
         file_menu.addAction(open_action)
@@ -997,15 +1001,27 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.save_action)
         self._register_shortcut_action("save", self.save_action, QKeySequence(QKeySequence.StandardKey.Save))
 
+        file_menu.addSeparator()
+        change_workspace_action = QAction("更改工作区…", self)
+        change_workspace_action.triggered.connect(self._choose_workspace_directory)
+        file_menu.addAction(change_workspace_action)
+        open_workspace_action = QAction("在资源管理器中打开工作区", self)
+        open_workspace_action.triggered.connect(self._open_workspace_directory)
+        file_menu.addAction(open_workspace_action)
+
         self.export_csv_action = QAction("\u5bfc\u51fa\u5230 CSV", self)
         self.export_csv_action.triggered.connect(self._show_export_csv_dialog)
         self.menuBar().addAction(self.export_csv_action)
         self._register_shortcut_action("export_csv", self.export_csv_action, QKeySequence())
 
-        template_create_action = QAction("模板创建", self)
-        template_create_action.triggered.connect(self._create_templates_from_csv_dialog)
+        template_create_action = QAction("批量创建配置底座…", self)
+        template_create_action.triggered.connect(self._show_batch_template_dialog)
         tools_menu.addAction(template_create_action)
         self._register_shortcut_action("template_create", template_create_action, QKeySequence())
+        reference_image_action = QAction("添加参考图…", self)
+        reference_image_action.triggered.connect(self._add_reference_image_from_file)
+        tools_menu.addAction(reference_image_action)
+        self._register_shortcut_action("add_reference_image", reference_image_action, QKeySequence())
         performance_action = QAction("性能测试工具", self)
         performance_action.triggered.connect(self._open_performance_tool)
         tools_menu.addAction(performance_action)
@@ -1098,18 +1114,6 @@ class MainWindow(QMainWindow):
         self.debug_json_fields_action = QAction("\u8c03\u8bd5\u6a21\u5f0f\uff1a\u663e\u793a JSON \u5b57\u6bb5\u540d", self, checkable=True)
         self.debug_json_fields_action.toggled.connect(self._set_debug_json_field_names)
         view_menu.addAction(self.debug_json_fields_action)
-
-        mode_menu = view_menu.addMenu("\u7f16\u8f91\u6a21\u5f0f")
-        mode_group = QActionGroup(self)
-        mode_group.setExclusive(True)
-        self.simple_mode_action = QAction("\u7b80\u6613\u6a21\u5f0f", self, checkable=True)
-        self.advanced_mode_action = QAction("\u9ad8\u7ea7\u6a21\u5f0f", self, checkable=True)
-        self.simple_mode_action.triggered.connect(lambda: self.controller.set_global_mode("simple"))
-        self.advanced_mode_action.triggered.connect(lambda: self.controller.set_global_mode("advanced"))
-        mode_group.addAction(self.simple_mode_action)
-        mode_group.addAction(self.advanced_mode_action)
-        mode_menu.addAction(self.simple_mode_action)
-        mode_menu.addAction(self.advanced_mode_action)
 
         help_doc_action = QAction("使用说明", self)
         help_doc_action.triggered.connect(self._open_help_page)
@@ -1225,7 +1229,9 @@ class MainWindow(QMainWindow):
         self.controller.document = document
         self.controller.undo_stack = undo_stack
         self.controller.selected_node_uuid = None
-        self.controller.preferences.global_mode = document.global_mode
+        # Global simple/advanced UI was removed. Keep the legacy document field
+        # readable, but use one deterministic compatibility mode internally.
+        self.controller.preferences.global_mode = "simple"
         self._pending_group_dir = group_dir
         self._current_session_key = session_key
         self._set_active_undo_stack(undo_stack)
@@ -1306,22 +1312,30 @@ class MainWindow(QMainWindow):
             self.save_action.setEnabled(can_save)
 
     def _apply_saved_preferences(self) -> None:
-        mode = self.settings.value("ui/global_mode", self.controller.preferences.global_mode)
-        if isinstance(mode, str):
-            self.controller.set_global_mode(mode)
+        self.controller.preferences.global_mode = "simple"
         debug_json_fields = self.settings.value("ui/debug_json_field_names", self.controller.preferences.debug_json_field_names)
         debug_enabled = debug_json_fields in (True, "true", "1", 1)
         self.controller.preferences.debug_json_field_names = bool(debug_enabled)
         self.debug_json_fields_action.setChecked(bool(debug_enabled))
-        self.simple_mode_action.setChecked(self.controller.preferences.global_mode == "simple")
-        self.advanced_mode_action.setChecked(self.controller.preferences.global_mode == "advanced")
-        self.simple_mode_radio.setChecked(self.controller.preferences.global_mode == "simple")
-        self.advanced_mode_radio.setChecked(self.controller.preferences.global_mode == "advanced")
         self._apply_local_document_defaults(self.controller.document)
         self._handle_interaction_creation_mode_changed(self.controller.document.interaction_creation_mode)
         self._apply_wheel_settings(self._wheel_shortcut_settings())
         self._handle_editor_settings_changed(self.controller.document.editor_settings)
         self._update_save_action_state()
+
+    def _apply_ui_theme(self, mode: ThemeMode | str, *, persist: bool = True) -> None:
+        self.theme_mode = normalize_theme_mode(mode)
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(stylesheet_for_theme(self.theme_mode))
+        if hasattr(self, "canvas"):
+            self.canvas.set_ui_theme(self.theme_mode)
+        if hasattr(self, "dark_theme_action"):
+            self.dark_theme_action.setChecked(self.theme_mode is ThemeMode.DARK)
+            self.light_theme_action.setChecked(self.theme_mode is ThemeMode.LIGHT)
+        if persist:
+            self.settings.setValue(self.SETTINGS_THEME_MODE, self.theme_mode.value)
+            self.settings.sync()
 
     def _set_debug_json_field_names(self, enabled: bool) -> None:
         self.controller.preferences.debug_json_field_names = enabled
@@ -1331,7 +1345,7 @@ class MainWindow(QMainWindow):
             if node:
                 self.inspector_form.set_node(
                     node,
-                    self.controller.preferences.global_mode,
+                    "advanced",
                     self.controller.preferences.debug_json_field_names,
                 )
         for node_uuid in list(self.canvas.node_items):
@@ -1429,13 +1443,7 @@ class MainWindow(QMainWindow):
         return ""
 
     def _create_new_file(self) -> None:
-        group_dir = self._current_group_dir()
-        if not self._ensure_safe_to_leave_document(self.workdir / "__new__"):
-            return
-        self._stash_current_document_session()
-        self._create_blank_document_session(group_dir=group_dir)
-        self._refresh_file_list()
-        self._show_status("已创建草稿，请先完善初始节点后保存。")
+        self._show_batch_template_dialog()
 
     def _rename_selected_file(self) -> None:
         selected_relative = self._current_file_relative_path()
@@ -1517,11 +1525,11 @@ class MainWindow(QMainWindow):
             self._select_file_in_list(relative_path)
 
     def _save_current_file(self, silent: bool = False, *, allow_incomplete: bool = False) -> str | None:
-        self._commit_active_editor_change()
+        self._commit_pending_editor_changes()
         allowed, reason = self.controller.can_create_graph_content()
         if not allow_incomplete and not allowed:
             self._focus_initial_node_guidance(reason)
-            QMessageBox.warning(self, "\u65e0\u6cd5\u4fdd\u5b58", f"{reason}\n\u9996\u6b21\u4fdd\u5b58\u524d\u8bf7\u5148\u5b8c\u6210\u521d\u59cb\u8282\u70b9\u3002")
+            QMessageBox.warning(self, "无法保存", f"{reason}\n请先通过“批量创建配置底座”补全必要元数据。")
             return None
         target = self.controller.document.path
         path_changed = not bool(target)
@@ -1532,7 +1540,7 @@ class MainWindow(QMainWindow):
                 self._refresh_file_list_after_save = False
                 self._focus_initial_node_guidance(reason)
                 if not silent:
-                    QMessageBox.warning(self, "\u65e0\u6cd5\u4fdd\u5b58", "\u8bf7\u5148\u5b8c\u6210\u521d\u59cb\u8282\u70b9\u5185\u5bb9\uff0c\u518d\u751f\u6210\u914d\u7f6e\u6587\u4ef6\u3002")
+                    QMessageBox.warning(self, "无法保存", "当前文件缺少配置底座元数据，无法生成配置文件。")
                 return None
             target = str(generated)
         saved = self.controller.save_document(target)
@@ -1552,33 +1560,16 @@ class MainWindow(QMainWindow):
             self._refresh_file_list_after_save = False
         return saved
 
-    def _commit_active_editor_change(self) -> None:
-        focus_widget = self.focusWidget()
-        if isinstance(focus_widget, NumericLineEdit):
-            focus_widget._emit_commit()
-            return
-        if isinstance(focus_widget, CommitLineEdit):
-            focus_widget._emit_commit()
-            return
-        if isinstance(focus_widget, CommitPlainTextEdit):
-            focus_widget.committed.emit(focus_widget.toPlainText())
-            return
-        if isinstance(focus_widget, CommitComboBox):
-            focus_widget.committed.emit(focus_widget.currentData())
-            return
-        if isinstance(focus_widget, QLineEdit):
-            parent = focus_widget.parent()
-            if isinstance(parent, ColorFieldWidget):
-                parent.committed.emit(focus_widget.text().strip())
-                return
-        if hasattr(self, "inspector_form"):
-            self.inspector_form.commit_pending_edits()
-
     def _commit_pending_editor_changes(self) -> None:
         if hasattr(self, "inspector_form"):
             self.inspector_form.commit_pending_edits()
         if hasattr(self, "canvas"):
-            for item in self.canvas.node_items.values():
+            for table_item in list(self.canvas.table_items.values()):
+                table_item.commit_pending_edit()
+            for group_item in list(self.canvas.group_items.values()):
+                group_item.commit_pending_title_edit()
+            for item in list(self.canvas.node_items.values()):
+                item.commit_pending_inline_edit()
                 item.form.commit_pending_edits()
 
     def _handle_file_list_item_clicked(self, item: QListWidgetItem) -> None:
@@ -1622,6 +1613,14 @@ class MainWindow(QMainWindow):
             focus_widget.copy()
             return
         node_uuids = self._active_selected_node_uuids()
+        if not node_uuids:
+            image_uuids = self.canvas.selected_canvas_image_uuids()
+            if len(image_uuids) == 1:
+                item = self.canvas.image_items.get(image_uuids[0])
+                if item is not None and not item.image.isNull():
+                    QGuiApplication.clipboard().setImage(item.image)
+                    self._show_status("已复制参考图")
+            return
         payload = self.controller.serialize_selection(node_uuids)
         if not payload:
             return
@@ -1643,11 +1642,23 @@ class MainWindow(QMainWindow):
             focus_widget.paste()
             return
         mime = QGuiApplication.clipboard().mimeData()
-        if not mime or not mime.hasFormat(CLIPBOARD_MIME):
+        if not mime:
             return
-        payload = bytes(mime.data(CLIPBOARD_MIME))
-        position = self._next_paste_position(payload)
-        self.controller.paste_payload(payload, position)
+        if mime.hasFormat(CLIPBOARD_MIME):
+            payload = bytes(mime.data(CLIPBOARD_MIME))
+            try:
+                position = self._next_paste_position(payload)
+                pasted_node_uuids = self.controller.paste_payload(payload, position)
+            except (AttributeError, json.JSONDecodeError, KeyError, OverflowError, TypeError, UnicodeDecodeError, ValueError):
+                pasted_node_uuids = []
+            if pasted_node_uuids:
+                return
+        if mime.hasImage():
+            image_uuid = self.canvas.add_reference_image(QGuiApplication.clipboard().image(), name="剪贴板截图")
+            if image_uuid:
+                self._show_status("已粘贴参考图")
+            else:
+                self._show_status("截图无法粘贴：格式无效、数量已满或图片数据过大")
 
     def _duplicate_selection(self) -> None:
         node_uuids = self._active_selected_node_uuids()
@@ -1669,9 +1680,12 @@ class MainWindow(QMainWindow):
 
     def _delete_selection(self) -> None:
         node_uuids = self._active_selected_node_uuids()
+        image_uuids = self.canvas.selected_canvas_image_uuids()
         connection_pairs = self.canvas.selected_connection_pairs()
         if node_uuids:
             self.controller.remove_nodes(node_uuids)
+        if image_uuids:
+            self.controller.remove_canvas_images(image_uuids)
         for from_uuid, to_uuid in connection_pairs:
             self.controller.remove_connection(from_uuid, to_uuid)
 
@@ -1680,7 +1694,9 @@ class MainWindow(QMainWindow):
         if len(node_uuids) < 2:
             self._show_status("请先框选或多选至少两个节点后再打组")
             return
-        group_uuid = self.controller.create_group(node_uuids)
+        frame = self.canvas.group_bounds_for_nodes(node_uuids)
+        bounds = (frame.x(), frame.y(), frame.width(), frame.height()) if frame is not None else None
+        group_uuid = self.controller.create_group(node_uuids, bounds=bounds)
         if not group_uuid:
             self._show_status("当前选择无法打组")
             return
@@ -1689,19 +1705,19 @@ class MainWindow(QMainWindow):
     def _commit_inspector_field(self, key: str, value) -> None:
         node_uuid = self.controller.selected_node_uuid
         if node_uuid:
-            self.controller.update_field(node_uuid, key, value, self.controller.preferences.global_mode)
+            self.controller.update_field(node_uuid, key, value, "advanced")
 
     def _commit_inspector_fields(self, values: dict[str, object]) -> None:
         node_uuid = self.controller.selected_node_uuid
         if node_uuid:
-            self.controller.update_fields(node_uuid, values, self.controller.preferences.global_mode, label="应用外观方案")
+            self.controller.update_fields(node_uuid, values, "advanced", label="应用外观方案")
 
     def _update_inspector(self, node_uuid: str | None) -> None:
         node = self.controller.get_node(node_uuid) if node_uuid else None
         if node:
             self.inspector_form.set_node(
                 node,
-                self.controller.preferences.global_mode,
+                "advanced",
                 self.controller.preferences.debug_json_field_names,
             )
             self.validation_summary.set_issues(self.validation_cache.get(node.uuid, []))
@@ -1715,7 +1731,7 @@ class MainWindow(QMainWindow):
             if node:
                 self.inspector_form.set_node(
                     node,
-                    self.controller.preferences.global_mode,
+                    "advanced",
                     self.controller.preferences.debug_json_field_names,
                 )
                 self.validation_summary.set_issues(self.validation_cache.get(node.uuid, []))
@@ -1736,6 +1752,10 @@ class MainWindow(QMainWindow):
             item.setData(Qt.ItemDataRole.UserRole, hit.node_uuid)
             self.search_results.addItem(item)
         self.search_results.setVisible(self.search_results.count() > 0)
+        if self.search_results.isVisible():
+            self.search_results.setFixedHeight(min(180, max(42, self.search_results.count() * 34 + 8)))
+        if self.search_panel.isVisible():
+            self._position_search_popup()
 
     def _select_canvas_target(self, node_uuid: str) -> None:
         if node_uuid in self.canvas.node_items:
@@ -1749,6 +1769,7 @@ class MainWindow(QMainWindow):
         node_uuid = item.data(Qt.ItemDataRole.UserRole)
         self.canvas.focus_on_node(node_uuid, target_scale=1.05, emphasize=False)
         self._select_canvas_target(node_uuid)
+        self.search_panel.close()
 
     def _restore_canvas_layout(self) -> None:
         self.canvas.reset_view_layout()
@@ -1765,6 +1786,25 @@ class MainWindow(QMainWindow):
         self.performance_dialog.show()
         self.performance_dialog.raise_()
         self.performance_dialog.activateWindow()
+
+    def _add_reference_image_from_file(self) -> None:
+        image_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "添加参考图",
+            str(self.workdir),
+            "Images (*.png *.jpg *.jpeg *.bmp *.webp)",
+        )
+        if not image_path:
+            return
+        image = read_reference_image(image_path)
+        if image.isNull():
+            QMessageBox.warning(self, "添加参考图失败", "无法读取所选图片。")
+            return
+        image_uuid = self.canvas.add_reference_image(image, name=Path(image_path).name)
+        if image_uuid:
+            self._show_status(f"已添加参考图 {Path(image_path).name}")
+        else:
+            QMessageBox.warning(self, "添加参考图失败", "参考图数量已满，或图片数据超过安全限制。")
 
     def _show_export_csv_dialog(self) -> None:
         files = [(relative_path, self._read_file_display_meta(self.workdir / relative_path)[1]) for relative_path in self.controller.file_list()]
@@ -2022,57 +2062,86 @@ class MainWindow(QMainWindow):
         self.file_directory_dialog.raise_()
         self.file_directory_dialog.activateWindow()
 
-    def _create_templates_from_csv_dialog(self) -> None:
-        csv_path, _ = QFileDialog.getOpenFileName(self, "选择模板 CSV", str(self.workdir), "CSV Files (*.csv)")
-        if not csv_path:
+    def _select_svn_executable(self) -> Path | None:
+        saved = self.settings.value(self.SETTINGS_SVN_EXECUTABLE)
+        executable = discover_svn_executable(str(saved) if saved else None)
+        if executable is not None:
+            self.settings.setValue(self.SETTINGS_SVN_EXECUTABLE, str(executable))
+            self.settings.sync()
+            return executable
+        filename = "svn.exe" if os.name == "nt" else "svn"
+        chosen, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择 SVN CLI 可执行文件",
+            str(Path.home()),
+            f"SVN CLI ({filename});;所有文件 (*)",
+        )
+        if not chosen:
+            QMessageBox.information(
+                self,
+                "未找到 SVN CLI",
+                "请安装带命令行工具的 SVN 客户端，或选择 svn.exe 后再提交。",
+            )
+            return None
+        executable = Path(chosen).resolve()
+        self.settings.setValue(self.SETTINGS_SVN_EXECUTABLE, str(executable))
+        self.settings.sync()
+        return executable
+
+    def _commit_current_json_to_svn(self) -> None:
+        saved_path = self._save_current_file(silent=False)
+        if not saved_path:
+            return
+        file_path = Path(saved_path).resolve()
+        executable = self._select_svn_executable()
+        if executable is None:
+            return
+        message = file_path.name
+        runner = SvnCommitRunner(executable, self)
+        dialog = SvnCommitDialog(runner, file_path, message, self)
+        self.svn_commit_dialog = dialog
+        self.svn_commit_button.setEnabled(False)
+
+        def finish(_success: bool, result: str) -> None:
+            self.svn_commit_button.setEnabled(True)
+            if not _success and "无法启动 SVN CLI" in result:
+                self.settings.remove(self.SETTINGS_SVN_EXECUTABLE)
+                self.settings.sync()
+            self._show_status(result)
+
+        runner.finished.connect(finish)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        QTimer.singleShot(0, lambda: runner.start(file_path, message, self.workdir))
+
+    def _show_batch_template_dialog(self) -> None:
+        if not self._ensure_safe_to_leave_document(self.workdir / "__new__"):
+            return
+        dialog = BatchTemplateDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:
-            created_files, created_folders = self._create_templates_from_csv(Path(csv_path))
+            paths = create_base_template_files(self.controller.schema, self.workdir, dialog.template_specs())
         except Exception as exc:
-            QMessageBox.warning(self, "模板创建失败", str(exc))
+            QMessageBox.warning(self, "配置底座创建失败", str(exc))
             return
         self._refresh_file_list()
+        folders = {path.parent for path in paths}
         QMessageBox.information(
             self,
-            "模板创建完成",
-            f"已创建 {created_files} 个 JSON，输出到 {created_folders} 个版本目录。\n当前工作区：{self.workdir}",
+            "配置底座已创建",
+            f"已创建 {len(paths)} 个配置底座，输出到 {len(folders)} 个版本目录。\n"
+            "每份配置都以 idle0 为根节点，角色信息已作为隐式字段写入。",
         )
-
-    def _create_templates_from_csv(self, csv_path: Path) -> tuple[int, int]:
-        rows = load_template_csv_rows(csv_path)
-        if not rows:
-            raise ValueError("CSV 中没有可用数据行。")
-        created_files = 0
-        created_folders: set[str] = set()
-        for row in rows:
-            version = str(row.get("version") or "").strip()
-            folder_name = build_template_version_folder_name(version)
-            target_dir = self.workdir / folder_name
-            target_dir.mkdir(parents=True, exist_ok=True)
-            document = create_template_document(
-                self.controller.schema,
-                version=version,
-                char_name=str(row.get("CharName") or "").strip(),
-                memo=str(row.get("memo") or "").strip(),
-                ship_skin_id=int(row.get("ship_skin_id") or 0),
-            )
-            output_path = self._available_template_output_path(target_dir, str(row.get("CharName") or "").strip())
-            save_document(self.controller.schema, document, output_path)
-            created_files += 1
-            created_folders.add(folder_name)
-        return created_files, len(created_folders)
-
-    def _available_template_output_path(self, directory: Path, char_name: str) -> Path:
-        base_name = self._sanitize_filename_stem(char_name or "config")
-        candidate = directory / f"{base_name}.json"
-        if not candidate.exists():
-            return candidate
-        index = 2
-        while True:
-            numbered = directory / f"{base_name}_{index}.json"
-            if not numbered.exists():
-                return numbered
-            index += 1
+        if not paths:
+            return
+        self._stash_current_document_session()
+        self._open_existing_session_or_file(paths[0])
+        relative_path = self._relative_path_for_document(paths[0])
+        if relative_path:
+            self._select_file_in_list(relative_path)
+        self._show_status(f"已创建 {len(paths)} 个配置底座")
 
     def _focus_selected_node(self) -> None:
         node_uuid = self.controller.selected_node_uuid
@@ -2102,8 +2171,35 @@ class MainWindow(QMainWindow):
                 return
 
     def _focus_search(self) -> None:
+        self.search_panel.adjustSize()
+        self.search_panel.show()
+        self._position_search_popup()
+        self.search_panel.raise_()
         self.search_edit.setFocus()
         self.search_edit.selectAll()
+
+    def _position_search_popup(self) -> None:
+        if not hasattr(self, "search_panel") or not hasattr(self, "canvas"):
+            return
+        self.search_panel.adjustSize()
+        popup_size = self.search_panel.sizeHint()
+        width = self.search_panel.width()
+        height = max(58, popup_size.height())
+        self.search_panel.resize(width, height)
+        anchor = self.canvas.viewport().mapToGlobal(self.canvas.viewport().rect().topRight())
+        x = anchor.x() - width - 16
+        y = anchor.y() + 16
+        screen = QGuiApplication.screenAt(anchor)
+        if screen is not None:
+            available = screen.availableGeometry()
+            x = max(available.left() + 8, min(x, available.right() - width - 8))
+            y = max(available.top() + 8, min(y, available.bottom() - height - 8))
+        self.search_panel.move(x, y)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "search_panel") and self.search_panel.isVisible():
+            self._position_search_popup()
 
     def _focus_file_search(self) -> None:
         self._show_file_directory_dialog()
@@ -2115,11 +2211,12 @@ class MainWindow(QMainWindow):
         self._select_canvas_target(node_uuid)
 
     def _focus_initial_node_guidance(self, _reason: str = "") -> None:
-        initial = next((node for node in self.controller.document.nodes if node.type == "Initial"), None)
-        if not initial:
-            return
-        self.canvas.focus_on_node(initial.uuid, target_scale=1.35, emphasize=True)
-        self._select_canvas_target(initial.uuid)
+        idle0 = next((node for node in self.controller.document.nodes if node.type == "Idle0"), None)
+        if idle0:
+            self.canvas.focus_on_node(idle0.uuid, target_scale=1.35, emphasize=True)
+            self._select_canvas_target(idle0.uuid)
+        if _reason:
+            self.statusBar().showMessage(_reason, 6000)
 
     def _store_validation(self, issues) -> None:
         validation_cache: dict[str, list] = {}
@@ -2131,27 +2228,22 @@ class MainWindow(QMainWindow):
 
     def _update_document_state(self, state) -> None:
         if state.is_meta_ready:
-            self.inspector_meta.setText("\u521d\u59cb\u8282\u70b9\u5df2\u5b8c\u6210\uff0c\u5141\u8bb8\u521b\u5efa\u8282\u70b9\u4e0e\u8fde\u7ebf\u3002")
+            self.inspector_meta.setText("配置底座元数据就绪，可以创建节点与连线。")
         else:
-            self.inspector_meta.setText(f"\u9700\u5148\u5b8c\u6210\u521d\u59cb\u8282\u70b9\u5b57\u6bb5: {' / '.join(state.meta_missing_fields)}")
+            self.inspector_meta.setText(f"配置底座缺少必要元数据: {' / '.join(state.meta_missing_fields)}")
         self._update_save_action_state()
 
     def _handle_interaction_creation_mode_changed(self, mode: str) -> None:
         self.auto_create_rule_radio.setChecked(mode == "auto")
         self.manual_create_rule_radio.setChecked(mode == "manual")
 
-    def _handle_global_mode_changed(self, mode: str) -> None:
-        self.settings.setValue("ui/global_mode", mode)
-        self.simple_mode_action.setChecked(mode == "simple")
-        self.advanced_mode_action.setChecked(mode == "advanced")
-        self.simple_mode_radio.setChecked(mode == "simple")
-        self.advanced_mode_radio.setChecked(mode == "advanced")
+    def _handle_global_mode_changed(self, _mode: str) -> None:
         if self.controller.selected_node_uuid:
             node = self.controller.get_node(self.controller.selected_node_uuid)
             if node:
                 self.inspector_form.set_node(
                     node,
-                    mode,
+                    "advanced",
                     self.controller.preferences.debug_json_field_names,
                 )
 

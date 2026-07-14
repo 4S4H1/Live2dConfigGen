@@ -22,12 +22,13 @@ class AddNodesCommand(QUndoCommand):
 
 
 class RemoveNodesCommand(QUndoCommand):
-    def __init__(self, controller, nodes, connections, trash_entries) -> None:
+    def __init__(self, controller, nodes, connections, trash_entries, groups=None) -> None:
         super().__init__("删除节点")
         self.controller = controller
         self.nodes = [node.clone() for node in nodes]
         self.connections = list(connections)
         self.trash_entries = list(trash_entries)
+        self.groups = [group.clone() for group in (groups or [])]
 
     def redo(self) -> None:
         self.controller._delete_nodes([node.clone() for node in self.nodes], list(self.connections), list(self.trash_entries))
@@ -38,6 +39,8 @@ class RemoveNodesCommand(QUndoCommand):
             list(self.connections),
             [entry.entry_id for entry in self.trash_entries],
         )
+        if self.groups:
+            self.controller._set_groups([group.clone() for group in self.groups])
 
 
 class UpdateFieldCommand(QUndoCommand):
@@ -152,6 +155,46 @@ class SetGroupsCommand(QUndoCommand):
 
     def undo(self) -> None:
         self.controller._set_groups([group.clone() for group in self.old_groups])
+
+
+class AddCanvasImagesCommand(QUndoCommand):
+    def __init__(self, controller, images) -> None:
+        super().__init__("添加参考图")
+        self.controller = controller
+        self.images = [image.clone() for image in images]
+
+    def redo(self) -> None:
+        self.controller._insert_canvas_images([image.clone() for image in self.images])
+
+    def undo(self) -> None:
+        self.controller._remove_canvas_images([image.uuid for image in self.images])
+
+
+class RemoveCanvasImagesCommand(QUndoCommand):
+    def __init__(self, controller, images) -> None:
+        super().__init__("删除参考图")
+        self.controller = controller
+        self.images = [image.clone() for image in images]
+
+    def redo(self) -> None:
+        self.controller._remove_canvas_images([image.uuid for image in self.images])
+
+    def undo(self) -> None:
+        self.controller._insert_canvas_images([image.clone() for image in self.images])
+
+
+class MoveCanvasImagesCommand(QUndoCommand):
+    def __init__(self, controller, old_positions, new_positions) -> None:
+        super().__init__("移动参考图")
+        self.controller = controller
+        self.old_positions = dict(old_positions)
+        self.new_positions = dict(new_positions)
+
+    def redo(self) -> None:
+        self.controller._move_canvas_images(self.new_positions)
+
+    def undo(self) -> None:
+        self.controller._move_canvas_images(self.old_positions)
 
 
 class MoveNodeCommand(QUndoCommand):
