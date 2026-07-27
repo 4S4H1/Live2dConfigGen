@@ -8,10 +8,10 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("L2D_CONFIG_EDITOR_TEST_CLOSE_EVENT_POLICY", "discard")
 
-from PyQt6.QtCore import QMimeData, QPointF, Qt
-from PyQt6.QtGui import QGuiApplication, QImage
-from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QFileDialog, QGraphicsItem, QInputDialog
+from PySide6.QtCore import QMimeData, QPointF, Qt
+from PySide6.QtGui import QGuiApplication, QImage
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QFileDialog, QGraphicsItem, QInputDialog
 
 from l2d_config_editor.controller import EditorController
 from l2d_config_editor.logic import create_document, create_node, get_default_schema, load_document, save_document
@@ -219,7 +219,7 @@ class CanvasImagePersistenceTests(unittest.TestCase):
             loaded = load_document(schema, path)
 
         self.assertEqual(data_base64, payload["canvas_images"][0]["data_base64"])
-        self.assertEqual(2, payload["format_version"])
+        self.assertEqual(3, payload["format_version"])
         self.assertEqual(document.canvas_images[0], loaded.canvas_images[0])
 
     def test_canvas_image_add_remove_and_move_are_undoable(self) -> None:
@@ -512,8 +512,11 @@ class CanvasGroupInteractionTests(unittest.TestCase):
                 title="旧标题",
                 bounds=(frame.x(), frame.y(), frame.width(), frame.height()),
             )
+            window.show()
             self.app.processEvents()
             group_item = window.canvas.group_items[group_uuid]
+            window.canvas.centerOn(group_item)
+            self.app.processEvents()
             title_point = window.canvas.mapFromScene(group_item.mapToScene(group_item._title_rect.center()))
 
             QTest.mouseDClick(
@@ -676,7 +679,10 @@ class CanvasGroupInteractionTests(unittest.TestCase):
 
             self.assertEqual(1, len(window.controller.document.canvas_images))
             self.assertEqual("流程参考.png", window.controller.document.canvas_images[0].name)
-            tool_actions = [action.text() for action in window.menuBar().actions()[3].menu().actions()]
+            # Keep the PySide6-owned menu wrapper alive explicitly; querying it
+            # back through QAction.menu() after monkey-patching QFileDialog can
+            # produce an invalid transient wrapper on Windows.
+            tool_actions = [action.text() for action in window.tools_menu.actions()]
             self.assertIn("添加参考图…", tool_actions)
             self.close_window(window)
 

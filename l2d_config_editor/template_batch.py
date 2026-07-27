@@ -11,9 +11,9 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QGuiApplication
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
     QDialogButtonBox,

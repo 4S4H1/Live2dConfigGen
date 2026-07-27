@@ -5,14 +5,17 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
-from PyQt6.QtCore import QSettings, Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QAction, QActionGroup, QCloseEvent, QDesktopServices, QGuiApplication, QKeySequence, QUndoStack
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QMimeData, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QColor, QDesktopServices, QGuiApplication, QKeySequence, QUndoStack
+from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QCheckBox,
+    QColorDialog,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -42,8 +45,10 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QButtonGroup,
     QPlainTextEdit,
+    QProgressDialog,
 )
 
+from .app_settings import create_app_settings
 from .canvas import NodeCanvasView
 from .constants import CLIPBOARD_MIME
 from .controller import EditorController
@@ -58,6 +63,10 @@ from .reference_images import read_reference_image
 from .styles import ThemeMode, normalize_theme_mode, stylesheet_for_theme
 from .svn_tools import SvnCommitRunner, discover_svn_executable
 from .template_batch import BatchTemplateDialog, create_base_template_files
+from .update_client import UpdateClient, bundled_public_key_pem
+from .update_installer import launch_installer_after_exit
+from .update_manifest import UpdateValidationError
+from .version import PRODUCT_NAME, PUBLISHER, VERSION
 from .widgets import (
     NodeFormWidget,
     ValidationSummaryWidget,
@@ -148,55 +157,52 @@ class CsvPreviewDialog(QDialog):
                 self.table.setItem(row_index, column_index, QTableWidgetItem(str(row.values.get(column, ""))))
 
 
-class TrashDialog(QDialog):
-    def __init__(self, parent=None) -> None:
+class ConciseDisplayDialog(QDialog):
+    FIELD_OPTIONS = (
+        ("tips", "备注"),
+        ("draw_able_name", "绘制 / 帧名"),
+        ("parameter", "参数"),
+        ("action_trigger", "过渡动画"),
+        ("action_trigger_active", "目标待机"),
+    )
+    ELEMENT_OPTIONS = (
+        ("groups", "分组框"),
+        ("tables", "参数表"),
+        ("images", "参考图片"),
+        ("strokes", "画笔线条"),
+    )
+
+    def __init__(self, fields: set[str], elements: dict[str, bool], parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("节点垃圾箱")
-        self.resize(720, 520)
+        self.setWindowTitle("简洁展示设置")
+        self.resize(420, 430)
         layout = QVBoxLayout(self)
-        description = QLabel("已删除节点的编号槽位会先保留在这里。清理后，对应槽位才能被后续新节点复用。")
+        description = QLabel("只改变画布显示，不会删除字段、节点或画布内容。可见字段仍可双击编辑。")
         description.setWordWrap(True)
         layout.addWidget(description)
+        layout.addWidget(QLabel("节点字段"))
+        self.field_checkboxes: dict[str, QCheckBox] = {}
+        for key, label in self.FIELD_OPTIONS:
+            checkbox = QCheckBox(label)
+            checkbox.setChecked(key in fields)
+            self.field_checkboxes[key] = checkbox
+            layout.addWidget(checkbox)
+        layout.addWidget(QLabel("画布元素"))
+        self.element_checkboxes: dict[str, QCheckBox] = {}
+        for key, label in self.ELEMENT_OPTIONS:
+            checkbox = QCheckBox(label)
+            checkbox.setChecked(bool(elements.get(key, False)))
+            self.element_checkboxes[key] = checkbox
+            layout.addWidget(checkbox)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
 
-        self.list_widget = QListWidget()
-        self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        layout.addWidget(self.list_widget, 1)
-
-        button_row = QHBoxLayout()
-        self.remove_selected_button = QPushButton("清理选中")
-        self.clear_all_button = QPushButton("全部清空")
-        self.close_button = QPushButton("关闭")
-        button_row.addWidget(self.remove_selected_button)
-        button_row.addWidget(self.clear_all_button)
-        button_row.addStretch(1)
-        button_row.addWidget(self.close_button)
-        layout.addLayout(button_row)
-
-    def set_entries(self, entries) -> None:
-        self.list_widget.clear()
-        for entry in entries:
-            detail_bits = []
-            if entry.type_slot:
-                detail_bits.append(f"类型序号 {entry.type_slot}")
-            if entry.export_slot:
-                detail_bits.append(f"导出ID槽位 {entry.export_slot}")
-            if entry.reserved_fields.get("draw_able_name"):
-                detail_bits.append(f"框 {entry.reserved_fields['draw_able_name']}")
-            if entry.reserved_fields.get("parameter"):
-                detail_bits.append(f"参数 {entry.reserved_fields['parameter']}")
-            line = f"{entry.title} | {' / '.join(detail_bits)}" if detail_bits else entry.title
-            item = QListWidgetItem(line)
-            item.setData(Qt.ItemDataRole.UserRole, entry.entry_id)
-            item.setToolTip(line)
-            self.list_widget.addItem(item)
-
-    def selected_entry_ids(self) -> list[str]:
-        result: list[str] = []
-        for item in self.list_widget.selectedItems():
-            entry_id = item.data(Qt.ItemDataRole.UserRole)
-            if isinstance(entry_id, str) and entry_id:
-                result.append(entry_id)
-        return result
+    def values(self) -> tuple[set[str], dict[str, bool]]:
+        fields = {key for key, checkbox in self.field_checkboxes.items() if checkbox.isChecked()}
+        elements = {key: checkbox.isChecked() for key, checkbox in self.element_checkboxes.items()}
+        return fields, elements
 
 
 class ExportCsvDialog(QDialog):
@@ -311,7 +317,7 @@ class FileDirectoryDialog(QDialog):
 
 
 class NodeDirectoryDialog(QDialog):
-    nodeRequested = pyqtSignal(str)
+    nodeRequested = Signal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -477,16 +483,21 @@ class ShortcutConfigDialog(QDialog):
 class MainWindow(QMainWindow):
     AUTOSAVE_DELAY_MS = 1800
     PASTE_GAP = 96.0
-    # QSettings 键：存 Windows 注册表 HKCU\Software\OpenAI\L2DConfigEditor，不是仓库里的 config.json。
+    # Application-only preferences; graph content continues to live in JSON.
     SETTINGS_WORKSPACE_ROOT = "workspace_root"
     SETTINGS_LAST_DOCUMENT = "last_document_path"
-    SETTINGS_TRASH_ENABLED_DEFAULT = "trash_enabled_default"
     SETTINGS_THEME_MODE = "ui/theme_mode"
     SETTINGS_SVN_EXECUTABLE = "tools/svn_executable"
+    SETTINGS_CONCISE_ENABLED = "view/concise/enabled"
+    SETTINGS_CONCISE_FIELDS = "view/concise/fields"
+    SETTINGS_PEN_COLOR = "canvas/pen/color"
+    SETTINGS_PEN_WIDTH = "canvas/pen/width"
+    SETTINGS_UPDATE_BASE_URL = "updates/base_url"
+    SETTINGS_UPDATE_LAST_CHECK = "updates/last_check_at"
 
     def __init__(self, workdir: str | Path, *, prefer_saved_workspace: bool = True) -> None:
         super().__init__()
-        self.settings = QSettings("OpenAI", "L2DConfigEditor")
+        self.settings = create_app_settings()
         self.theme_mode = normalize_theme_mode(self.settings.value(self.SETTINGS_THEME_MODE, ThemeMode.DARK.value))
         if prefer_saved_workspace:
             self.workdir = self._resolved_workspace_path(workdir)
@@ -503,7 +514,6 @@ class MainWindow(QMainWindow):
         self.refresh_button = self.file_directory_dialog.refresh_button
         self.new_button = self.file_directory_dialog.new_button
         self.delete_button = self.file_directory_dialog.delete_button
-        self.trash_dialog: TrashDialog | None = None
         self.node_directory_dialog: NodeDirectoryDialog | None = None
         self.performance_dialog: PerformanceToolDialog | None = None
         self._auto_save_timer = QTimer(self)
@@ -520,6 +530,11 @@ class MainWindow(QMainWindow):
         self._connected_undo_stack: QUndoStack | None = None
         self._refresh_file_list_after_save = False
         self.svn_commit_dialog: SvnCommitDialog | None = None
+        self._update_client: UpdateClient | None = None
+        self._update_progress: QProgressDialog | None = None
+        self._update_check_is_manual = False
+        self._pending_update_manifest: dict[str, object] | None = None
+        self._approved_update_exit = False
 
         self.controller.pathChanged.connect(self._update_window_title)
         self.controller.pathChanged.connect(self._remember_last_opened_document)
@@ -539,14 +554,13 @@ class MainWindow(QMainWindow):
         self.controller.globalModeChanged.connect(self._handle_global_mode_changed)
         self.controller.interactionCreationModeChanged.connect(self._handle_interaction_creation_mode_changed)
         self.controller.schemaChanged.connect(self._handle_schema_changed)
-        self.controller.trashBinChanged.connect(self._refresh_trash_dialog)
         self.controller.metaActionBlocked.connect(self._focus_initial_node_guidance)
         self.controller.editorSettingsChanged.connect(self._handle_editor_settings_changed)
         self._set_active_undo_stack(self.controller.undo_stack)
         self._shortcut_actions: dict[str, QAction] = {}
         self._shortcut_defaults: dict[str, QKeySequence] = {}
 
-        self.setWindowTitle("L2D交互图表编辑器")
+        self.setWindowTitle(PRODUCT_NAME)
         self.resize(1680, 980)
         self._build_ui()
         self._build_actions()
@@ -568,6 +582,7 @@ class MainWindow(QMainWindow):
         self._update_window_title(self.controller.document.path)
         self._update_inspector(None)
         self._sync_undo_actions()
+        QTimer.singleShot(1500, self._maybe_check_updates)
 
     def _resolved_workspace_path(self, default: str | Path) -> Path:
         default_path = Path(default).resolve()
@@ -603,14 +618,6 @@ class MainWindow(QMainWindow):
         except Exception:
             return False
         return True
-
-    def _saved_trash_enabled_preference(self) -> bool:
-        raw = self.settings.value(self.SETTINGS_TRASH_ENABLED_DEFAULT, False)
-        return raw in (True, "true", "1", 1)
-
-    def _apply_local_document_defaults(self, document=None) -> None:
-        target = document or self.controller.document
-        target.editor_settings.trash_enabled = self._saved_trash_enabled_preference()
 
     def _choose_workspace_directory(self) -> None:
         chosen = QFileDialog.getExistingDirectory(self, "选择 JSON 配置文件所在目录", str(self.workdir))
@@ -740,9 +747,25 @@ class MainWindow(QMainWindow):
         self.numeric_linkage_checkbox.toggled.connect(self._toggle_numeric_linkage)
         toolbar.addWidget(self.numeric_linkage_checkbox)
 
-        self.trash_enabled_checkbox = QCheckBox("启用回收站")
-        self.trash_enabled_checkbox.toggled.connect(self._toggle_trash_enabled)
-        toolbar.addWidget(self.trash_enabled_checkbox)
+        self.pen_mode_checkbox = QCheckBox("画笔")
+        self.pen_mode_checkbox.setToolTip("开启后：Ctrl+左键自由绘制，Ctrl+右键删除整条线")
+        self.pen_mode_checkbox.toggled.connect(lambda checked: self.canvas.set_pen_mode(checked))
+        toolbar.addWidget(self.pen_mode_checkbox)
+        self.pen_color_button = QPushButton("颜色")
+        self.pen_color_button.clicked.connect(self._choose_pen_color)
+        toolbar.addWidget(self.pen_color_button)
+        self.pen_width_combo = QComboBox()
+        self.pen_width_combo.addItem("细", 2.0)
+        self.pen_width_combo.addItem("中", 4.0)
+        self.pen_width_combo.addItem("粗", 8.0)
+        self.pen_width_combo.currentIndexChanged.connect(self._apply_pen_controls)
+        toolbar.addWidget(self.pen_width_combo)
+        self.concise_mode_checkbox = QCheckBox("简洁展示")
+        self.concise_mode_checkbox.toggled.connect(self._toggle_concise_display)
+        toolbar.addWidget(self.concise_mode_checkbox)
+        self.concise_settings_button = QPushButton("简洁设置")
+        self.concise_settings_button.clicked.connect(self._show_concise_settings)
+        toolbar.addWidget(self.concise_settings_button)
 
         toolbar.addSeparator()
 
@@ -756,10 +779,6 @@ class MainWindow(QMainWindow):
         self.group_selected_button = QPushButton("打组")
         self.group_selected_button.clicked.connect(self._group_selected_nodes)
         toolbar.addWidget(self.group_selected_button)
-
-        self.trash_button = QPushButton("已删除节点")
-        self.trash_button.clicked.connect(self._show_trash_dialog)
-        toolbar.addWidget(self.trash_button)
 
         self.file_directory_button = QPushButton("配置文件")
         self.file_directory_button.clicked.connect(self._show_file_directory_dialog)
@@ -887,10 +906,7 @@ class MainWindow(QMainWindow):
         mode_block.addLayout(sequence_rule_row)
         self.numeric_linkage_checkbox = QCheckBox("数值联动")
         self.numeric_linkage_checkbox.toggled.connect(self._toggle_numeric_linkage)
-        self.trash_enabled_checkbox = QCheckBox("启用回收站")
-        self.trash_enabled_checkbox.toggled.connect(self._toggle_trash_enabled)
         mode_block.addWidget(self.numeric_linkage_checkbox)
-        mode_block.addWidget(self.trash_enabled_checkbox)
         control_layout.addLayout(mode_block)
 
         actions_block = QVBoxLayout()
@@ -907,13 +923,10 @@ class MainWindow(QMainWindow):
         self.restore_layout_button.clicked.connect(self._restore_canvas_layout)
         self.optimize_layout_button = QPushButton("\u4f18\u5316\u8fde\u7ebf")
         self.optimize_layout_button.clicked.connect(self._optimize_connection_layout)
-        self.trash_button = QPushButton("\u5df2\u5220\u9664\u8282\u70b9")
-        self.trash_button.clicked.connect(self._show_trash_dialog)
         self.file_directory_button = QPushButton("配置文件")
         self.file_directory_button.clicked.connect(self._show_file_directory_dialog)
         action_row.addWidget(self.restore_layout_button)
         action_row.addWidget(self.optimize_layout_button)
-        action_row.addWidget(self.trash_button)
         action_row.addWidget(self.file_directory_button)
         actions_block.addLayout(action_row)
 
@@ -973,13 +986,19 @@ class MainWindow(QMainWindow):
         return panel
 
     def _build_actions(self) -> None:
-        file_menu = self.menuBar().addMenu("文件")
-        edit_menu = self.menuBar().addMenu("编辑")
-        view_menu = self.menuBar().addMenu("视图")
-        tools_menu = self.menuBar().addMenu("工具")
-        help_menu = self.menuBar().addMenu("帮助")
+        self.file_menu = self.menuBar().addMenu("文件")
+        self.edit_menu = self.menuBar().addMenu("编辑")
+        self.view_menu = self.menuBar().addMenu("视图")
+        self.tools_menu = self.menuBar().addMenu("工具")
+        self.help_menu = self.menuBar().addMenu("帮助")
+        file_menu = self.file_menu
+        edit_menu = self.edit_menu
+        view_menu = self.view_menu
+        tools_menu = self.tools_menu
+        help_menu = self.help_menu
 
-        appearance_menu = view_menu.addMenu("外观")
+        self.appearance_menu = view_menu.addMenu("外观")
+        appearance_menu = self.appearance_menu
         self.theme_action_group = QActionGroup(self)
         self.theme_action_group.setExclusive(True)
         self.dark_theme_action = QAction("夜间模式", self, checkable=True)
@@ -1082,10 +1101,12 @@ class MainWindow(QMainWindow):
         view_menu.addAction(restore_action)
         self._register_shortcut_action("restore_view", restore_action, QKeySequence("Shift+R"))
 
-        self.trash_action = QAction("\u5df2\u5220\u9664\u8282\u70b9", self)
-        self.trash_action.triggered.connect(self._show_trash_dialog)
-        view_menu.addAction(self.trash_action)
-        self._register_shortcut_action("trash_dialog", self.trash_action, QKeySequence())
+        self.concise_action = QAction("简洁展示", self, checkable=True)
+        self.concise_action.toggled.connect(self._toggle_concise_display)
+        view_menu.addAction(self.concise_action)
+        concise_settings_action = QAction("简洁展示设置…", self)
+        concise_settings_action.triggered.connect(self._show_concise_settings)
+        view_menu.addAction(concise_settings_action)
 
         csv_action = QAction("CSV \u9884\u89c8", self)
         csv_action.triggered.connect(self._show_csv_preview)
@@ -1124,6 +1145,21 @@ class MainWindow(QMainWindow):
         changelog_action.triggered.connect(self._open_changelog_page)
         help_menu.addAction(changelog_action)
         self._register_shortcut_action("help_changelog", changelog_action, QKeySequence("Ctrl+F1"))
+
+        help_menu.addSeparator()
+        update_settings_action = QAction("更新设置…", self)
+        update_settings_action.triggered.connect(self._configure_update_host)
+        help_menu.addAction(update_settings_action)
+        check_update_action = QAction("检查更新…", self)
+        check_update_action.triggered.connect(lambda: self._check_for_updates(manual=True))
+        help_menu.addAction(check_update_action)
+        reinstall_action = QAction("重装上一版本…", self)
+        reinstall_action.triggered.connect(self._reinstall_previous_version)
+        help_menu.addAction(reinstall_action)
+        help_menu.addSeparator()
+        about_action = QAction(f"关于 {PRODUCT_NAME}", self)
+        about_action.triggered.connect(self._show_about_dialog)
+        help_menu.addAction(about_action)
 
     def _register_shortcut_action(self, action_id: str, action: QAction, default_sequence: QKeySequence) -> None:
         self._shortcut_actions[action_id] = action
@@ -1276,9 +1312,41 @@ class MainWindow(QMainWindow):
             group_dir=group_dir,
         )
 
+    def open_external_file(self, path: str | Path) -> bool:
+        """Open a path delivered by Windows or a second application instance."""
+
+        candidate = Path(path).expanduser().resolve()
+        if not candidate.is_file() or candidate.suffix.lower() != ".json":
+            QMessageBox.warning(self, "无法打开", f"不是可用的 JSON 文件：\n{candidate}")
+            self.activate_from_external_request()
+            return False
+        current = self._session_key_for_path(self.controller.document.path)
+        requested = self._session_key_for_path(candidate)
+        if current != requested:
+            if not self._ensure_safe_to_leave_document(candidate):
+                self.activate_from_external_request()
+                return False
+            try:
+                self._stash_current_document_session()
+                self._open_existing_session_or_file(candidate)
+            except Exception as exc:
+                QMessageBox.warning(self, "无法打开", str(exc))
+                self.activate_from_external_request()
+                return False
+            self._refresh_file_list()
+            relative_path = self._relative_path_for_document(candidate)
+            if relative_path:
+                self._select_file_in_list(relative_path)
+        self.activate_from_external_request()
+        return True
+
+    def activate_from_external_request(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
     def _create_blank_document_session(self, *, group_dir: str = "") -> None:
         document = create_document(self.controller.schema)
-        self._apply_local_document_defaults(document)
         undo_stack = QUndoStack(self)
         self._switch_to_document(document, undo_stack=undo_stack, saved=False, session_key=None, group_dir=group_dir)
 
@@ -1305,6 +1373,14 @@ class MainWindow(QMainWindow):
                 return numbered
             index += 1
 
+    def _draft_save_path(self) -> Path:
+        candidate = self.workdir / "未完成草稿.json"
+        index = 2
+        while candidate.exists():
+            candidate = self.workdir / f"未完成草稿_{index}.json"
+            index += 1
+        return candidate
+
     def _update_save_action_state(self) -> None:
         allowed, _reason = self.controller.can_create_graph_content()
         can_save = bool(self.controller.document.path) or allowed
@@ -1317,11 +1393,106 @@ class MainWindow(QMainWindow):
         debug_enabled = debug_json_fields in (True, "true", "1", 1)
         self.controller.preferences.debug_json_field_names = bool(debug_enabled)
         self.debug_json_fields_action.setChecked(bool(debug_enabled))
-        self._apply_local_document_defaults(self.controller.document)
         self._handle_interaction_creation_mode_changed(self.controller.document.interaction_creation_mode)
         self._apply_wheel_settings(self._wheel_shortcut_settings())
         self._handle_editor_settings_changed(self.controller.document.editor_settings)
+        pen_color = str(self.settings.value(self.SETTINGS_PEN_COLOR, "#2F80ED") or "#2F80ED")
+        try:
+            pen_width = float(self.settings.value(self.SETTINGS_PEN_WIDTH, 4.0))
+        except (TypeError, ValueError):
+            pen_width = 4.0
+        width_index = self.pen_width_combo.findData(pen_width)
+        self.pen_width_combo.setCurrentIndex(width_index if width_index >= 0 else 1)
+        self._set_pen_color_button(pen_color)
+        self.canvas.set_pen_style(pen_color, pen_width)
+        concise_enabled = self._settings_bool(self.SETTINGS_CONCISE_ENABLED, False)
+        fields = self._saved_concise_fields()
+        elements = {
+            key: self._settings_bool(f"view/concise/elements/{key}", False)
+            for key in ("groups", "tables", "images", "strokes")
+        }
+        self.canvas.set_concise_display(concise_enabled, fields, elements)
+        self._sync_concise_controls(concise_enabled)
         self._update_save_action_state()
+
+    def _settings_bool(self, key: str, default: bool) -> bool:
+        return self.settings.value(key, default) in (True, "true", "1", 1)
+
+    def _saved_concise_fields(self) -> set[str]:
+        default = ["tips", "action_trigger", "action_trigger_active"]
+        raw = self.settings.value(self.SETTINGS_CONCISE_FIELDS, default)
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed = [part.strip() for part in raw.split(",") if part.strip()]
+            raw = parsed
+        if not isinstance(raw, (list, tuple, set)):
+            raw = default
+        allowed = {"tips", "draw_able_name", "parameter", "action_trigger", "action_trigger_active"}
+        return {str(key) for key in raw if str(key) in allowed}
+
+    def _set_pen_color_button(self, color: str) -> None:
+        resolved = QColor(color)
+        if not resolved.isValid():
+            resolved = QColor("#2F80ED")
+        foreground = "#101828" if resolved.lightness() > 145 else "#ffffff"
+        self.pen_color_button.setProperty("penColor", resolved.name())
+        self.pen_color_button.setStyleSheet(
+            f"QPushButton {{ background: {resolved.name()}; color: {foreground}; font-weight: 600; }}"
+        )
+
+    def _choose_pen_color(self) -> None:
+        current = QColor(str(self.pen_color_button.property("penColor") or "#2F80ED"))
+        selected = QColorDialog.getColor(current, self, "选择画笔颜色")
+        if not selected.isValid():
+            return
+        self._set_pen_color_button(selected.name())
+        self._apply_pen_controls()
+
+    def _apply_pen_controls(self, *_args) -> None:
+        color = str(self.pen_color_button.property("penColor") or "#2F80ED")
+        width = float(self.pen_width_combo.currentData() or 4.0)
+        self.canvas.set_pen_style(color, width)
+        self.settings.setValue(self.SETTINGS_PEN_COLOR, color)
+        self.settings.setValue(self.SETTINGS_PEN_WIDTH, width)
+        self.settings.sync()
+
+    def _sync_concise_controls(self, enabled: bool) -> None:
+        for control in (getattr(self, "concise_mode_checkbox", None), getattr(self, "concise_action", None)):
+            if control is None:
+                continue
+            blocked = control.blockSignals(True)
+            control.setChecked(bool(enabled))
+            control.blockSignals(blocked)
+
+    def _toggle_concise_display(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        self._sync_concise_controls(enabled)
+        fields = self._saved_concise_fields()
+        elements = {
+            key: self._settings_bool(f"view/concise/elements/{key}", False)
+            for key in ("groups", "tables", "images", "strokes")
+        }
+        self.canvas.set_concise_display(enabled, fields, elements)
+        self.settings.setValue(self.SETTINGS_CONCISE_ENABLED, enabled)
+        self.settings.sync()
+
+    def _show_concise_settings(self) -> None:
+        fields = self._saved_concise_fields()
+        elements = {
+            key: self._settings_bool(f"view/concise/elements/{key}", False)
+            for key in ("groups", "tables", "images", "strokes")
+        }
+        dialog = ConciseDisplayDialog(fields, elements, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        fields, elements = dialog.values()
+        self.settings.setValue(self.SETTINGS_CONCISE_FIELDS, sorted(fields))
+        for key, visible in elements.items():
+            self.settings.setValue(f"view/concise/elements/{key}", bool(visible))
+        self.settings.sync()
+        self.canvas.set_concise_display(self.canvas.concise_enabled, fields, elements)
 
     def _apply_ui_theme(self, mode: ThemeMode | str, *, persist: bool = True) -> None:
         self.theme_mode = normalize_theme_mode(mode)
@@ -1536,6 +1707,18 @@ class MainWindow(QMainWindow):
         self._refresh_file_list_after_save = path_changed
         if not target:
             generated = self._generated_save_path()
+            if generated is None and allow_incomplete:
+                draft = self._draft_save_path()
+                if silent:
+                    generated = draft
+                else:
+                    chosen, _ = QFileDialog.getSaveFileName(
+                        self,
+                        "保存未完成草稿",
+                        str(draft),
+                        "JSON Files (*.json)",
+                    )
+                    generated = Path(chosen).resolve() if chosen else None
             if not generated:
                 self._refresh_file_list_after_save = False
                 self._focus_initial_node_guidance(reason)
@@ -1543,7 +1726,13 @@ class MainWindow(QMainWindow):
                     QMessageBox.warning(self, "无法保存", "当前文件缺少配置底座元数据，无法生成配置文件。")
                 return None
             target = str(generated)
-        saved = self.controller.save_document(target)
+        try:
+            saved = self.controller.save_document(target)
+        except (OSError, ValueError) as exc:
+            self._refresh_file_list_after_save = False
+            title = "拒绝覆盖" if "refusing to overwrite" in str(exc) else "保存失败"
+            QMessageBox.warning(self, title, str(exc))
+            return None
         if saved:
             self._mark_saved_checkpoint(saved=True)
             try:
@@ -1624,8 +1813,6 @@ class MainWindow(QMainWindow):
         payload = self.controller.serialize_selection(node_uuids)
         if not payload:
             return
-        from PyQt6.QtCore import QMimeData
-
         data = QMimeData()
         data.setData(CLIPBOARD_MIME, payload)
         QGuiApplication.clipboard().setMimeData(data)
@@ -1854,7 +2041,7 @@ class MainWindow(QMainWindow):
         self._refresh_file_list_after_save = False
 
     def _update_window_title(self, path: str | None) -> None:
-        title = "L2D交互图表编辑器"
+        title = PRODUCT_NAME
         if path:
             title = f"{Path(path).name} - {title}"
         if self._is_dirty():
@@ -1873,38 +2060,269 @@ class MainWindow(QMainWindow):
             blocked = self.numeric_linkage_checkbox.blockSignals(True)
             self.numeric_linkage_checkbox.setChecked(bool(settings.numeric_linkage_enabled))
             self.numeric_linkage_checkbox.blockSignals(blocked)
-        if hasattr(self, "trash_enabled_checkbox"):
-            blocked = self.trash_enabled_checkbox.blockSignals(True)
-            self.trash_enabled_checkbox.setChecked(bool(settings.trash_enabled))
-            self.trash_enabled_checkbox.blockSignals(blocked)
-        if hasattr(self, "trash_button"):
-            self.trash_button.setEnabled(bool(settings.trash_enabled))
-        if hasattr(self, "trash_action"):
-            self.trash_action.setEnabled(bool(settings.trash_enabled))
 
     def _toggle_numeric_linkage(self, checked: bool) -> None:
         if bool(self.controller.document.editor_settings.numeric_linkage_enabled) == bool(checked):
             return
         self.controller.set_numeric_linkage_enabled(bool(checked))
 
-    def _toggle_trash_enabled(self, checked: bool) -> None:
-        checked = bool(checked)
-        if bool(self.controller.document.editor_settings.trash_enabled) == checked:
-            return
-        if not checked:
-            reply = QMessageBox.question(self, "关闭回收站", "关闭后会清空当前回收站并立即释放编号槽位，是否继续？")
-            if reply != QMessageBox.StandardButton.Yes:
-                self._handle_editor_settings_changed(self.controller.document.editor_settings)
-                return
-        self.controller.set_trash_enabled(checked)
-        self.settings.setValue(self.SETTINGS_TRASH_ENABLED_DEFAULT, checked)
-        self.settings.sync()
-
     def _open_help_page(self) -> None:
         QDesktopServices.openUrl(QUrl.fromUserInput(HELP_PAGE_URL))
 
     def _open_changelog_page(self) -> None:
         QDesktopServices.openUrl(QUrl.fromUserInput(HELP_PAGE_URL))
+
+    def _update_client_or_warn(self, *, quiet: bool = False) -> UpdateClient | None:
+        if self._update_client is not None:
+            return self._update_client
+        try:
+            public_key = bundled_public_key_pem()
+            client = UpdateClient(public_key, parent=self)
+        except (OSError, UpdateValidationError) as exc:
+            if not quiet:
+                QMessageBox.warning(self, "更新不可用", str(exc))
+            return None
+        client.updateAvailable.connect(self._update_available)
+        client.noUpdate.connect(self._no_update_available)
+        client.checkFailed.connect(self._update_check_failed)
+        client.downloadProgress.connect(self._update_download_progress)
+        client.downloadFinished.connect(self._update_download_finished)
+        client.downloadFailed.connect(self._update_download_failed)
+        client.cacheFinished.connect(
+            lambda path: self._show_status(
+                f"已缓存当前版本安装器 {Path(path).name}"
+            )
+        )
+        client.cacheFailed.connect(
+            lambda message: self._show_status(f"缓存当前安装器失败：{message}")
+        )
+        self._update_client = client
+        return client
+
+    def _configure_update_host(self) -> bool:
+        current = str(self.settings.value(self.SETTINGS_UPDATE_BASE_URL, "") or "")
+        value, accepted = QInputDialog.getText(
+            self,
+            "更新设置",
+            "局域网更新主机地址（例如 http://主机名:8765）：",
+            QLineEdit.EchoMode.Normal,
+            current,
+        )
+        if not accepted:
+            return False
+        if not value.strip():
+            self.settings.remove(self.SETTINGS_UPDATE_BASE_URL)
+            self.settings.remove(self.SETTINGS_UPDATE_LAST_CHECK)
+            self.settings.sync()
+            self._show_status("已关闭局域网更新检查")
+            return False
+        try:
+            normalized = UpdateClient.normalize_base_url(value)
+        except UpdateValidationError as exc:
+            QMessageBox.warning(self, "地址无效", str(exc))
+            return False
+        self.settings.setValue(self.SETTINGS_UPDATE_BASE_URL, normalized.rstrip("/"))
+        self.settings.remove(self.SETTINGS_UPDATE_LAST_CHECK)
+        self.settings.sync()
+        self._show_status(f"更新主机已设置为 {normalized.rstrip('/')}")
+        return True
+
+    def _maybe_check_updates(self) -> None:
+        base_url = str(self.settings.value(self.SETTINGS_UPDATE_BASE_URL, "") or "").strip()
+        if not base_url:
+            return
+        last_raw = str(self.settings.value(self.SETTINGS_UPDATE_LAST_CHECK, "") or "").strip()
+        if last_raw:
+            try:
+                last = datetime.fromisoformat(last_raw.replace("Z", "+00:00"))
+                if last.tzinfo is not None:
+                    age = datetime.now(timezone.utc) - last.astimezone(timezone.utc)
+                    if age.total_seconds() < 24 * 60 * 60:
+                        return
+            except ValueError:
+                pass
+        self._check_for_updates(manual=False)
+
+    def _check_for_updates(self, *, manual: bool) -> None:
+        base_url = str(self.settings.value(self.SETTINGS_UPDATE_BASE_URL, "") or "").strip()
+        if not base_url:
+            if not manual or not self._configure_update_host():
+                return
+            base_url = str(self.settings.value(self.SETTINGS_UPDATE_BASE_URL, "") or "").strip()
+        client = self._update_client_or_warn(quiet=not manual)
+        if client is None:
+            return
+        self._update_check_is_manual = manual
+        self._pending_update_manifest = None
+        self._show_status("正在检查局域网更新…")
+        client.check(base_url)
+
+    def _record_successful_update_check(self) -> None:
+        self.settings.setValue(
+            self.SETTINGS_UPDATE_LAST_CHECK,
+            datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        )
+        self.settings.sync()
+
+    def _update_available(self, manifest: dict, _artifact_url: str) -> None:
+        self._record_successful_update_check()
+        self._pending_update_manifest = dict(manifest)
+        version = str(manifest.get("version") or "")
+        notes = str(manifest.get("notes") or "").strip()
+        message = f"发现新版本 {version}。"
+        if notes:
+            message += f"\n\n{notes}"
+        message += "\n\n是否现在下载？"
+        if QMessageBox.question(
+            self,
+            "发现更新",
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        ) != QMessageBox.StandardButton.Yes:
+            self._show_status(f"已发现版本 {version}，暂不下载")
+            return
+        client = self._update_client
+        if client is None:
+            return
+        progress = QProgressDialog("正在下载并校验更新…", "取消", 0, 0, self)
+        progress.setWindowTitle("下载更新")
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.canceled.connect(self._cancel_update_download)
+        self._update_progress = progress
+        progress.show()
+        client.download_available()
+
+    def _cancel_update_download(self) -> None:
+        if self._update_client is not None:
+            self._update_client.cancel_download(remove_partial=False)
+        self._close_update_progress()
+        self._show_status("已取消下载，保留断点以便下次继续")
+
+    def _no_update_available(self) -> None:
+        self._record_successful_update_check()
+        self._show_status(f"当前已是最新版本 {VERSION}")
+        if self._update_client is not None:
+            self._update_client.cache_current_release()
+        if self._update_check_is_manual:
+            QMessageBox.information(self, "检查更新", f"当前已是最新版本 {VERSION}。")
+
+    def _update_check_failed(self, message: str) -> None:
+        self._show_status(message)
+        if self._update_check_is_manual:
+            QMessageBox.warning(self, "检查更新失败", message)
+
+    def _update_download_progress(self, received: int, total: int) -> None:
+        progress = self._update_progress
+        if progress is None:
+            return
+        maximum = min(max(int(total), 0), 2_147_483_647)
+        value = min(max(int(received), 0), 2_147_483_647)
+        if maximum > 0:
+            progress.setRange(0, maximum)
+            progress.setValue(min(value, maximum))
+        else:
+            progress.setRange(0, 0)
+
+    def _close_update_progress(self) -> None:
+        progress, self._update_progress = self._update_progress, None
+        if progress is not None:
+            try:
+                progress.canceled.disconnect(self._cancel_update_download)
+            except (RuntimeError, TypeError):
+                pass
+            progress.close()
+            progress.deleteLater()
+
+    def _update_download_finished(self, installer_path: str) -> None:
+        self._close_update_progress()
+        manifest = self._pending_update_manifest or {}
+        version = str(manifest.get("version") or "新版本")
+        if QMessageBox.question(
+            self,
+            "更新已就绪",
+            f"版本 {version} 已完成签名和 SHA-256 校验。\n"
+            "是否保存当前工作并开始安装？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        ) == QMessageBox.StandardButton.Yes:
+            self._install_verified_update(installer_path)
+
+    def _update_download_failed(self, message: str) -> None:
+        self._close_update_progress()
+        QMessageBox.warning(self, "下载更新失败", message)
+
+    def _install_verified_update(self, installer_path: str | Path) -> None:
+        client = self._update_client_or_warn()
+        if client is None or not client.verify_cached_installer(installer_path):
+            QMessageBox.critical(self, "拒绝安装", "安装器的签名缓存或 SHA-256 复验失败。")
+            return
+        if not self._confirm_safe_to_close():
+            return
+        restart = sys.executable if getattr(sys, "frozen", False) else None
+        if not launch_installer_after_exit(
+            installer_path,
+            current_pid=os.getpid(),
+            restart_executable=restart,
+        ):
+            QMessageBox.critical(self, "无法安装", "无法启动外部安装程序。")
+            return
+        self._approved_update_exit = True
+        application = QApplication.instance()
+        if application is not None:
+            application.quit()
+
+    def _reinstall_previous_version(self) -> None:
+        client = self._update_client_or_warn()
+        if client is None:
+            return
+        try:
+            from packaging.version import Version
+
+            current = Version(VERSION)
+            candidates = [
+                (version, path)
+                for version, path in client.verified_cached_installers()
+                if Version(version) < current
+            ]
+        except ValueError:
+            candidates = []
+        if not candidates:
+            QMessageBox.information(self, "没有可重装版本", "缓存中没有已验证的上一版本安装器。")
+            return
+        labels = [f"{version} — {path.name}" for version, path in candidates]
+        selected, accepted = QInputDialog.getItem(
+            self,
+            "重装上一版本",
+            "选择已验证的安装器：",
+            labels,
+            0,
+            False,
+        )
+        if not accepted:
+            return
+        index = labels.index(selected)
+        version, installer = candidates[index]
+        if QMessageBox.warning(
+            self,
+            "确认重装",
+            f"将启动版本 {version} 的安装器。程序不会自动回滚数据。\n是否继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) == QMessageBox.StandardButton.Yes:
+            self._install_verified_update(installer)
+
+    def _show_about_dialog(self) -> None:
+        QMessageBox.about(
+            self,
+            f"关于 {PRODUCT_NAME}",
+            f"{PRODUCT_NAME}\n"
+            f"版本 {VERSION}\n"
+            f"发布者：{PUBLISHER}\n\n"
+            "Qt for Python / PySide6 采用动态链接，随程序附带 LGPLv3 与第三方许可材料。\n"
+            "局域网 HTTP 只负责传输；更新真实性由 Ed25519 签名和 SHA-256 校验保障。",
+        )
 
     def _show_node_directory_dialog(self) -> None:
         if self.node_directory_dialog is None:
@@ -2265,35 +2683,6 @@ class MainWindow(QMainWindow):
     def _optimize_connection_layout(self) -> None:
         self.canvas.optimize_connection_layout()
 
-    def _show_trash_dialog(self) -> None:
-        if not self.controller.document.editor_settings.trash_enabled:
-            return
-        if self.trash_dialog is None:
-            self.trash_dialog = TrashDialog(self)
-            self.trash_dialog.remove_selected_button.clicked.connect(self._clear_selected_trash_entries)
-            self.trash_dialog.clear_all_button.clicked.connect(self._clear_all_trash_entries)
-            self.trash_dialog.close_button.clicked.connect(self.trash_dialog.close)
-        self._refresh_trash_dialog(self.controller.document.trash_bin)
-        self.trash_dialog.show()
-        self.trash_dialog.raise_()
-        self.trash_dialog.activateWindow()
-
-    def _refresh_trash_dialog(self, entries) -> None:
-        if self.trash_dialog is not None:
-            self.trash_dialog.set_entries(entries)
-
-    def _clear_selected_trash_entries(self) -> None:
-        if not self.trash_dialog:
-            return
-        removed = self.controller.clear_trash_entries(self.trash_dialog.selected_entry_ids())
-        if removed:
-            self._show_status(f"已清理 {removed} 条垃圾箱记录")
-
-    def _clear_all_trash_entries(self) -> None:
-        removed = self.controller.clear_all_trash()
-        if removed:
-            self._show_status("已清空垃圾箱")
-
     def _relative_path_for_document(self, path: str | Path | None) -> str | None:
         if not path:
             return None
@@ -2341,15 +2730,13 @@ class MainWindow(QMainWindow):
             return True
         close_policy = str(os.environ.get("L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY") or "").strip().lower()
         if close_policy == "save":
-            if self.controller.document.path:
-                return bool(self._save_current_file(silent=True, allow_incomplete=True))
-            return True
+            return bool(self._save_current_file(silent=True, allow_incomplete=True))
         if close_policy in {"discard", "ignore"} or os.environ.get("L2D_CONFIG_EDITOR_NO_CLOSE_PROMPT") == "1":
             return True
         if target_path is not None:
             if self.controller.document.path:
                 return bool(self._save_current_file(silent=True, allow_incomplete=True))
-            return True
+            # An untitled draft cannot be stashed by path. Ask before replacing it.
         if self._has_saved_snapshot and self.controller.document.path:
             return bool(self._save_current_file(silent=True, allow_incomplete=True))
         box = QMessageBox(self)
@@ -2364,7 +2751,7 @@ class MainWindow(QMainWindow):
             return bool(self._save_current_file(silent=False, allow_incomplete=True))
         if clicked == discard_button:
             return True
-        return clicked != cancel_button
+        return False  # Unknown/dismissed responses must never discard changes.
 
     def _next_paste_position(self, payload: bytes) -> tuple[float, float]:
         if self._last_paste_payload != payload:
@@ -2377,6 +2764,9 @@ class MainWindow(QMainWindow):
         return min_x + offset * self._paste_repeat_count, min_y
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self._approved_update_exit:
+            event.accept()
+            return
         if self._confirm_safe_to_close():
             event.accept()
         else:
@@ -2391,14 +2781,12 @@ class MainWindow(QMainWindow):
             or ""
         ).strip().lower()
         if close_policy == "save":
-            if self._is_dirty() and self.controller.document.path:
+            if self._is_dirty():
                 return bool(self._save_current_file(silent=True, allow_incomplete=True))
             return True
         if close_policy in {"discard", "ignore"} or os.environ.get("L2D_CONFIG_EDITOR_NO_CLOSE_PROMPT") == "1":
             return True
         if not self._is_dirty():
-            return True
-        if not self.controller.document.state.is_meta_ready:
             return True
         box = QMessageBox(self)
         box.setWindowTitle("保存当前更改")
@@ -2412,4 +2800,4 @@ class MainWindow(QMainWindow):
             return bool(self._save_current_file(silent=False, allow_incomplete=True))
         if clicked == discard_button:
             return True
-        return clicked != cancel_button
+        return False  # Unknown/dismissed responses must never discard changes.

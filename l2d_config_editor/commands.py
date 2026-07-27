@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PyQt6.QtGui import QUndoCommand
+from PySide6.QtGui import QUndoCommand
 
 
 class AddNodesCommand(QUndoCommand):
@@ -22,22 +22,20 @@ class AddNodesCommand(QUndoCommand):
 
 
 class RemoveNodesCommand(QUndoCommand):
-    def __init__(self, controller, nodes, connections, trash_entries, groups=None) -> None:
+    def __init__(self, controller, nodes, connections, groups=None) -> None:
         super().__init__("删除节点")
         self.controller = controller
         self.nodes = [node.clone() for node in nodes]
         self.connections = list(connections)
-        self.trash_entries = list(trash_entries)
         self.groups = [group.clone() for group in (groups or [])]
 
     def redo(self) -> None:
-        self.controller._delete_nodes([node.clone() for node in self.nodes], list(self.connections), list(self.trash_entries))
+        self.controller._delete_nodes([node.clone() for node in self.nodes], list(self.connections))
 
     def undo(self) -> None:
         self.controller._restore_deleted_nodes(
             [node.clone() for node in self.nodes],
             list(self.connections),
-            [entry.entry_id for entry in self.trash_entries],
         )
         if self.groups:
             self.controller._set_groups([group.clone() for group in self.groups])
@@ -128,19 +126,17 @@ class UpdateNodeLockCommand(QUndoCommand):
 
 
 class UpdateEditorSettingsCommand(QUndoCommand):
-    def __init__(self, controller, old_settings, new_settings, old_trash_bin=None, new_trash_bin=None, label: str = "修改文档设置") -> None:
+    def __init__(self, controller, old_settings, new_settings, label: str = "修改文档设置") -> None:
         super().__init__(label)
         self.controller = controller
         self.old_settings = dict(old_settings)
         self.new_settings = dict(new_settings)
-        self.old_trash_bin = list(old_trash_bin or [])
-        self.new_trash_bin = list(new_trash_bin or [])
 
     def redo(self) -> None:
-        self.controller._set_editor_settings(self.new_settings, self.new_trash_bin)
+        self.controller._set_editor_settings(self.new_settings)
 
     def undo(self) -> None:
-        self.controller._set_editor_settings(self.old_settings, self.old_trash_bin)
+        self.controller._set_editor_settings(self.old_settings)
 
 
 class SetGroupsCommand(QUndoCommand):
@@ -195,6 +191,43 @@ class MoveCanvasImagesCommand(QUndoCommand):
 
     def undo(self) -> None:
         self.controller._move_canvas_images(self.old_positions)
+
+
+class AddCanvasStrokesCommand(QUndoCommand):
+    def __init__(self, controller, strokes) -> None:
+        super().__init__("添加画笔线条")
+        self.controller = controller
+        self.strokes = [stroke.clone() for stroke in strokes]
+
+    def redo(self) -> None:
+        self.controller._insert_canvas_strokes([stroke.clone() for stroke in self.strokes])
+
+    def undo(self) -> None:
+        self.controller._remove_canvas_strokes([stroke.uuid for stroke in self.strokes])
+
+
+class RemoveCanvasStrokesCommand(QUndoCommand):
+    def __init__(self, controller, strokes) -> None:
+        super().__init__("删除画笔线条")
+        self.controller = controller
+        self.strokes = [stroke.clone() for stroke in strokes]
+        index_by_uuid = {
+            stroke.uuid: index
+            for index, stroke in enumerate(controller.document.canvas_strokes)
+        }
+        self.indexed_strokes = [
+            (index_by_uuid[stroke.uuid], stroke.clone())
+            for stroke in strokes
+            if stroke.uuid in index_by_uuid
+        ]
+
+    def redo(self) -> None:
+        self.controller._remove_canvas_strokes([stroke.uuid for stroke in self.strokes])
+
+    def undo(self) -> None:
+        self.controller._restore_canvas_strokes(
+            [(index, stroke.clone()) for index, stroke in self.indexed_strokes]
+        )
 
 
 class MoveNodeCommand(QUndoCommand):

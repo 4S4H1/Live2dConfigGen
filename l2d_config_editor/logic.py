@@ -5,7 +5,9 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
 import re
+import tempfile
 import uuid
 from dataclasses import asdict
 from datetime import datetime
@@ -15,6 +17,7 @@ from typing import Any
 
 from .models import (
     CanvasImageRecord,
+    CanvasStrokeRecord,
     CanvasViewState,
     ConnectionRecord,
     CsvPreviewRow,
@@ -24,7 +27,6 @@ from .models import (
     MetaRecord,
     NodeRecord,
     SearchHit,
-    TrashEntry,
     ValidationIssue,
 )
 from .schema import EditorSchema, FieldSchema, NodeSchema, load_editor_schema
@@ -56,15 +58,15 @@ HIDDEN_NODE_FIELDS = {
     "_table_text_color",
 }
 EDITOR_DOCUMENT_SIGNATURE = "l2d_config_editor/v1"
-EDITOR_DOCUMENT_FORMAT_VERSION = 2
-RESERVED_FIELD_KEYS = (
-    "draw_able_name",
-    "parameter",
-    "action_trigger",
-    "action_trigger_active",
-    "target_idle",
-    "id",
-)
+EDITOR_DOCUMENT_FORMAT_VERSION = 3
+CANVAS_STROKE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+CANVAS_STROKE_COLOR_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
+MAX_CANVAS_STROKES = 10_000
+MAX_CANVAS_STROKE_POINTS = 50_000
+MAX_DOCUMENT_CANVAS_STROKE_POINTS = 250_000
+MAX_CANVAS_COORDINATE = 1_000_000.0
+MIN_CANVAS_STROKE_WIDTH = 0.25
+MAX_CANVAS_STROKE_WIDTH = 64.0
 CSV_TEMPLATE_FILES = ("(full)ship_l2d.csv", "ship_l2d.csv")
 
 
@@ -544,12 +546,6 @@ def _occupied_type_slots(document: DocumentModel, node_type: str, *, exclude_uui
         for node in document.nodes
         if node.uuid != exclude_uuid and node.type in namespace_types and isinstance(node.type_slot, int) and node.type_slot > 0
     }
-    if document.editor_settings.trash_enabled:
-        occupied.update(
-            int(entry.type_slot)
-            for entry in document.trash_bin
-            if entry.node_type in namespace_types and isinstance(entry.type_slot, int) and entry.type_slot > 0
-        )
     return occupied
 
 
@@ -559,12 +555,6 @@ def _occupied_export_slots(document: DocumentModel, *, exclude_uuid: str | None 
         for node in document.nodes
         if node.uuid != exclude_uuid and isinstance(node.export_slot, int) and node.export_slot > 0
     }
-    if document.editor_settings.trash_enabled:
-        occupied.update(
-            int(entry.export_slot)
-            for entry in document.trash_bin
-            if isinstance(entry.export_slot, int) and entry.export_slot > 0
-        )
     return occupied
 
 
@@ -875,12 +865,21 @@ def infer_manual_fields(schema: EditorSchema, node: NodeRecord, document: Docume
         return
     node_schema = _node_schema(schema, node.type)
     fixed_target = node_schema.auto_rules.fixed_target_idle
-    target_idle = fixed_target if fixed_target is not None else normalized_target_idle(node)
-    node.fields["target_idle"] = target_idle
+    sequence = int(node.type_slot or node.sequence_no or 1)
+    if node.type == "ParameterTrigger":
+        # Parameter-table rows use their stable slot to define the generated
+        # parameter name.  Deriving this value from the parameter currently
+        # being edited makes any numbered custom name look generated and causes
+        # it to be overwritten on the next auto-rule pass.
+        target_idle = sequence if node_schema.auto_rules.use_sequence_for_target_idle else 0
+        node.fields["target_idle"] = 0
+    else:
+        target_idle = fixed_target if fixed_target is not None else normalized_target_idle(node)
+        node.fields["target_idle"] = target_idle
     expected_parameter = _expected_parameter(
         node_schema,
         target_idle,
-        sequence=int(node.type_slot or node.sequence_no or target_idle),
+        sequence=sequence,
     )
     if str(node.fields.get("parameter", "")) != expected_parameter:
         node.manual_fields.add("parameter")
@@ -1374,23 +1373,6 @@ def node_title(schema: EditorSchema, node: NodeRecord) -> str:
     return f"{definition.title}-{tips}" if tips else definition.title
 
 
-def make_trash_entry(schema: EditorSchema, node: NodeRecord) -> TrashEntry:
-    reserved_fields = {
-        key: value
-        for key, value in node.fields.items()
-        if key in RESERVED_FIELD_KEYS and value not in (None, "")
-    }
-    return TrashEntry(
-        entry_id=new_uuid(),
-        node_uuid=node.uuid,
-        node_type=node.type,
-        title=node_title(schema, node),
-        type_slot=node.type_slot,
-        export_slot=node.export_slot,
-        reserved_fields=reserved_fields,
-    )
-
-
 def _export_node_fields(node: NodeRecord) -> dict[str, Any]:
     hidden_fields = set(HIDDEN_NODE_FIELDS)
     if node.type == "ParameterTrigger":
@@ -1462,6 +1444,15 @@ def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[
             payload["target_idle"] = _coerce_int(node.fields.get("target_idle"), 0)
         serialized_nodes.append(payload)
     serialized_groups = [asdict(group) for group in normalized_document_groups(document)]
+    serialized_strokes = [
+        {
+            "id": stroke.uuid,
+            "points": [[x, y] for x, y in stroke.points],
+            "color": stroke.color,
+            "width": stroke.width,
+        }
+        for stroke in validate_canvas_strokes(document.canvas_strokes)
+    ]
     return {
         "editor_signature": EDITOR_DOCUMENT_SIGNATURE,
         "format_version": EDITOR_DOCUMENT_FORMAT_VERSION,
@@ -1472,16 +1463,70 @@ def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[
         "nodes": serialized_nodes,
         "groups": serialized_groups,
         "canvas_images": [asdict(image) for image in document.canvas_images],
+        "canvas_strokes": serialized_strokes,
         "connections": [asdict(connection) for connection in document.connections],
-        "trash_bin": [asdict(entry) for entry in document.trash_bin],
         "canvas_view": asdict(document.canvas_view),
     }
 
 
+def _document_format_version(payload: dict[str, Any]) -> int:
+    raw_format_version = payload.get("format_version", 1)
+    if isinstance(raw_format_version, int) and not isinstance(raw_format_version, bool):
+        format_version = raw_format_version
+    elif isinstance(raw_format_version, str) and raw_format_version.isdigit():
+        format_version = int(raw_format_version)
+    else:
+        raise ValueError("Invalid document format version")
+    if format_version < 1:
+        raise ValueError("Invalid document format version")
+    return format_version
+
+
+def _reject_future_document_overwrite(target: Path) -> None:
+    if not target.is_file():
+        return
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return
+    if not is_editor_document_payload(payload):
+        return
+    format_version = _document_format_version(payload)
+    if format_version > EDITOR_DOCUMENT_FORMAT_VERSION:
+        raise ValueError(
+            f"Document format version {format_version} is newer than supported "
+            f"version {EDITOR_DOCUMENT_FORMAT_VERSION}; refusing to overwrite"
+        )
+
+
 def save_document(schema: EditorSchema, document: DocumentModel, path: str | Path) -> None:
+    target = Path(path)
+    _reject_future_document_overwrite(target)
     data = export_document_dict(schema, document)
-    Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    document.path = str(path)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            json.dump(data, temp_file, ensure_ascii=False, indent=2)
+            temp_file.write("\n")
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        os.replace(temp_path, target)
+    finally:
+        if temp_path is not None and temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+    document.path = str(target)
 
 
 def _finite_float(value: Any, default: float) -> float:
@@ -1490,6 +1535,94 @@ def _finite_float(value: Any, default: float) -> float:
     except (TypeError, ValueError):
         return default
     return resolved if math.isfinite(resolved) else default
+
+
+def _strict_canvas_stroke_number(value: Any, *, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"Canvas stroke {label} must be a number")
+    resolved = float(value)
+    if not math.isfinite(resolved):
+        raise ValueError(f"Canvas stroke {label} must be finite")
+    return resolved
+
+
+def validate_canvas_stroke(stroke: CanvasStrokeRecord) -> CanvasStrokeRecord:
+    """Validate and clone one stroke without silently repairing its data."""
+
+    if not isinstance(stroke.uuid, str):
+        raise ValueError("Canvas stroke id is invalid")
+    stroke_id = stroke.uuid
+    if not CANVAS_STROKE_ID_PATTERN.fullmatch(stroke_id):
+        raise ValueError("Canvas stroke id is invalid")
+    if not isinstance(stroke.points, list):
+        raise ValueError("Canvas stroke points must be a list")
+    if not 2 <= len(stroke.points) <= MAX_CANVAS_STROKE_POINTS:
+        raise ValueError("Canvas stroke point count is invalid")
+    points: list[tuple[float, float]] = []
+    for point in stroke.points:
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            raise ValueError("Canvas stroke point is invalid")
+        x = _strict_canvas_stroke_number(point[0], label="x")
+        y = _strict_canvas_stroke_number(point[1], label="y")
+        if abs(x) > MAX_CANVAS_COORDINATE or abs(y) > MAX_CANVAS_COORDINATE:
+            raise ValueError("Canvas stroke coordinate is out of range")
+        points.append((x, y))
+    color = str(stroke.color or "")
+    if not CANVAS_STROKE_COLOR_PATTERN.fullmatch(color):
+        raise ValueError("Canvas stroke color is invalid")
+    width = _strict_canvas_stroke_number(stroke.width, label="width")
+    if not MIN_CANVAS_STROKE_WIDTH <= width <= MAX_CANVAS_STROKE_WIDTH:
+        raise ValueError("Canvas stroke width is out of range")
+    return CanvasStrokeRecord(
+        uuid=stroke_id,
+        points=points,
+        color=color.upper(),
+        width=width,
+    )
+
+
+def validate_canvas_strokes(strokes: list[CanvasStrokeRecord]) -> list[CanvasStrokeRecord]:
+    if not isinstance(strokes, list) or len(strokes) > MAX_CANVAS_STROKES:
+        raise ValueError("Canvas stroke collection is invalid")
+    validated: list[CanvasStrokeRecord] = []
+    seen_ids: set[str] = set()
+    total_points = 0
+    for stroke in strokes:
+        if not isinstance(stroke, CanvasStrokeRecord):
+            raise ValueError("Canvas stroke record is invalid")
+        resolved = validate_canvas_stroke(stroke)
+        if resolved.uuid in seen_ids:
+            raise ValueError("Canvas stroke ids must be unique")
+        seen_ids.add(resolved.uuid)
+        total_points += len(resolved.points)
+        if total_points > MAX_DOCUMENT_CANVAS_STROKE_POINTS:
+            raise ValueError("Canvas stroke document point limit exceeded")
+        validated.append(resolved)
+    return validated
+
+
+def _load_canvas_stroke_records(payload: Any) -> list[CanvasStrokeRecord]:
+    if not isinstance(payload, list):
+        raise ValueError("canvas_strokes must be a list")
+    if len(payload) > MAX_CANVAS_STROKES:
+        raise ValueError("Canvas stroke collection is invalid")
+    records: list[CanvasStrokeRecord] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            raise ValueError("Canvas stroke entry must be an object")
+        stroke_id = item.get("id", item.get("uuid"))
+        points = item.get("points")
+        if not isinstance(points, list):
+            raise ValueError("Canvas stroke points must be a list")
+        records.append(
+            CanvasStrokeRecord(
+                uuid=stroke_id if isinstance(stroke_id, str) else "",
+                points=points,
+                color=item.get("color") if isinstance(item.get("color"), str) else "",
+                width=item.get("width"),
+            )
+        )
+    return validate_canvas_strokes(records)
 
 
 def _load_canvas_image_records(payload: list[Any]) -> list[CanvasImageRecord]:
@@ -1539,6 +1672,12 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if not is_editor_document_payload(payload):
         raise ValueError("不是 L2D Config Editor 配置文件")
+    format_version = _document_format_version(payload)
+    if format_version > EDITOR_DOCUMENT_FORMAT_VERSION:
+        raise ValueError(
+            f"Document format version {format_version} is newer than supported "
+            f"version {EDITOR_DOCUMENT_FORMAT_VERSION}"
+        )
     meta_payload = payload.get("meta", {})
     if not isinstance(meta_payload, dict):
         meta_payload = {}
@@ -1572,6 +1711,7 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
     canvas_images_payload = payload.get("canvas_images", [])
     if not isinstance(canvas_images_payload, list):
         canvas_images_payload = []
+    canvas_strokes_payload = payload.get("canvas_strokes", [])
     meta_keys = set(MetaRecord.__dataclass_fields__.keys())
     resolved_meta = {
         key: meta_payload[key] if key in meta_payload else legacy_meta[key]
@@ -1583,12 +1723,11 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
         interaction_creation_mode=str(payload.get("interaction_creation_mode", "auto") or "auto"),
         editor_settings=EditorSettings(
             numeric_linkage_enabled=bool(settings_payload.get("numeric_linkage_enabled", False)),
-            trash_enabled=bool(settings_payload.get("trash_enabled", False)),
         ),
         meta=MetaRecord(**resolved_meta),
         canvas_images=_load_canvas_image_records(canvas_images_payload),
+        canvas_strokes=_load_canvas_stroke_records(canvas_strokes_payload),
         connections=[ConnectionRecord(**item) for item in payload.get("connections", [])],
-        trash_bin=[TrashEntry(**item) for item in payload.get("trash_bin", [])],
         canvas_view=CanvasViewState(**payload.get("canvas_view", {})),
         path=str(path),
     )

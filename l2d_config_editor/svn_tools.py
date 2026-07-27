@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from xml.etree import ElementTree
 
-from PyQt6.QtCore import QObject, QProcess, QProcessEnvironment, QStandardPaths, pyqtSignal
+from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QStandardPaths, Signal
 
 
 def discover_svn_executable(saved_path: str | None = None) -> Path | None:
@@ -55,9 +55,9 @@ def parse_status_xml(payload: str) -> list[tuple[Path, str]]:
 class SvnCommitRunner(QObject):
     """Save-independent SVN add/commit pipeline driven by one QProcess."""
 
-    phaseChanged = pyqtSignal(str)
-    outputReceived = pyqtSignal(str)
-    finished = pyqtSignal(bool, str)
+    phaseChanged = Signal(str)
+    outputReceived = Signal(str)
+    finished = Signal(bool, str)
 
     def __init__(self, executable: str | Path, parent: QObject | None = None) -> None:
         super().__init__(parent)

@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=80,<81"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "l2d-config-editor"
+dynamic = ["version"]
+description = "L2D 交互图表编辑器"
+readme = "README.md"
+requires-python = "==3.13.14"
+license = { text = "Proprietary application; bundled third-party components retain their licenses" }
+authors = [{ name = "4S4H1" }]
+dependencies = [
+    "PySide6==6.11.1",
+    "cryptography==48.0.0",
+    "packaging==26.2",
+]
+
+[project.optional-dependencies]
+build = [
+    "PyInstaller==6.21.0",
+    "Pillow==12.1.1",
+]
+
+[project.scripts]
+l2d-config-editor = "l2d_config_editor.main:main"
+l2d-update-host = "l2d_config_editor.update_host:main"
+
+[tool.setuptools]
+packages = ["l2d_config_editor"]
+
+[tool.setuptools.dynamic]
+version = { attr = "l2d_config_editor.version.VERSION" }
+
+[tool.setuptools.package-data]
+l2d_config_editor = ["editor_schema.json", "assets/*.pem"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -5,10 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from PyQt6.QtCore import QDate, QPoint, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFocusEvent, QFont, QKeyEvent, QKeySequence, QRegularExpressionValidator
-from PyQt6.QtCore import QRegularExpression
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QDate, QPoint, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFocusEvent, QFont, QKeyEvent, QKeySequence, QRegularExpressionValidator
+from PySide6.QtCore import QRegularExpression
+from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
@@ -146,7 +146,7 @@ APPEARANCE_COLOR_SCHEMES = (
 
 
 class ColorSwatchGrid(QWidget):
-    colorSelected = pyqtSignal(str)
+    colorSelected = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -174,7 +174,7 @@ class ColorSwatchGrid(QWidget):
 
 
 class ColorSchemePicker(QWidget):
-    schemeChanged = pyqtSignal(object)
+    schemeChanged = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -267,7 +267,7 @@ class ColorSchemePicker(QWidget):
 
 
 class CommitLineEdit(QLineEdit):
-    committed = pyqtSignal(object)
+    committed = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -304,7 +304,7 @@ class NumericLineEdit(CommitLineEdit):
 
 
 class CommitPlainTextEdit(QPlainTextEdit):
-    committed = pyqtSignal(object)
+    committed = Signal(object)
 
     def focusOutEvent(self, event: QFocusEvent) -> None:
         super().focusOutEvent(event)
@@ -323,7 +323,7 @@ class CopyFriendlyPlainTextEdit(QPlainTextEdit):
 
 
 class CommitComboBox(QComboBox):
-    committed = pyqtSignal(object)
+    committed = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -338,7 +338,7 @@ class CommitComboBox(QComboBox):
 
 
 class ColorFieldWidget(QWidget):
-    committed = pyqtSignal(object)
+    committed = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -372,7 +372,7 @@ class ColorFieldWidget(QWidget):
 
 
 class ColorChoiceButton(QWidget):
-    colorChanged = pyqtSignal(str)
+    colorChanged = Signal(str)
 
     def __init__(self, title: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -532,7 +532,7 @@ class EditorBinding:
 
 
 class ValidationIssueItem(QWidget):
-    jumpRequested = pyqtSignal(str)
+    jumpRequested = Signal(str)
 
     def __init__(self, issue, text: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -565,7 +565,7 @@ class ValidationIssueItem(QWidget):
 
 
 class ValidationSummaryWidget(QFrame):
-    jumpRequested = pyqtSignal(str)
+    jumpRequested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -620,8 +620,8 @@ class ValidationSummaryWidget(QFrame):
 
 
 class NodeFormWidget(QFrame):
-    fieldCommitted = pyqtSignal(str, object)
-    fieldsCommitted = pyqtSignal(object)
+    fieldCommitted = Signal(str, object)
+    fieldsCommitted = Signal(object)
     APPEARANCE_KEYS = {
         "theme_body_color",
         "theme_border_color",

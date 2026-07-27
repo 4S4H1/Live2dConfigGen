@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtWidgets import QApplication, QDialog
+from PySide6.QtWidgets import QApplication, QDialog
 
 from l2d_config_editor.logic import get_default_schema, load_document
 from l2d_config_editor.main_window import MainWindow

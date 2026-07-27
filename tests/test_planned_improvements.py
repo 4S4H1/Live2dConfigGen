@@ -7,9 +7,9 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import QPointF, Qt
-from PyQt6.QtGui import QFontMetricsF
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtCore import QPointF, Qt
+from PySide6.QtGui import QFontMetricsF
+from PySide6.QtWidgets import QApplication
 
 from l2d_config_editor import main as app_main
 from l2d_config_editor.canvas import TemporaryConnectionItem
@@ -43,10 +43,13 @@ class PlannedImprovementTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = Mock()
             settings.value.return_value = None
-            with patch.object(app_main, "QSettings", return_value=settings), patch.object(
+            with patch.object(
                 app_main.QFileDialog, "getExistingDirectory", return_value=temp_dir
             ) as choose:
-                resolved = app_main.resolve_initial_workspace(Path(temp_dir).parent)
+                resolved = app_main.resolve_initial_workspace(
+                    Path(temp_dir).parent,
+                    settings=settings,
+                )
             self.assertEqual(Path(temp_dir).resolve(), resolved)
             choose.assert_called_once()
             settings.setValue.assert_called_once_with("workspace_root", str(Path(temp_dir).resolve()))
@@ -55,10 +58,11 @@ class PlannedImprovementTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = Mock()
             settings.value.return_value = temp_dir
-            with patch.object(app_main, "QSettings", return_value=settings), patch.object(
-                app_main.QFileDialog, "getExistingDirectory"
-            ) as choose:
-                resolved = app_main.resolve_initial_workspace(Path(temp_dir).parent)
+            with patch.object(app_main.QFileDialog, "getExistingDirectory") as choose:
+                resolved = app_main.resolve_initial_workspace(
+                    Path(temp_dir).parent,
+                    settings=settings,
+                )
             self.assertEqual(Path(temp_dir).resolve(), resolved)
             choose.assert_not_called()
 
@@ -85,13 +89,16 @@ class PlannedImprovementTests(unittest.TestCase):
             window.close()
 
     def test_light_theme_updates_actions_canvas_and_persisted_mode(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ,
+            {"L2D_CONFIG_EDITOR_SETTINGS_DIR": str(Path(temp_dir) / "settings")},
+        ):
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             window._apply_ui_theme(ThemeMode.LIGHT)
             self.app.processEvents()
             self.assertEqual(ThemeMode.LIGHT, window.theme_mode)
             self.assertTrue(window.light_theme_action.isChecked())
-            self.assertEqual("#edf1f5", window.canvas.theme_palette.canvas_background)
+            self.assertEqual("#f3f6fa", window.canvas.theme_palette.canvas_background)
             self.assertEqual("light", window.settings.value(window.SETTINGS_THEME_MODE))
             window._apply_ui_theme(ThemeMode.DARK)
             window._mark_saved_checkpoint(saved=True)

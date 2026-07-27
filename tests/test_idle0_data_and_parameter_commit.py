@@ -6,7 +6,9 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication
 
 from l2d_config_editor.controller import EditorController
 from l2d_config_editor.logic import (
@@ -73,10 +75,10 @@ class Idle0DocumentTests(unittest.TestCase):
 
         self.assertEqual([], document_to_csv_rows(self.schema, document))
 
-    def test_new_document_exports_format_version_two_with_idle0_root(self) -> None:
+    def test_new_document_exports_format_version_three_with_idle0_root(self) -> None:
         payload = export_document_dict(self.schema, create_document(self.schema))
 
-        self.assertEqual(2, payload["format_version"])
+        self.assertEqual(3, payload["format_version"])
         self.assertEqual("idle0", payload["meta"]["default_state"])
         self.assertEqual(["Idle0"], [node["type"] for node in payload["nodes"]])
 
@@ -495,6 +497,92 @@ class ParameterTablePendingCommitTests(unittest.TestCase):
 
             loaded_row = next(node for node in loaded.nodes if node.uuid == row_uuid)
             self.assertEqual("FramePendingSave", loaded_row.fields["draw_able_name"])
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
+    def test_real_double_click_parameter_edit_survives_immediate_save_and_linkage(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            window.controller.document.meta.author = "asahi"
+            window.controller.document.meta.ship_skin_id = 1001
+            window.controller.document.meta.memo = "role_a"
+            window.controller.document.meta.CharName = "角色A"
+            window.controller.refresh_derived()
+            row_uuid = window.controller.create_node("ParameterTrigger", (220.0, 120.0))
+            table = window.canvas.table_row_to_item[row_uuid]
+            self.assertEqual(
+                "touch_drag1",
+                window.controller.get_node(row_uuid).fields["parameter"],
+            )
+            window.show()
+            window.canvas.centerOn(table)
+            self.app.processEvents()
+            cell = table._cell_rects[(row_uuid, "parameter")]
+            viewport_pos = window.canvas.mapFromScene(
+                table.mapToScene(cell.center())
+            )
+
+            QTest.mouseDClick(
+                window.canvas.viewport(),
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+                viewport_pos,
+            )
+            self.app.processEvents()
+            editor = table._editor_proxy.widget()
+            self.assertIsNotNone(editor)
+            QTest.keyClick(
+                editor,
+                Qt.Key.Key_A,
+                Qt.KeyboardModifier.ControlModifier,
+            )
+            QTest.keyClicks(editor, "touch_drag11")
+
+            path = Path(temp_dir) / "parameter-double-click.json"
+            window.controller.document.path = str(path)
+            window.controller.pathChanged.emit(str(path))
+            saved = window._save_current_file(silent=True)
+            self.assertEqual(str(path), saved)
+
+            runtime = window.controller.get_node(row_uuid)
+            self.assertEqual("touch_drag11", runtime.fields["parameter"])
+            self.assertIn("parameter", runtime.manual_fields)
+            raw_row = next(
+                node
+                for node in json.loads(path.read_text(encoding="utf-8"))["nodes"]
+                if node["uuid"] == row_uuid
+            )
+            self.assertEqual("touch_drag11", raw_row["parameter"])
+            self.assertIn("parameter", raw_row["manual_fields"])
+
+            window.controller.undo_stack.undo()
+            self.assertEqual(
+                "touch_drag1",
+                window.controller.get_node(row_uuid).fields["parameter"],
+            )
+            self.assertNotIn(
+                "parameter",
+                window.controller.get_node(row_uuid).manual_fields,
+            )
+            window.controller.undo_stack.redo()
+            self.assertEqual(
+                "touch_drag11",
+                window.controller.get_node(row_uuid).fields["parameter"],
+            )
+            window.controller.set_numeric_linkage_enabled(True)
+            window.controller.set_numeric_linkage_enabled(False)
+            self.assertEqual(
+                "touch_drag11",
+                window.controller.get_node(row_uuid).fields["parameter"],
+            )
+            self.assertIn(
+                "parameter",
+                window.controller.get_node(row_uuid).manual_fields,
+            )
+            loaded = load_document(window.controller.schema, path)
+            loaded_row = next(node for node in loaded.nodes if node.uuid == row_uuid)
+            self.assertEqual("touch_drag11", loaded_row.fields["parameter"])
+            self.assertIn("parameter", loaded_row.manual_fields)
             window._mark_saved_checkpoint(saved=True)
             window.close()
 

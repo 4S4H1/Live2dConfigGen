@@ -8,18 +8,20 @@ import math
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import QObject, pyqtSignal
-from PyQt6.QtGui import QUndoStack
+from PySide6.QtCore import QObject, Signal
+from PySide6.QtGui import QUndoStack
 
 from .commands import (
     AddConnectionCommand,
     AddCanvasImagesCommand,
+    AddCanvasStrokesCommand,
     AddNodesCommand,
     MoveCanvasImagesCommand,
     MoveNodeCommand,
     MoveNodesCommand,
     RemoveConnectionCommand,
     RemoveCanvasImagesCommand,
+    RemoveCanvasStrokesCommand,
     RemoveNodesCommand,
     SetGroupsCommand,
     UpdateEditorSettingsCommand,
@@ -43,7 +45,6 @@ from .logic import (
     infer_manual_fields,
     is_editor_document_file,
     load_document,
-    make_trash_entry,
     new_uuid,
     node_title,
     normalized_document_groups,
@@ -57,6 +58,8 @@ from .logic import (
     search_document,
     set_parameter_table_order,
     validate_document,
+    validate_canvas_stroke,
+    validate_canvas_strokes,
     document_to_csv_rows,
     ensure_parameter_table_metadata,
     DEFAULT_GROUP_TITLE,
@@ -68,7 +71,15 @@ from .logic import (
     TABLE_BORDER_COLOR_FIELD,
     TABLE_TEXT_COLOR_FIELD,
 )
-from .models import CanvasImageRecord, ConnectionRecord, DocumentModel, EditorPreferences, GroupRecord, NodeRecord
+from .models import (
+    CanvasImageRecord,
+    CanvasStrokeRecord,
+    ConnectionRecord,
+    DocumentModel,
+    EditorPreferences,
+    GroupRecord,
+    NodeRecord,
+)
 from .perf_tools import get_performance_recorder
 from .reference_images import (
     MAX_DOCUMENT_REFERENCE_IMAGE_BYTES,
@@ -84,27 +95,27 @@ performance_recorder = get_performance_recorder()
 
 
 class EditorController(QObject):
-    documentLoaded = pyqtSignal()
-    nodeAdded = pyqtSignal(str)
-    nodeRemoved = pyqtSignal(str)
-    nodeUpdated = pyqtSignal(str)
-    nodeMoved = pyqtSignal(str)
-    connectionsChanged = pyqtSignal()
-    validationChanged = pyqtSignal(object)
-    csvPreviewChanged = pyqtSignal(object)
-    selectionChanged = pyqtSignal(object)
-    pathChanged = pyqtSignal(object)
-    documentSaved = pyqtSignal(str)
-    statusMessage = pyqtSignal(str)
-    documentStateChanged = pyqtSignal(object)
-    globalModeChanged = pyqtSignal(str)
-    interactionCreationModeChanged = pyqtSignal(str)
-    schemaChanged = pyqtSignal()
-    trashBinChanged = pyqtSignal(object)
-    metaActionBlocked = pyqtSignal(str)
-    editorSettingsChanged = pyqtSignal(object)
-    groupsChanged = pyqtSignal()
-    canvasImagesChanged = pyqtSignal()
+    documentLoaded = Signal()
+    nodeAdded = Signal(str)
+    nodeRemoved = Signal(str)
+    nodeUpdated = Signal(str)
+    nodeMoved = Signal(str)
+    connectionsChanged = Signal()
+    validationChanged = Signal(object)
+    csvPreviewChanged = Signal(object)
+    selectionChanged = Signal(object)
+    pathChanged = Signal(object)
+    documentSaved = Signal(str)
+    statusMessage = Signal(str)
+    documentStateChanged = Signal(object)
+    globalModeChanged = Signal(str)
+    interactionCreationModeChanged = Signal(str)
+    schemaChanged = Signal()
+    metaActionBlocked = Signal(str)
+    editorSettingsChanged = Signal(object)
+    groupsChanged = Signal()
+    canvasImagesChanged = Signal()
+    canvasStrokesChanged = Signal()
 
     def __init__(self, parent: QObject | None = None, schema_path: str | None = None) -> None:
         super().__init__(parent)
@@ -159,35 +170,10 @@ class EditorController(QObject):
             return
         old_settings = {
             "numeric_linkage_enabled": self.document.editor_settings.numeric_linkage_enabled,
-            "trash_enabled": self.document.editor_settings.trash_enabled,
         }
         new_settings = dict(old_settings)
         new_settings["numeric_linkage_enabled"] = enabled
         self.undo_stack.push(UpdateEditorSettingsCommand(self, old_settings, new_settings, label="切换数值联动"))
-
-    def set_trash_enabled(self, enabled: bool) -> None:
-        current = bool(self.document.editor_settings.trash_enabled)
-        enabled = bool(enabled)
-        if current == enabled:
-            return
-        old_settings = {
-            "numeric_linkage_enabled": self.document.editor_settings.numeric_linkage_enabled,
-            "trash_enabled": self.document.editor_settings.trash_enabled,
-        }
-        new_settings = dict(old_settings)
-        new_settings["trash_enabled"] = enabled
-        old_trash_bin = [entry for entry in self.document.trash_bin]
-        new_trash_bin = old_trash_bin if enabled else []
-        self.undo_stack.push(
-            UpdateEditorSettingsCommand(
-                self,
-                old_settings,
-                new_settings,
-                old_trash_bin=old_trash_bin,
-                new_trash_bin=new_trash_bin,
-                label="切换回收站",
-            )
-        )
 
     def set_node_locked(self, node_uuid: str, locked: bool) -> None:
         node = self.get_node(node_uuid)
@@ -250,7 +236,6 @@ class EditorController(QObject):
                 csv_rows = document_to_csv_rows(self.schema, self.document)
             self.csvPreviewChanged.emit(csv_rows)
             self.documentStateChanged.emit(self.document.state)
-            self.trashBinChanged.emit(list(self.document.trash_bin))
             self.editorSettingsChanged.emit(self.document.editor_settings)
             self.groupsChanged.emit()
 
@@ -314,6 +299,41 @@ class EditorController(QObject):
 
     def get_canvas_image(self, image_uuid: str) -> CanvasImageRecord | None:
         return next((image for image in self.document.canvas_images if image.uuid == image_uuid), None)
+
+    def get_canvas_stroke(self, stroke_uuid: str) -> CanvasStrokeRecord | None:
+        return next((stroke for stroke in self.document.canvas_strokes if stroke.uuid == stroke_uuid), None)
+
+    def add_canvas_stroke(
+        self,
+        points: list[tuple[float, float]],
+        color: str = "#2F80ED",
+        width: float = 4.0,
+    ) -> str | None:
+        try:
+            stroke = validate_canvas_stroke(
+                CanvasStrokeRecord(
+                    uuid=new_uuid(),
+                    points=points,
+                    color=color,
+                    width=width,
+                )
+            )
+            # Reject before mutating the undo stack if the document-wide
+            # stroke/point budget would make the next save impossible.
+            validate_canvas_strokes([*self.document.canvas_strokes, stroke])
+        except ValueError:
+            return None
+        self.undo_stack.push(AddCanvasStrokesCommand(self, [stroke]))
+        return stroke.uuid
+
+    def remove_canvas_stroke(self, stroke_uuid: str) -> None:
+        self.remove_canvas_strokes([stroke_uuid])
+
+    def remove_canvas_strokes(self, stroke_uuids: list[str]) -> None:
+        selected = set(stroke_uuids)
+        strokes = [stroke for stroke in self.document.canvas_strokes if stroke.uuid in selected]
+        if strokes:
+            self.undo_stack.push(RemoveCanvasStrokesCommand(self, strokes))
 
     def add_canvas_image(
         self,
@@ -650,8 +670,7 @@ class EditorController(QObject):
             for connection in self.document.connections
             if connection.from_uuid in node_uuid_set or connection.to_uuid in node_uuid_set
         ]
-        trash_entries = [make_trash_entry(self.schema, node) for node in nodes] if self.document.editor_settings.trash_enabled else []
-        self.undo_stack.push(RemoveNodesCommand(self, nodes, connections, trash_entries, self.group_records()))
+        self.undo_stack.push(RemoveNodesCommand(self, nodes, connections, self.group_records()))
 
     def update_field(self, node_uuid: str, key: str, value: Any, source_mode: str | None = None) -> None:
         node = self.get_node(node_uuid)
@@ -1064,24 +1083,6 @@ class EditorController(QObject):
     def export_current_document(self) -> dict[str, Any]:
         return export_document_dict(self.schema, self.document)
 
-    def clear_trash_entries(self, entry_ids: list[str]) -> int:
-        if not entry_ids:
-            return 0
-        entry_set = set(entry_ids)
-        before = len(self.document.trash_bin)
-        self.document.trash_bin = [entry for entry in self.document.trash_bin if entry.entry_id not in entry_set]
-        removed = before - len(self.document.trash_bin)
-        if removed:
-            self.refresh_derived()
-        return removed
-
-    def clear_all_trash(self) -> int:
-        removed = len(self.document.trash_bin)
-        if removed:
-            self.document.trash_bin.clear()
-            self.refresh_derived()
-        return removed
-
     def _serialize_node(self, node: NodeRecord) -> dict[str, Any]:
         payload = {
             "uuid": node.uuid,
@@ -1134,7 +1135,7 @@ class EditorController(QObject):
         self.connectionsChanged.emit()
         self.refresh_derived()
 
-    def _delete_nodes(self, nodes: list[NodeRecord], connections: list[ConnectionRecord], trash_entries) -> None:
+    def _delete_nodes(self, nodes: list[NodeRecord], connections: list[ConnectionRecord]) -> None:
         node_uuids = [node.uuid for node in nodes]
         pairs = [(connection.from_uuid, connection.to_uuid) for connection in connections]
         self.document.nodes = [node for node in self.document.nodes if node.uuid not in node_uuids]
@@ -1143,7 +1144,6 @@ class EditorController(QObject):
             for connection in self.document.connections
             if (connection.from_uuid, connection.to_uuid) not in pairs
         ]
-        self.document.trash_bin.extend(trash_entries)
         if self.selected_node_uuid in node_uuids:
             self.set_selected_node(None)
         for node_uuid in node_uuids:
@@ -1151,9 +1151,7 @@ class EditorController(QObject):
         self.connectionsChanged.emit()
         self.refresh_derived()
 
-    def _restore_deleted_nodes(self, nodes: list[NodeRecord], connections: list[ConnectionRecord], trash_entry_ids: list[str]) -> None:
-        trash_id_set = set(trash_entry_ids)
-        self.document.trash_bin = [entry for entry in self.document.trash_bin if entry.entry_id not in trash_id_set]
+    def _restore_deleted_nodes(self, nodes: list[NodeRecord], connections: list[ConnectionRecord]) -> None:
         for node in nodes:
             self.document.nodes.append(node)
         for connection in connections:
@@ -1202,7 +1200,8 @@ class EditorController(QObject):
         if node.type in {"TouchDrag", "ParameterTrigger"} and changed_keys & {"action_trigger", "parameter"}:
             node.fields["action_trigger_active"] = ""
         if effective_changed_key in {"action_trigger_active", "action_trigger"} or (
-            source_mode == "advanced" and effective_changed_key == "parameter"
+            effective_changed_key == "parameter"
+            and (source_mode == "advanced" or node.type == "ParameterTrigger")
         ):
             infer_manual_fields(self.schema, node, self.document)
         apply_auto_rules(self.schema, self.document, node, source_mode=source_mode, changed_key=effective_changed_key)
@@ -1242,7 +1241,8 @@ class EditorController(QObject):
             if node.type in {"TouchDrag", "ParameterTrigger"} and changed_keys & {"action_trigger", "parameter"}:
                 node.fields["action_trigger_active"] = ""
             if effective_changed_key in {"action_trigger_active", "action_trigger"} or (
-                source_mode == "advanced" and effective_changed_key == "parameter"
+                effective_changed_key == "parameter"
+                and (source_mode == "advanced" or node.type == "ParameterTrigger")
             ):
                 infer_manual_fields(self.schema, node, self.document)
             apply_auto_rules(self.schema, self.document, node, source_mode=source_mode, changed_key=effective_changed_key)
@@ -1262,10 +1262,8 @@ class EditorController(QObject):
         self.nodeUpdated.emit(node_uuid)
         self.refresh_derived()
 
-    def _set_editor_settings(self, settings: dict[str, Any], trash_bin) -> None:
+    def _set_editor_settings(self, settings: dict[str, Any]) -> None:
         self.document.editor_settings.numeric_linkage_enabled = bool(settings.get("numeric_linkage_enabled", False))
-        self.document.editor_settings.trash_enabled = bool(settings.get("trash_enabled", False))
-        self.document.trash_bin = list(trash_bin)
         linkage_enabled = self.document.editor_settings.numeric_linkage_enabled
         for node in self.document.nodes:
             if node.type not in function_node_types(self.schema):
@@ -1296,6 +1294,33 @@ class EditorController(QObject):
             if image is not None:
                 image.ui_position = {"x": float(position[0]), "y": float(position[1])}
         self.canvasImagesChanged.emit()
+
+    def _insert_canvas_strokes(self, strokes: list[CanvasStrokeRecord]) -> None:
+        existing = {stroke.uuid for stroke in self.document.canvas_strokes}
+        self.document.canvas_strokes.extend(
+            stroke for stroke in strokes if stroke.uuid not in existing
+        )
+        self.canvasStrokesChanged.emit()
+
+    def _remove_canvas_strokes(self, stroke_uuids: list[str]) -> None:
+        selected = set(stroke_uuids)
+        self.document.canvas_strokes = [
+            stroke for stroke in self.document.canvas_strokes if stroke.uuid not in selected
+        ]
+        self.canvasStrokesChanged.emit()
+
+    def _restore_canvas_strokes(
+        self,
+        indexed_strokes: list[tuple[int, CanvasStrokeRecord]],
+    ) -> None:
+        existing = {stroke.uuid for stroke in self.document.canvas_strokes}
+        for index, stroke in sorted(indexed_strokes, key=lambda item: item[0]):
+            if stroke.uuid in existing:
+                continue
+            resolved_index = min(max(0, int(index)), len(self.document.canvas_strokes))
+            self.document.canvas_strokes.insert(resolved_index, stroke)
+            existing.add(stroke.uuid)
+        self.canvasStrokesChanged.emit()
 
     def _move_node(self, node_uuid: str, position: tuple[float, float]) -> None:
         node = self.get_node(node_uuid)

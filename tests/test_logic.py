@@ -9,12 +9,13 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("L2D_CONFIG_EDITOR_TEST_CLOSE_EVENT_POLICY", "discard")
 
-from PyQt6.QtCore import QEvent, QPoint, QPointF, QRectF, QSettings, Qt
-from PyQt6.QtGui import QContextMenuEvent, QFontMetricsF, QImage, QMouseEvent, QPainter
-from PyQt6.QtWidgets import QApplication, QComboBox, QDialog, QGraphicsItem, QMessageBox, QSplitter, QToolBar
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QPointF, QRectF, QSettings, Qt
+from PySide6.QtGui import QContextMenuEvent, QFontMetricsF, QImage, QMouseEvent, QPainter
+from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QGraphicsItem, QMessageBox, QSplitter, QToolBar
 
 from l2d_config_editor.controller import EditorController
 from l2d_config_editor.logic import (
+    EDITOR_DOCUMENT_FORMAT_VERSION,
     apply_auto_rules,
     build_template_version_folder_name,
     create_document,
@@ -51,7 +52,9 @@ def _close_top_level_widgets(app: QApplication) -> None:
     ):
         for widget in list(app.topLevelWidgets()):
             widget.close()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         app.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 def _set_ready_document_meta(
@@ -123,7 +126,6 @@ class LogicTests(unittest.TestCase):
         self.assertEqual("idle0", document.meta.default_state)
         self.assertEqual("simple", document.global_mode)
         self.assertFalse(document.editor_settings.numeric_linkage_enabled)
-        self.assertFalse(document.editor_settings.trash_enabled)
         self.assertFalse(document.state.is_meta_ready)
         self.assertNotIn("作者", document.state.meta_missing_fields)
 
@@ -358,7 +360,6 @@ class LogicTests(unittest.TestCase):
     def test_save_roundtrip_preserves_editor_settings_and_locked_nodes(self) -> None:
         document = self.make_ready_document()
         document.editor_settings.numeric_linkage_enabled = False
-        document.editor_settings.trash_enabled = False
         node = create_node(self.schema, document, "TouchIdle")
         node.locked = True
         document.nodes.append(node)
@@ -368,7 +369,6 @@ class LogicTests(unittest.TestCase):
             loaded = load_document(self.schema, path)
         loaded_node = next(item for item in loaded.nodes if item.uuid == node.uuid)
         self.assertFalse(loaded.editor_settings.numeric_linkage_enabled)
-        self.assertFalse(loaded.editor_settings.trash_enabled)
         self.assertTrue(loaded_node.locked)
 
     def test_load_document_without_editor_settings_defaults_linkage_to_disabled(self) -> None:
@@ -395,7 +395,6 @@ class LogicTests(unittest.TestCase):
             path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
             loaded = load_document(self.schema, path)
         self.assertFalse(loaded.editor_settings.numeric_linkage_enabled)
-        self.assertFalse(loaded.editor_settings.trash_enabled)
 
     def test_empty_action_fields_stay_empty_after_display_roundtrip(self) -> None:
         document = create_document(self.schema)
@@ -759,32 +758,11 @@ class LogicTests(unittest.TestCase):
         raw = json.loads(payload.decode("utf-8"))
         self.assertNotIn("tips", raw["nodes"][0])
 
-    def test_remove_nodes_writes_trash_bin_and_persists(self) -> None:
+    def test_removing_node_immediately_reuses_slot(self) -> None:
         controller = EditorController()
-        controller.document.editor_settings.trash_enabled = True
-        _set_ready_controller_meta(controller)
-        node_uuid = controller.create_node("TouchIdle", (100, 100))
-        controller.remove_nodes([node_uuid])
-        self.assertEqual(1, len(controller.document.trash_bin))
-        self.assertEqual("TouchIdle", controller.document.trash_bin[0].node_type)
-        self.assertEqual(1, controller.document.trash_bin[0].type_slot)
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "trash.json"
-            controller.save_document(str(path))
-            loaded = load_document(controller.schema, path)
-        self.assertEqual(1, len(loaded.trash_bin))
-        self.assertEqual("TouchIdle", loaded.trash_bin[0].node_type)
-
-    def test_disabling_trash_clears_bin_and_reuses_slots(self) -> None:
-        controller = EditorController()
-        controller.document.editor_settings.trash_enabled = True
         _set_ready_controller_meta(controller)
         first_uuid = controller.create_node("TouchIdle", (100, 100))
         controller.remove_nodes([first_uuid])
-        self.assertEqual(1, len(controller.document.trash_bin))
-        controller.set_trash_enabled(False)
-        self.assertFalse(controller.document.editor_settings.trash_enabled)
-        self.assertEqual([], controller.document.trash_bin)
         second_uuid = controller.create_node("TouchIdle", (120, 120))
         second = controller.get_node(second_uuid)
         self.assertEqual(1, second.type_slot)
@@ -1092,7 +1070,11 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertGreater(editor.width(), initial_editor_width)
             self.assertAlmostEqual(item._card_layout["note"].width(), expected_note_width, delta=1.0)
             self.assertLessEqual(item._card_layout["note"].right(), item._card_layout["frame"].right() + 0.1)
-            self.assertAlmostEqual(item._compact_note_layout_font().pointSizeF(), 27.0, delta=0.1)
+            self.assertAlmostEqual(
+                item._compact_note_layout_font().pointSizeF(),
+                item.CARD_NOTE_MIN_POINT_SIZE / item.CARD_TEXT_SCALE_FLOOR,
+                delta=0.1,
+            )
             draw_rect, fitted_font, _display_text = item._compact_text_layout(
                 long_title,
                 item._card_layout["note"],
@@ -1295,12 +1277,16 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window.controller.update_field(created, "content", "This is a long comment title line for readability\nbody", "simple")
             item = window.canvas.node_items[created]
 
-            self.assertAlmostEqual(item.TITLE_BASE_POINT_SIZE * item.COMMENT_TITLE_SCALE, item._title_font().pointSizeF(), delta=0.2)
             baseline_title_size = item._title_font().pointSizeF()
+            baseline_rect = QRectF(item.boundingRect())
             window.canvas._apply_view_state(0.35, QPointF(0.0, 0.0))
             self.app.processEvents()
-            self.assertAlmostEqual(baseline_title_size, item._title_font().pointSizeF(), delta=0.1)
-            self.assertGreaterEqual(item._comment_content_font().pointSizeF(), 20.0)
+            self.assertGreater(item._title_font().pointSizeF(), baseline_title_size)
+            self.assertGreaterEqual(item._title_font().pointSizeF() * 0.35, 9.0)
+            self.assertLessEqual(item._title_font().pointSizeF() * 0.35, 18.0)
+            self.assertGreaterEqual(item._comment_content_font().pointSizeF() * 0.35, 8.0)
+            self.assertLessEqual(item._comment_content_font().pointSizeF() * 0.35, 16.0)
+            self.assertEqual(baseline_rect, item.boundingRect())
             self.assertFalse(item.form.isVisible())
             self.assertFalse(item.proxy.isVisible())
             window._mark_saved_checkpoint(saved=True)
@@ -1605,15 +1591,18 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window.close()
 
     def test_main_window_restores_last_opened_document(self) -> None:
-        settings = QSettings("OpenAI", "L2DConfigEditor")
-        settings.clear()
-        try:
-            with tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ,
+            {"L2D_CONFIG_EDITOR_SETTINGS_DIR": str(Path(temp_dir) / "settings")},
+        ):
+            settings = None
+            try:
                 root = Path(temp_dir)
                 path = root / "restore.json"
                 save_document(get_default_schema(), create_document(get_default_schema()), path)
-
                 first = MainWindow(root, prefer_saved_workspace=False)
+                settings = first.settings
+                settings.clear()
                 first._open_existing_session_or_file(path)
                 self.assertEqual(str(path), first.controller.document.path)
                 first.close()
@@ -1622,26 +1611,9 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
                 second = MainWindow(root, prefer_saved_workspace=False)
                 self.assertEqual(str(path), second.controller.document.path)
                 second.close()
-        finally:
-            settings.clear()
-
-    def test_main_window_restores_local_trash_preference_for_blank_document(self) -> None:
-        settings = QSettings("OpenAI", "L2DConfigEditor")
-        settings.clear()
-        try:
-            with tempfile.TemporaryDirectory() as temp_dir:
-                root = Path(temp_dir)
-                first = MainWindow(root, prefer_saved_workspace=False)
-                self.assertFalse(first.controller.document.editor_settings.trash_enabled)
-                first._toggle_trash_enabled(True)
-                self.assertTrue(first.controller.document.editor_settings.trash_enabled)
-                first.close()
-
-                second = MainWindow(root, prefer_saved_workspace=False)
-                self.assertTrue(second.controller.document.editor_settings.trash_enabled)
-                second.close()
-        finally:
-            settings.clear()
+            finally:
+                if settings is not None:
+                    settings.clear()
 
     def test_node_title_updates_when_draw_name_changes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1811,6 +1783,39 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertTrue(window.controller.undo_stack.canUndo())
             window.controller.undo_stack.undo()
             self.assertIsNone(window.controller.get_node(created))
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_save_reports_future_document_refusal_without_marking_saved(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            target = root / "future.json"
+            future_payload = export_document_dict(get_default_schema(), create_document(get_default_schema()))
+            future_payload["format_version"] = EDITOR_DOCUMENT_FORMAT_VERSION + 1
+            original = json.dumps(future_payload, ensure_ascii=False, indent=2)
+            target.write_text(original, encoding="utf-8")
+
+            window = MainWindow(root, prefer_saved_workspace=False)
+            _set_ready_controller_meta(window.controller)
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            self.assertIsNotNone(created)
+            window.controller.document.path = str(target)
+            window.controller.pathChanged.emit(str(target))
+            window._mark_saved_checkpoint(saved=False)
+
+            warnings = []
+            with patch.object(
+                QMessageBox,
+                "warning",
+                side_effect=lambda _parent, title, message: warnings.append((title, message)),
+            ):
+                saved = window._save_current_file(silent=True)
+
+            self.assertIsNone(saved)
+            self.assertTrue(window._is_dirty())
+            self.assertEqual("拒绝覆盖", warnings[0][0])
+            self.assertIn("newer", warnings[0][1])
+            self.assertEqual(original, target.read_text(encoding="utf-8"))
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
@@ -1988,20 +1993,85 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
-    def test_close_does_not_prompt_when_hidden_meta_is_incomplete(self) -> None:
+    def test_close_prompts_before_discarding_incomplete_dirty_draft(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             idle0 = next(node for node in window.controller.document.nodes if node.type == "Idle0")
             old_position = (float(idle0.ui_position["x"]), float(idle0.ui_position["y"]))
             window.controller.move_node(idle0.uuid, old_position, (old_position[0] + 20.0, old_position[1]))
 
-            with patch.dict(os.environ, {"L2D_CONFIG_EDITOR_TEST_CLOSE_EVENT_POLICY": "", "L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY": ""}), patch.object(QMessageBox, "exec", side_effect=AssertionError("should not prompt")), patch.object(
+            prompts = []
+
+            def choose_discard(box):
+                prompts.append(box.windowTitle())
+                box._forced_clicked_button = next(
+                    button for button in box.buttons() if button.text() == "不保存"
+                )
+                return 0
+
+            with patch.dict(os.environ, {"L2D_CONFIG_EDITOR_TEST_CLOSE_EVENT_POLICY": "", "L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY": ""}), patch.object(QMessageBox, "exec", choose_discard), patch.object(
+                QMessageBox,
+                "clickedButton",
+                lambda box: getattr(box, "_forced_clicked_button", None),
+            ), patch.object(
                 window, "_save_current_file", wraps=window._save_current_file
             ) as save_mock:
                 self.assertTrue(window._confirm_safe_to_close())
+                self.assertEqual(["保存当前更改"], prompts)
                 self.assertFalse(save_mock.called)
             window._mark_saved_checkpoint(saved=True)
         window.close()
+
+    def test_dismissing_save_prompt_keeps_dirty_document_open(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            idle0 = next(node for node in window.controller.document.nodes if node.type == "Idle0")
+            old_position = (float(idle0.ui_position["x"]), float(idle0.ui_position["y"]))
+            window.controller.move_node(
+                idle0.uuid,
+                old_position,
+                (old_position[0] + 20.0, old_position[1]),
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "L2D_CONFIG_EDITOR_TEST_CLOSE_EVENT_POLICY": "",
+                    "L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY": "",
+                },
+            ), patch.object(QMessageBox, "exec", return_value=0), patch.object(
+                QMessageBox,
+                "clickedButton",
+                return_value=None,
+            ):
+                self.assertFalse(window._ensure_safe_to_leave_document(None))
+                self.assertFalse(window._confirm_safe_to_close())
+                self.assertTrue(window._is_dirty())
+
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_save_close_policy_persists_incomplete_untitled_draft(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            idle0 = next(node for node in window.controller.document.nodes if node.type == "Idle0")
+            old_position = (float(idle0.ui_position["x"]), float(idle0.ui_position["y"]))
+            window.controller.move_node(
+                idle0.uuid,
+                old_position,
+                (old_position[0] + 20.0, old_position[1]),
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "L2D_CONFIG_EDITOR_TEST_CLOSE_EVENT_POLICY": "",
+                    "L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY": "save",
+                },
+            ):
+                self.assertTrue(window._confirm_safe_to_close())
+            self.assertTrue((Path(temp_dir) / "未完成草稿.json").is_file())
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
 
     def test_switching_file_auto_saves_incomplete_draft_without_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2184,10 +2254,19 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
 
             note_rect = item._card_layout["note"]
             note_font = item._compact_note_font_for_text(long_title, note_rect.width())
-            metrics = QFontMetricsF(note_font)
+            draw_rect, fitted_font, display_text = item._compact_text_layout(
+                long_title,
+                note_rect,
+                note_font,
+                min_point_size=item.CARD_NOTE_MIN_POINT_SIZE,
+                horizontal_padding=10.0,
+                shrink_to_fit=False,
+            )
             self.assertLessEqual(note_rect.right(), item._card_layout["frame"].right() + 0.1)
-            self.assertLessEqual(metrics.horizontalAdvance(long_title), note_rect.adjusted(10.0, 0.0, -10.0, 0.0).width() + 0.5)
-            self.assertGreaterEqual(note_rect.height(), metrics.height() + 18.0)
+            self.assertTrue(display_text)
+            self.assertLessEqual(draw_rect.right(), item._card_layout["frame"].right() + 0.1)
+            self.assertGreaterEqual(fitted_font.pointSizeF() * 0.18, item.CARD_NOTE_MIN_POINT_SIZE - 0.1)
+            self.assertLessEqual(fitted_font.pointSizeF() * 0.18, 16.0)
             self.assertLess(note_font.pointSizeF(), item._compact_note_font().pointSizeF())
             window._mark_saved_checkpoint(saved=True)
         window.close()
@@ -2215,7 +2294,11 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
                 self.assertAlmostEqual(current_note.width(), baseline_note.width(), delta=0.1)
                 self.assertAlmostEqual(current_note.height(), baseline_note.height(), delta=0.1)
                 self.assertAlmostEqual(item._rect.height(), baseline_height, delta=0.1)
-                self.assertAlmostEqual(current_font_size, baseline_font_size, delta=0.1)
+                screen_size = current_font_size * scale
+                self.assertGreaterEqual(screen_size, 7.5)
+                self.assertLessEqual(screen_size, 16.5)
+                if scale < 1.0:
+                    self.assertGreaterEqual(current_font_size, baseline_font_size)
             window._mark_saved_checkpoint(saved=True)
         window.close()
 

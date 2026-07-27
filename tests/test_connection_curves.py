@@ -7,9 +7,9 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("L2D_CONFIG_EDITOR_TEST_CLOSE_EVENT_POLICY", "discard")
 
-from PyQt6.QtCore import QPointF
-from PyQt6.QtGui import QImage, QPainter, QPainterPath
-from PyQt6.QtWidgets import QApplication, QGraphicsItem, QGraphicsView
+from PySide6.QtCore import QPointF
+from PySide6.QtGui import QImage, QPainter, QPainterPath
+from PySide6.QtWidgets import QApplication, QGraphicsItem, QGraphicsView
 
 from l2d_config_editor.canvas import ConnectionCurveLookup, build_connection_curve
 from l2d_config_editor.logic import create_node

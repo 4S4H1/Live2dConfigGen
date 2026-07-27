@@ -7,8 +7,8 @@ import binascii
 import math
 from pathlib import Path
 
-from PyQt6.QtCore import QByteArray, QBuffer, QIODevice, QSize, Qt
-from PyQt6.QtGui import QImage, QImageReader
+from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QSize, Qt
+from PySide6.QtGui import QImage, QImageReader
 
 MAX_REFERENCE_IMAGE_EDGE = 4096
 MAX_REFERENCE_IMAGE_PIXELS = 16_000_000

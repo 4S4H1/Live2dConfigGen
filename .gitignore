@@ -3,6 +3,12 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
+.tools/
+.uv-cache/
+.uv-python/
+*.egg-info/
 build/
 dist/
-*.spec
+# PyInstaller specifications in packaging/ are release source files.
+/*.spec
+!packaging/*.spec

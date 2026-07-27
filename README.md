@@ -1,64 +1,92 @@
-# L2D Config Editor
+# L2D 交互图表编辑器
 
-基于 `PyQt6` 的节点式 Live2D 交互配置编辑器。
+面向 Live2D 交互配置的 Windows 节点式编辑器。1.0.0 使用 Python
+3.13.14、PySide6 6.11.1 和动态 Qt 共享库，支持 Windows 10/11 x64。
 
-## 安装
+## 安装与启动
 
-```bash
-python3 -m pip install -r requirements.txt
+普通用户安装：
+
+- `L2DConfigEditor-Setup-1.0.0-x64.exe`：编辑器，默认安装到
+  `%LOCALAPPDATA%\Programs\L2DConfigEditor`。
+- `L2DUpdateHost-Setup-1.0.0-x64.exe`：可选的局域网更新主机，仅需安装在
+  用于发布更新的电脑上。
+
+两个安装器均为当前用户安装，不需要管理员权限。只有 Host 用户主动创建
+局域网防火墙规则时才会单独显示 UAC 确认。程序未做 Authenticode 签名，
+Windows 可能显示“未知发布者”。
+
+从源码启动：
+
+```powershell
+uv sync --extra build --locked
+uv run python -m l2d_config_editor.main
 ```
 
-## 启动
-
-```bash
-python3 -m l2d_config_editor.main
-```
+首次启动时选择 JSON 工作区，之后可从“文件 → 更改工作区…”重新选择。
 
 ## 主要能力
 
-- 首次启动选择一次工作区并本地持久化；后续可从“文件 → 更改工作区…”调整
-- 一键或批量创建配置底座；版本、作者和目光拖拽待机均可逐角色填写，作者可留空
-- 每张图包含唯一的 `idle0（默认待机）` 根节点，交互从 idle0 向外连接
-- `TouchIdle` / `TouchDrag` / `ParameterTrigger` / `返回默认待机` 等功能节点
-- “返回默认待机”节点强制回到 `idle0`，无需手动填写目标待机
-- 右键创建节点，或从输出引脚拖到空白处“快速创建并连接”
-- 全贝塞尔曲线连线；高亮、箭头、脉冲和尾迹动画均沿曲线运行
-- 深色/白天两套持久化主题、滚轮缩放、中键平移、框选、弹出式搜索和冲突高亮
-- `Ctrl+G` 创建持久组框；双击标题直接就地重命名，节点可自由移入和移出
-- 备注节点只显示一个可双击编辑的多行大标题
-- `Ctrl+V` 将系统剪贴板截图作为参考图贴入画布；参考图经有界解码和尺寸/数量限制后随 JSON 自包含保存
-- `Ctrl+S` 保存 JSON
-- `Ctrl+Z` / `Ctrl+Y` 撤销重做
-- `Ctrl+C` / `Ctrl+V` / `Ctrl+D` 复制粘贴与复制节点，节点槽位和带数字的生成字段会自动递增
-- “提交当前 JSON 到 SVN”会先保存文件，必要时自动 `svn add`，再异步提交并显示完整进度；默认 message 为 JSON 文件名
-- JSON 配置浏览、新建、重命名和删除
-- CSV 预览与批量导出
-- 外部 schema 驱动字段定义、CSV 映射与自动生成规则
+- 唯一 `idle0` 根节点，以及 `TouchIdle`、`TouchDrag`、
+  `ParameterTrigger`、返回默认待机和备注等节点。
+- 快速创建和连接、贝塞尔曲线、持久化分组、参考图片、撤销/重做、
+  搜索、CSV 预览与导出。
+- 画笔模式：`Ctrl+左键` 自由绘制，`Ctrl+右键` 删除整条线；颜色、粗细及
+  每条线的点集随 JSON 保存。
+- 简洁展示模式：按用户选择只显示备注、过渡动画、目标待机等字段，并可
+  独立隐藏分组、参数表、参考图片和画笔。
+- 深色/浅色主题、缩放感知的节点标题和备注字号。
+- schema 驱动的字段定义、校验、CSV 映射和自动命名规则。
+- 单实例运行；第二次启动会把待打开的文件交给现有窗口。
 
-旧版包含 `Initial` 节点的 JSON 会在加载时自动迁移：元数据进入顶层 `meta`，原节点原位变为 idle0，已有出边保持不变。
+## JSON 格式
 
-## 可配置字段
+当前写出格式为 `format_version: 3`。v3 在 v2 的基础上增加顶层
+`canvas_strokes`：
 
-编辑器默认 schema 位于：
-
-`l2d_config_editor/editor_schema.json`
-
-你可以手工修改这个文件来自定义：
-
-- 节点字段定义
-- 字段可见性（保留给兼容和未来节点级模式）
-- 默认值
-- CSV 列映射
-- 自动生成模板
-
-修改后可在程序顶部菜单中使用“重载字段配置”立即生效。
-
-## 测试
-
-```bash
-python3 -m unittest discover -s tests -v
+```json
+{
+  "format_version": 3,
+  "canvas_strokes": [
+    {
+      "id": "uuid",
+      "points": [[120.0, 80.0], [124.0, 84.0]],
+      "color": "#2F80ED",
+      "width": 4.0
+    }
+  ]
+}
 ```
 
-Windows note:
-Run `python -m l2d_config_editor.main` from the repository root.
-If your shell is already inside `l2d_config_editor/`, run `python main.py` instead.
+v1/v2 文件会在内存中兼容迁移；旧 `Initial` 节点会迁移为 `idle0`，旧回收站
+字段会被忽略。高于 v3 的未知格式会拒绝覆盖保存。保存使用同目录临时文件
+和原子替换，避免产生半份 JSON。
+
+默认 schema 位于 `l2d_config_editor/editor_schema.json`。
+
+## 局域网签名更新
+
+1. 在发布电脑安装并启动 L2D Update Host。
+2. Host 导入完整 `.l2dupdate` 包；导入前会验证 Ed25519 原始清单签名、
+   产品/平台/版本、安装器大小及 SHA-256，然后才原子发布。
+3. 点击“复制地址”，在其他电脑的编辑器中保存一次
+   `http://主机名:8765` 或显示的局域网 IP 地址。
+4. 编辑器异步检查并后台下载；下载验证成功后由用户确认安装。
+
+Host 只提供 `GET`、`HEAD`、`Range` 和 `ETag`，不提供远程上传接口，只保留
+最新和前一版本；客户端也只缓存两个经过签名复核的安装器供用户确认后手动
+回滚。HTTP 不提供传输保密；真实性与完整性由嵌入公钥、Ed25519 签名和
+SHA-256 负责。低于清单 `minimum_supported_version` 的客户端必须从 Host
+首页手动安装完整版本。防火墙按钮创建的规则仅允许当前 Host 程序、当前
+TCP 端口、Private/Domain 网络和 `LocalSubnet`。
+
+## 测试与本地发布
+
+```powershell
+uv run python scripts/run_tests.py
+.\pack.bat
+```
+
+完整发布要求仓库隔离的 Python 3.13.14 和 NSIS 3.12，并且只在本机执行，
+不通过 CI 生成发布包。构建、密钥和验收说明见 [BUILDING.md](BUILDING.md)；
+第三方许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

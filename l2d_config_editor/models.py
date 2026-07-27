@@ -80,6 +80,24 @@ class CanvasImageRecord:
 
 
 @dataclass
+class CanvasStrokeRecord:
+    """A complete freehand stroke in scene coordinates."""
+
+    uuid: str
+    points: list[tuple[float, float]]
+    color: str = "#2F80ED"
+    width: float = 4.0
+
+    def clone(self) -> "CanvasStrokeRecord":
+        return CanvasStrokeRecord(
+            uuid=self.uuid,
+            points=[(float(x), float(y)) for x, y in self.points],
+            color=self.color,
+            width=float(self.width),
+        )
+
+
+@dataclass
 class EditorPreferences:
     global_mode: str = "simple"
     schema_path: str | None = None
@@ -89,7 +107,6 @@ class EditorPreferences:
 @dataclass
 class EditorSettings:
     numeric_linkage_enabled: bool = False
-    trash_enabled: bool = False
 
 
 @dataclass
@@ -129,17 +146,6 @@ class NodeRecord:
 
 
 @dataclass
-class TrashEntry:
-    entry_id: str
-    node_uuid: str
-    node_type: str
-    title: str
-    type_slot: int | None = None
-    export_slot: int | None = None
-    reserved_fields: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
 class DocumentModel:
     meta: MetaRecord = field(default_factory=MetaRecord)
     editor_settings: EditorSettings = field(default_factory=EditorSettings)
@@ -147,7 +153,7 @@ class DocumentModel:
     connections: list[ConnectionRecord] = field(default_factory=list)
     groups: list[GroupRecord] = field(default_factory=list)
     canvas_images: list[CanvasImageRecord] = field(default_factory=list)
-    trash_bin: list[TrashEntry] = field(default_factory=list)
+    canvas_strokes: list[CanvasStrokeRecord] = field(default_factory=list)
     canvas_view: CanvasViewState = field(default_factory=CanvasViewState)
     state: DocumentState = field(default_factory=DocumentState)
     global_mode: str = "simple"
