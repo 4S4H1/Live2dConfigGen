@@ -29,7 +29,7 @@ try {
         }
     }
     Write-Host "私钥（请离线备份，禁止提交）：$PrivateKey"
-    Write-Host "公钥（构建 Host 时使用）：$PublicKey"
+    Write-Host "公钥（构建编辑器内置更新主机时使用）：$PublicKey"
     Write-Host "仓库内嵌公钥（应提交）：$RepositoryPublicKey"
 }
 finally {

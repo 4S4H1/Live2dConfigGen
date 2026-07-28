@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 import re
 import sys
@@ -64,6 +65,7 @@ from .styles import ThemeMode, normalize_theme_mode, stylesheet_for_theme
 from .svn_tools import SvnCommitRunner, discover_svn_executable
 from .template_batch import BatchTemplateDialog, create_base_template_files
 from .update_client import UpdateClient, bundled_public_key_pem
+from .update_host import UpdateHostWindow
 from .update_installer import launch_installer_after_exit
 from .update_manifest import UpdateValidationError
 from .version import PRODUCT_NAME, PUBLISHER, VERSION
@@ -73,6 +75,24 @@ from .widgets import (
 )
 
 HELP_PAGE_URL = "https://ooia5293gn.feishu.cn/wiki/YvmxwxAKSitp3WkfFz3cY74Jnvg"
+
+
+def is_path_within_install_root(
+    path: str | os.PathLike[str],
+    install_root: str | os.PathLike[str] | None,
+) -> bool:
+    """Return whether *path* is owned by a frozen Windows installation."""
+
+    if install_root is None:
+        return False
+    candidate = ntpath.normcase(ntpath.normpath(os.fspath(path)))
+    root = ntpath.normcase(ntpath.normpath(os.fspath(install_root)))
+    if not ntpath.isabs(candidate) or not ntpath.isabs(root):
+        return False
+    try:
+        return ntpath.commonpath((candidate, root)) == root
+    except ValueError:
+        return False
 
 
 class SvnCommitDialog(QDialog):
@@ -495,14 +515,23 @@ class MainWindow(QMainWindow):
     SETTINGS_UPDATE_BASE_URL = "updates/base_url"
     SETTINGS_UPDATE_LAST_CHECK = "updates/last_check_at"
 
-    def __init__(self, workdir: str | Path, *, prefer_saved_workspace: bool = True) -> None:
+    def __init__(
+        self,
+        workdir: str | Path,
+        *,
+        prefer_saved_workspace: bool = True,
+        install_root: str | Path | None = None,
+    ) -> None:
         super().__init__()
         self.settings = create_app_settings()
+        self.install_root = Path(install_root).resolve() if install_root is not None else None
         self.theme_mode = normalize_theme_mode(self.settings.value(self.SETTINGS_THEME_MODE, ThemeMode.DARK.value))
         if prefer_saved_workspace:
             self.workdir = self._resolved_workspace_path(workdir)
         else:
             self.workdir = Path(workdir).resolve()
+        if self._is_install_owned_path(self.workdir):
+            raise ValueError("JSON 工作区不能位于程序安装目录内。")
         self.controller = EditorController(self)
         self.controller.set_workspace_root(self.workdir)
         self.validation_cache: dict[str, list] = {}
@@ -516,6 +545,7 @@ class MainWindow(QMainWindow):
         self.delete_button = self.file_directory_dialog.delete_button
         self.node_directory_dialog: NodeDirectoryDialog | None = None
         self.performance_dialog: PerformanceToolDialog | None = None
+        self._update_host_window: UpdateHostWindow | None = None
         self._auto_save_timer = QTimer(self)
         self._auto_save_timer.setSingleShot(True)
         self._auto_save_timer.timeout.connect(self._run_auto_save)
@@ -590,7 +620,7 @@ class MainWindow(QMainWindow):
         if raw is None or raw == "":
             return default_path
         candidate = Path(str(raw).strip())
-        if candidate.is_dir():
+        if candidate.is_dir() and not self._is_install_owned_path(candidate):
             return candidate.resolve()
         return default_path
 
@@ -624,6 +654,9 @@ class MainWindow(QMainWindow):
         if not chosen:
             return
         new_root = Path(chosen).resolve()
+        if self._is_install_owned_path(new_root):
+            self._warn_install_owned_workspace()
+            return
         if new_root == self.workdir.resolve():
             if not self.settings.contains(self.SETTINGS_WORKSPACE_ROOT):
                 self.settings.setValue(self.SETTINGS_WORKSPACE_ROOT, str(self.workdir))
@@ -641,6 +674,27 @@ class MainWindow(QMainWindow):
         self._create_blank_document_session()
         self._refresh_file_list()
         self._refresh_node_list_panel()
+
+    def _is_install_owned_path(self, path: str | Path) -> bool:
+        return is_path_within_install_root(Path(path).expanduser().resolve(), self.install_root)
+
+    def _warn_install_owned_workspace(self) -> None:
+        QMessageBox.warning(
+            self,
+            "工作区位置不安全",
+            "不能把 JSON 工作区放在程序安装目录内；"
+            "为保护其中的数据，安装器会拒绝更新或卸载。"
+            "\n请选择“文档”等安装目录以外的位置。",
+        )
+
+    def _warn_install_owned_json(self) -> None:
+        QMessageBox.warning(
+            self,
+            "文件位置不安全",
+            "不能直接打开程序安装目录内的 JSON 文件；"
+            "为保护其中的数据，安装器会拒绝更新或卸载。"
+            "\n请先把文件移到“文档”等安装目录以外的位置。",
+        )
 
     def _open_workspace_directory(self) -> None:
         if not self.workdir.exists():
@@ -1041,6 +1095,9 @@ class MainWindow(QMainWindow):
         reference_image_action.triggered.connect(self._add_reference_image_from_file)
         tools_menu.addAction(reference_image_action)
         self._register_shortcut_action("add_reference_image", reference_image_action, QKeySequence())
+        update_host_action = QAction("局域网更新主机…", self)
+        update_host_action.triggered.connect(self._open_update_host)
+        tools_menu.addAction(update_host_action)
         performance_action = QAction("性能测试工具", self)
         performance_action.triggered.connect(self._open_performance_tool)
         tools_menu.addAction(performance_action)
@@ -1280,6 +1337,12 @@ class MainWindow(QMainWindow):
         self._sync_undo_actions()
 
     def _open_existing_session_or_file(self, path: str | Path) -> None:
+        candidate = Path(path).expanduser().resolve()
+        if self._is_install_owned_path(candidate):
+            raise ValueError(
+                "不能打开程序安装目录内的 JSON 文件；请先把文件移到安装目录以外的位置。"
+            )
+        path = candidate
         session_key = self._session_key_for_path(path)
         current_key = self._session_key_for_path(self.controller.document.path)
         if current_key and current_key != session_key:
@@ -1316,6 +1379,10 @@ class MainWindow(QMainWindow):
         """Open a path delivered by Windows or a second application instance."""
 
         candidate = Path(path).expanduser().resolve()
+        if self._is_install_owned_path(candidate):
+            self._warn_install_owned_json()
+            self.activate_from_external_request()
+            return False
         if not candidate.is_file() or candidate.suffix.lower() != ".json":
             QMessageBox.warning(self, "无法打开", f"不是可用的 JSON 文件：\n{candidate}")
             self.activate_from_external_request()
@@ -1682,6 +1749,9 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "打开配置", str(self.workdir), "JSON Files (*.json)")
         if not path:
             return
+        if self._is_install_owned_path(path):
+            self._warn_install_owned_json()
+            return
         if not self._ensure_safe_to_leave_document(path):
             return
         try:
@@ -1965,6 +2035,26 @@ class MainWindow(QMainWindow):
         self.csv_dialog.show()
         self.csv_dialog.raise_()
         self.csv_dialog.activateWindow()
+
+    def _open_update_host(self) -> UpdateHostWindow | None:
+        if self._update_host_window is None:
+            try:
+                public_key_pem = bundled_public_key_pem()
+            except UpdateValidationError as exc:
+                QMessageBox.warning(self, "更新主机不可用", str(exc))
+                return None
+            self._update_host_window = UpdateHostWindow(
+                public_key_pem=public_key_pem,
+                parent=self,
+            )
+        self._update_host_window.show()
+        self._update_host_window.raise_()
+        self._update_host_window.activateWindow()
+        return self._update_host_window
+
+    def _close_update_host(self) -> None:
+        if self._update_host_window is not None:
+            self._update_host_window.close()
 
     def _open_performance_tool(self) -> None:
         if self.performance_dialog is None:
@@ -2765,9 +2855,11 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._approved_update_exit:
+            self._close_update_host()
             event.accept()
             return
         if self._confirm_safe_to_close():
+            self._close_update_host()
             event.accept()
         else:
             event.ignore()

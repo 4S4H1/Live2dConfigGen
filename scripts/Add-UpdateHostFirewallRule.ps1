@@ -4,13 +4,13 @@
 [CmdletBinding()]
 param(
     [ValidateRange(1024, 65535)][int]$Port = 8765,
-    [string]$Program = "$env:LOCALAPPDATA\Programs\L2DUpdateHost\L2DUpdateHost.exe"
+    [string]$Program = "$env:LOCALAPPDATA\Programs\L2DConfigEditor\L2DConfigEditor.exe"
 )
 
 $ErrorActionPreference = "Stop"
 $RuleName = "L2D Update Host (LocalSubnet)"
 if (-not (Test-Path -LiteralPath $Program -PathType Leaf)) {
-    throw "未找到 Host 程序：$Program"
+    throw "未找到安装后的编辑器程序：$Program"
 }
 $ResolvedProgram = (Resolve-Path -LiteralPath $Program).Path
 Get-NetFirewallRule -DisplayName $RuleName -ErrorAction SilentlyContinue |

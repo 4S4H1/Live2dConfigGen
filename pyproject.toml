@@ -24,7 +24,6 @@ build = [
 
 [project.scripts]
 l2d-config-editor = "l2d_config_editor.main:main"
-l2d-update-host = "l2d_config_editor.update_host:main"
 
 [tool.setuptools]
 packages = ["l2d_config_editor"]

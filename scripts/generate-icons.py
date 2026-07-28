@@ -32,22 +32,6 @@ def editor_icon(size: int) -> Image.Image:
     return im
 
 
-def host_icon(size: int) -> Image.Image:
-    scale = size / 256
-    im = Image.new("RGBA", (size, size), "#102A43")
-    draw = ImageDraw.Draw(im)
-    rounded(draw, (0, 0, size - 1, size - 1), 52 * scale, "#102A43")
-    rounded(draw, tuple(x * scale for x in (42, 70, 168, 196)), 22 * scale, "#228A91", "#D8FFF9", max(1, round(8 * scale)))
-    draw.line(tuple(x * scale for x in (64, 112, 146, 112, 146, 154)), fill="#D8FFF9", width=max(1, round(10 * scale)))
-    for x, y in ((64, 112), (146, 154)):
-        r = max(1, round(12 * scale))
-        draw.ellipse((x * scale - r, y * scale - r, x * scale + r, y * scale + r), fill="#F6C85F")
-    # Pillow arcs use degrees; these reproduce the two LAN waves in the SVG.
-    draw.arc(tuple(x * scale for x in (126, 59, 238, 171)), 285, 360, fill="#64E1D5", width=max(1, round(13 * scale)))
-    draw.arc(tuple(x * scale for x in (96, 29, 268, 201)), 285, 360, fill="#64E1D5", width=max(1, round(13 * scale)))
-    return im
-
-
 def write_family(name: str, factory) -> None:
     OUTPUT.mkdir(parents=True, exist_ok=True)
     frames = [factory(size) for size in SIZES]
@@ -62,6 +46,4 @@ def write_family(name: str, factory) -> None:
 
 if __name__ == "__main__":
     write_family("L2DConfigEditor", editor_icon)
-    write_family("L2DUpdateHost", host_icon)
     print(OUTPUT)
-

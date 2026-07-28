@@ -13,6 +13,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from l2d_config_editor.app_settings import create_app_settings
+from l2d_config_editor.logic import load_document
 from l2d_config_editor.main_window import MainWindow
 from l2d_config_editor.styles import ThemeMode
 
@@ -73,6 +74,57 @@ class CanvasModernizationTests(unittest.TestCase):
             self.assertEqual({}, canvas.stroke_items)
             window.controller.undo_stack.undo()
             self.assertEqual(1, len(window.controller.document.canvas_strokes))
+            self._close(window)
+
+    def test_pen_stroke_drawn_over_node_stays_above_and_round_trips(self) -> None:
+        with tempfile.TemporaryDirectory() as root, patch.dict(
+            os.environ, {"L2D_CONFIG_EDITOR_SETTINGS_DIR": str(Path(root) / "settings")}
+        ):
+            window = self._window(root)
+            canvas = window.canvas
+            node_uuid = window.controller.create_node("TouchIdle", (0.0, 0.0))
+            node_item = canvas.node_items[node_uuid]
+            node_bounds = node_item.sceneBoundingRect()
+            canvas.centerOn(node_bounds.center())
+            self.app.processEvents()
+
+            start = canvas.mapFromScene(
+                QPointF(node_bounds.left() + node_bounds.width() * 0.25, node_bounds.center().y())
+            )
+            middle = canvas.mapFromScene(node_bounds.center())
+            end = canvas.mapFromScene(
+                QPointF(node_bounds.left() + node_bounds.width() * 0.75, node_bounds.center().y())
+            )
+            canvas.set_pen_mode(True)
+            QTest.mousePress(
+                canvas.viewport(),
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.ControlModifier,
+                start,
+            )
+            QTest.mouseMove(canvas.viewport(), middle, 10)
+            QTest.mouseRelease(
+                canvas.viewport(),
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.ControlModifier,
+                end,
+            )
+            self.app.processEvents()
+
+            self.assertEqual(1, len(window.controller.document.canvas_strokes))
+            stroke = window.controller.document.canvas_strokes[0]
+            stroke_item = canvas.stroke_items[stroke.uuid]
+            self.assertTrue(stroke_item.isVisible())
+            self.assertGreater(
+                stroke_item.zValue(),
+                node_item.zValue(),
+                "The persisted stroke must retain the preview's above-node stacking order",
+            )
+
+            saved_path = Path(root) / "stroke-round-trip.json"
+            window.controller.save_document(str(saved_path))
+            loaded = load_document(window.controller.schema, saved_path)
+            self.assertEqual([stroke], loaded.canvas_strokes)
             self._close(window)
 
     def test_pen_mode_off_preserves_ctrl_selection(self) -> None:

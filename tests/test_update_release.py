@@ -4,6 +4,7 @@ import base64
 import hashlib
 import http.client
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -11,13 +12,29 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from PySide6.QtCore import QSettings
+from PySide6.QtWidgets import (
+    QApplication,
+    QFileDialog,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+)
 
 from l2d_config_editor.update_host import (
+    DEFAULT_PORT,
     ReleaseHTTPServer,
+    SETTINGS_PORT_KEY,
+    UpdateHostWindow,
+    default_data_root,
     firewall_powershell_command,
 )
+from l2d_config_editor.update_client import bundled_public_key_pem
+from l2d_config_editor.main_window import MainWindow
 from l2d_config_editor.update_manifest import (
     UpdateValidationError,
     canonical_manifest_bytes,
@@ -34,6 +51,258 @@ from scripts.release_tools import (
     collect_licenses,
     verify_keypair,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class IntegratedUpdateHostTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_host_window_is_an_embedded_tool_with_valid_chinese_labels(self):
+        source = (
+            ROOT / "l2d_config_editor" / "update_host.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("\ufffd", source)
+        with tempfile.TemporaryDirectory() as directory:
+            host = UpdateHostWindow(
+                data_root=Path(directory),
+                public_key_pem=bundled_public_key_pem(),
+                parent=None,
+            )
+
+            visible_text = [host.windowTitle()]
+            visible_text.extend(label.text() for label in host.findChildren(QLabel))
+            visible_text.extend(button.text() for button in host.findChildren(QPushButton))
+            self.assertNotIn("\ufffd", "".join(visible_text))
+            self.assertFalse(hasattr(host, "tray"))
+            self.assertEqual(QSettings.Format.IniFormat, host.settings.format())
+            host.close()
+
+    def test_embedded_window_close_stops_and_joins_the_server_thread(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            host = UpdateHostWindow(
+                data_root=root,
+                public_key_pem=bundled_public_key_pem(),
+            )
+            server = ReleaseHTTPServer(("127.0.0.1", 0), root / "releases")
+            server_thread = threading.Thread(
+                target=server.serve_forever,
+                daemon=True,
+            )
+            host.server = server
+            host.server_thread = server_thread
+            server_thread.start()
+            host.show()
+
+            host.close()
+            self.app.processEvents()
+
+            self.assertIsNone(host.server)
+            self.assertIsNone(host.server_thread)
+            self.assertFalse(server_thread.is_alive())
+
+    def test_access_log_keeps_only_the_most_recent_1000_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            host = UpdateHostWindow(
+                data_root=Path(directory),
+                public_key_pem=bundled_public_key_pem(),
+            )
+
+            for index in range(1005):
+                host.logReceived.emit(f"request-{index}")
+
+            self.assertEqual(1000, host.log_list.count())
+            self.assertEqual("request-5", host.log_list.item(0).text())
+            self.assertEqual("request-1004", host.log_list.item(999).text())
+            host.close()
+
+    def test_http_log_callback_is_bounded_until_the_gui_flushes_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            host = UpdateHostWindow(
+                data_root=root / "host-data",
+                public_key_pem=bundled_public_key_pem(),
+            )
+            host.port_box.setMinimum(0)
+            host.port_box.setValue(0)
+            host.start_server()
+            try:
+                self.assertIsNotNone(host.server)
+                direct_log_count = host.log_list.count()
+
+                def flood_server_callback() -> None:
+                    assert host.server is not None
+                    for index in range(100_000):
+                        host.server.emit_log(f"request-{index}")
+
+                worker = threading.Thread(target=flood_server_callback)
+                worker.start()
+                worker.join(timeout=5)
+                self.assertFalse(worker.is_alive())
+
+                self.assertEqual(1000, host.pending_access_log_count)
+                self.assertEqual(99_000, host.dropped_access_log_count)
+                self.assertEqual(direct_log_count, host.log_list.count())
+
+                host.flush_pending_access_logs()
+
+                self.assertEqual(0, host.pending_access_log_count)
+                self.assertEqual(1000, host.log_list.count())
+                self.assertIn("99000", host.log_list.item(999).text())
+            finally:
+                host.close()
+
+    def test_invalid_text_port_setting_falls_back_to_8765(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = QSettings(
+                str(root / "settings.ini"),
+                QSettings.Format.IniFormat,
+            )
+            settings.setValue(SETTINGS_PORT_KEY, "not-a-port")
+
+            host = UpdateHostWindow(
+                data_root=root / "host-data",
+                public_key_pem=bundled_public_key_pem(),
+                settings=settings,
+            )
+
+            self.assertEqual(DEFAULT_PORT, host.port_box.value())
+            host.close()
+
+    def test_out_of_range_port_setting_falls_back_to_8765(self):
+        for configured_port in (80, 70000):
+            with self.subTest(configured_port=configured_port):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    settings = QSettings(
+                        str(root / "settings.ini"),
+                        QSettings.Format.IniFormat,
+                    )
+                    settings.setValue(SETTINGS_PORT_KEY, configured_port)
+
+                    host = UpdateHostWindow(
+                        data_root=root / "host-data",
+                        public_key_pem=bundled_public_key_pem(),
+                        settings=settings,
+                    )
+
+                    self.assertEqual(DEFAULT_PORT, host.port_box.value())
+                    host.close()
+
+    def test_start_server_reports_when_release_directory_cannot_be_created(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            blocking_file = root / "not-a-directory"
+            blocking_file.write_text("blocked", encoding="utf-8")
+            host = UpdateHostWindow(
+                data_root=root / "host-data",
+                public_key_pem=bundled_public_key_pem(),
+            )
+            host.releases_root = blocking_file / "releases"
+
+            with patch.object(QMessageBox, "critical") as critical:
+                host.start_server()
+
+            critical.assert_called_once()
+            self.assertIsNone(host.server)
+            self.assertIsNone(host.server_thread)
+            host.close()
+
+    def test_integrated_host_reuses_the_existing_release_cache_root(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ,
+            {"LOCALAPPDATA": directory},
+        ):
+            self.assertEqual(
+                Path(directory) / "4S4H1" / "L2DUpdateHost",
+                default_data_root(),
+            )
+
+    def test_integrated_host_imports_with_the_editor_embedded_public_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            private_key = Ed25519PrivateKey.generate()
+            private_path = root / "private.pem"
+            private_path.write_bytes(
+                private_key.private_bytes(
+                    serialization.Encoding.PEM,
+                    serialization.PrivateFormat.PKCS8,
+                    serialization.NoEncryption(),
+                )
+            )
+            public_key_pem = private_key.public_key().public_bytes(
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            installer = root / "L2DConfigEditor-Setup-1.2.0-x64.exe"
+            installer.write_bytes(b"signed editor installer")
+            bundle = root / "release.l2dupdate"
+            build_bundle(
+                installer,
+                private_path,
+                bundle,
+                "integration test",
+                release_version="1.2.0",
+            )
+            host = UpdateHostWindow(
+                data_root=root / "host-data",
+                public_key_pem=public_key_pem,
+            )
+
+            with (
+                patch.object(
+                    QFileDialog,
+                    "getOpenFileName",
+                    return_value=(str(bundle), "L2D 更新包 (*.l2dupdate)"),
+                ),
+                patch.object(QMessageBox, "information") as information,
+                patch.object(QMessageBox, "critical") as critical,
+            ):
+                host.import_bundle()
+
+            critical.assert_not_called()
+            information.assert_called_once()
+            self.assertEqual("1.2.0", host.version_label.text())
+            self.assertEqual(
+                "1.2.0",
+                (host.releases_root / "latest").read_text("utf-8").strip(),
+            )
+            self.assertFalse(
+                (host.data_root / "release_public_key.pem").exists(),
+                "integrated Host must trust the editor's embedded key",
+            )
+            host.close()
+
+    def test_editor_opens_and_reuses_one_non_modal_update_host_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            editor = MainWindow(directory, prefer_saved_workspace=False)
+            action_labels = [action.text() for action in editor.tools_menu.actions()]
+            self.assertIn("局域网更新主机…", action_labels)
+
+            first = editor._open_update_host()
+            second = editor._open_update_host()
+
+            self.assertIs(first, second)
+            self.assertIs(editor, first.parent())
+            self.assertTrue(first.isVisible())
+            first.close()
+            editor._mark_saved_checkpoint(saved=True)
+            editor.close()
+
+    def test_release_pipeline_builds_only_the_integrated_editor(self):
+        build_script = (ROOT / "scripts" / "Build-Release.ps1").read_text("utf-8")
+        project = (ROOT / "pyproject.toml").read_text("utf-8")
+
+        self.assertNotIn("L2DUpdateHost.spec", build_script)
+        self.assertNotIn("host-installer.nsi", build_script)
+        self.assertNotIn("L2DUpdateHost-Setup", build_script)
+        self.assertNotIn("l2d-update-host", project)
+        self.assertFalse((ROOT / "packaging" / "L2DUpdateHost.spec").exists())
+        self.assertFalse((ROOT / "packaging" / "host-installer.nsi").exists())
 
 
 def manifest_for(payload: bytes, version: str = "1.2.0") -> dict:
@@ -472,12 +741,12 @@ class HTTPServerTests(unittest.TestCase):
 class FirewallCommandTests(unittest.TestCase):
     def test_rule_is_scoped_to_program_port_profiles_and_local_subnet(self):
         command = firewall_powershell_command(
-            8765, r"C:\Program Files\L2DUpdateHost\L2DUpdateHost.exe"
+            8765, r"C:\Program Files\L2DConfigEditor\L2DConfigEditor.exe"
         )
         self.assertIn("-LocalPort 8765", command)
         self.assertIn("-Profile Private,Domain", command)
         self.assertIn("-RemoteAddress LocalSubnet", command)
-        self.assertIn("-Program 'C:\\Program Files\\L2DUpdateHost", command)
+        self.assertIn("-Program 'C:\\Program Files\\L2DConfigEditor", command)
         self.assertIn("L2D Update Host (LocalSubnet)", command)
         self.assertNotIn("Public", command)
         self.assertNotIn("Any", command)

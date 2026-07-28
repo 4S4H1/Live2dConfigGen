@@ -424,7 +424,10 @@ class TemporaryConnectionItem(QGraphicsPathItem):
 class CanvasStrokeItem(QGraphicsPathItem):
     """Read-only graphics representation of one persisted freehand stroke."""
 
-    BASE_Z = -8.0
+    # A completed annotation must keep the preview's above-node stacking
+    # semantics.  Keeping it below the temporary connection/editor overlays
+    # still lets those interactive affordances remain unobstructed.
+    BASE_Z = 80.0
 
     def __init__(self, view: "NodeCanvasView", record) -> None:
         super().__init__()

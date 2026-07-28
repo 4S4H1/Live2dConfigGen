@@ -116,11 +116,9 @@ def verify_environment() -> None:
         raise SystemExit("锁定构建环境版本不匹配：" + "；".join(mismatches))
 
 
-def version_info(output: Path, *, host: bool) -> None:
+def version_info(output: Path) -> None:
     parts = [int(part) for part in Version(VERSION).release]
     parts += [0] * (4 - len(parts))
-    description = "L2D 局域网更新主机" if host else PRODUCT_NAME
-    internal = "L2DUpdateHost" if host else PRODUCT_ID
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
         f"""VSVersionInfo(
@@ -128,11 +126,11 @@ def version_info(output: Path, *, host: bool) -> None:
     mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)),
   kids=[StringFileInfo([StringTable('080404B0', [
     StringStruct('CompanyName', '{PUBLISHER}'),
-    StringStruct('FileDescription', '{description}'),
+    StringStruct('FileDescription', '{PRODUCT_NAME}'),
     StringStruct('FileVersion', '{VERSION}'),
-    StringStruct('InternalName', '{internal}'),
-    StringStruct('OriginalFilename', '{internal}.exe'),
-    StringStruct('ProductName', '{description}'),
+    StringStruct('InternalName', '{PRODUCT_ID}'),
+    StringStruct('OriginalFilename', '{PRODUCT_ID}.exe'),
+    StringStruct('ProductName', '{PRODUCT_NAME}'),
     StringStruct('ProductVersion', '{VERSION}')])]),
     VarFileInfo([VarStruct('Translation', [2052, 1200])])])
 """,
@@ -279,7 +277,6 @@ def main() -> None:
     sub.add_parser("verify-environment")
     vi = sub.add_parser("version-info")
     vi.add_argument("--output", type=Path, required=True)
-    vi.add_argument("--host", action="store_true")
     bundle = sub.add_parser("bundle")
     bundle.add_argument("--installer", type=Path, required=True)
     bundle.add_argument("--private-key", type=Path, required=True)
@@ -302,7 +299,7 @@ def main() -> None:
     elif args.command == "verify-environment":
         verify_environment()
     elif args.command == "version-info":
-        version_info(args.output, host=args.host)
+        version_info(args.output)
     elif args.command == "bundle":
         build_bundle(
             args.installer,

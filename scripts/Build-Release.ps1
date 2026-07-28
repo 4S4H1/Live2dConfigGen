@@ -95,8 +95,6 @@ try {
     Assert-NativeSuccess "生成图标"
     & $VenvPython scripts/release_tools.py version-info --output build/windows/version_info.txt
     Assert-NativeSuccess "生成编辑器版本资源"
-    & $VenvPython scripts/release_tools.py version-info --host --output build/windows/host_version_info.txt
-    Assert-NativeSuccess "生成 Host 版本资源"
     & $VenvPython scripts/release_tools.py collect-licenses --output build/licenses
     Assert-NativeSuccess "收集第三方许可证"
     & $VenvPython scripts/run_tests.py
@@ -108,21 +106,13 @@ try {
     Clear-KnownBuildDirectory $WorkDir -Create
     & $VenvPython -m PyInstaller --noconfirm --clean --distpath $PyInstallerDist --workpath $WorkDir packaging/L2DConfigEditor.spec
     Assert-NativeSuccess "构建编辑器 onedir"
-    & $VenvPython -m PyInstaller --noconfirm --clean --distpath $PyInstallerDist --workpath $WorkDir packaging/L2DUpdateHost.spec
-    Assert-NativeSuccess "构建 Host onedir"
 
     & $MakeNsis "/DVERSION=$Version" "/DSOURCE_DIR=$(Join-Path $PyInstallerDist 'L2DConfigEditor')" "/DOUTPUT_DIR=$ReleaseStageDir" packaging/editor-installer.nsi
     Assert-NativeSuccess "构建编辑器安装器"
-    & $MakeNsis "/DVERSION=$Version" "/DSOURCE_DIR=$(Join-Path $PyInstallerDist 'L2DUpdateHost')" "/DOUTPUT_DIR=$ReleaseStageDir" "/DPUBLIC_KEY=$RepositoryPublicKey" packaging/host-installer.nsi
-    Assert-NativeSuccess "构建 Host 安装器"
 
     $EditorInstaller = Join-Path $ReleaseStageDir "L2DConfigEditor-Setup-$Version-x64.exe"
-    $HostInstaller = Join-Path $ReleaseStageDir "L2DUpdateHost-Setup-$Version-x64.exe"
     if (-not (Test-Path -LiteralPath $EditorInstaller -PathType Leaf)) {
         throw "编辑器安装器未生成：$EditorInstaller"
-    }
-    if (-not (Test-Path -LiteralPath $HostInstaller -PathType Leaf)) {
-        throw "Host 安装器未生成：$HostInstaller"
     }
     $Bundle = Join-Path $ReleaseStageDir "L2DConfigEditor-$Version.l2dupdate"
     & $VenvPython scripts/release_tools.py bundle --installer $EditorInstaller --private-key $PrivateKey --output $Bundle --notes $Notes --minimum-supported-version $MinimumSupportedVersion
@@ -133,7 +123,6 @@ try {
     Assert-NativeSuccess "生成 SHA-256 清单"
     $ExpectedReleaseFiles = @(
         [System.IO.Path]::GetFileName($EditorInstaller),
-        [System.IO.Path]::GetFileName($HostInstaller),
         [System.IO.Path]::GetFileName($Bundle),
         "THIRD_PARTY_NOTICES.md",
         "SHA256SUMS.txt"

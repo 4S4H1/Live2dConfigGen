@@ -1,22 +1,23 @@
-"""LAN update host and tray application."""
+"""Editor-integrated LAN update host service and tool window."""
 
 from __future__ import annotations
 
+import base64
 import html
 import os
 import socket
 import sys
 import threading
-import base64
+from collections import deque
+from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from collections.abc import Callable
 from typing import BinaryIO
 from urllib.parse import unquote, urlsplit
 
-from PySide6.QtCore import QProcess, QSettings, Qt, Signal
-from PySide6.QtGui import QAction, QIcon
+from PySide6.QtCore import QProcess, QSettings, Qt, QTimer, Signal
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -28,27 +29,24 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
-    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
 
+from .app_settings import create_app_settings
 from .update_manifest import import_release_bundle, load_public_key, sha256_file
-from .version import PRODUCT_NAME, PUBLISHER
+from .version import PRODUCT_NAME
 
 DEFAULT_PORT = 8765
-SETTINGS_ORGANIZATION = PUBLISHER
-SETTINGS_APPLICATION = "L2DUpdateHost"
-
-
-def bundled_asset(name: str) -> Path:
-    root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
-    return root / "assets" / name
+MAX_ACCESS_LOG_ENTRIES = 1000
+SETTINGS_PORT_KEY = "update-host/server/port"
 
 
 def default_data_root() -> Path:
     local = os.environ.get("LOCALAPPDATA")
     if local:
+        # Keep the established data directory so releases imported by the
+        # former standalone Host remain available after integrating its UI.
         return Path(local) / "4S4H1" / "L2DUpdateHost"
     return Path.home() / ".l2d-update-host"
 
@@ -380,20 +378,73 @@ class ReleaseHTTPServer(ThreadingHTTPServer):
 class UpdateHostWindow(QMainWindow):
     logReceived = Signal(str)
 
-    def __init__(self, data_root: Path | None = None) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        data_root: Path | None = None,
+        *,
+        public_key_pem: bytes | None = None,
+        settings: QSettings | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent, Qt.WindowType.Window)
         self.data_root = (data_root or default_data_root()).resolve()
         self.releases_root = self.data_root / "releases"
-        self.settings = QSettings(SETTINGS_ORGANIZATION, SETTINGS_APPLICATION)
+        self.public_key_pem = bytes(public_key_pem) if public_key_pem else None
+        self.settings = settings if settings is not None else create_app_settings()
         self.server: ReleaseHTTPServer | None = None
         self.server_thread: threading.Thread | None = None
         self.firewall_process: QProcess | None = None
         self.first_url = ""
+        self._pending_access_logs: deque[str] = deque(
+            maxlen=MAX_ACCESS_LOG_ENTRIES
+        )
+        self._pending_access_log_lock = threading.Lock()
+        self._dropped_access_log_count = 0
         self.setWindowTitle("L2D 局域网更新主机")
         self.resize(640, 420)
         self._build_ui()
-        self.logReceived.connect(self.log_list.addItem)
-        self._build_tray()
+        self.logReceived.connect(self._append_access_log)
+        self._access_log_timer = QTimer(self)
+        self._access_log_timer.setInterval(100)
+        self._access_log_timer.timeout.connect(self.flush_pending_access_logs)
+
+    def _append_access_log(self, message: str) -> None:
+        self._append_access_logs([message])
+
+    def _append_access_logs(self, messages: list[str]) -> None:
+        if not messages:
+            return
+        self.log_list.addItems(messages)
+        while self.log_list.count() > MAX_ACCESS_LOG_ENTRIES:
+            self.log_list.takeItem(0)
+
+    @property
+    def pending_access_log_count(self) -> int:
+        with self._pending_access_log_lock:
+            return len(self._pending_access_logs)
+
+    @property
+    def dropped_access_log_count(self) -> int:
+        with self._pending_access_log_lock:
+            return self._dropped_access_log_count
+
+    def enqueue_access_log(self, message: str) -> None:
+        with self._pending_access_log_lock:
+            if len(self._pending_access_logs) == self._pending_access_logs.maxlen:
+                self._dropped_access_log_count += 1
+            self._pending_access_logs.append(message)
+
+    def flush_pending_access_logs(self) -> None:
+        with self._pending_access_log_lock:
+            pending = list(self._pending_access_logs)
+            self._pending_access_logs.clear()
+            dropped = self._dropped_access_log_count
+            self._dropped_access_log_count = 0
+        if dropped:
+            pending.append(
+                f"访问日志过多，已丢弃 {dropped} 条较早记录"
+            )
+        self._append_access_logs(pending)
 
     def _build_ui(self) -> None:
         central = QWidget(self)
@@ -401,7 +452,19 @@ class UpdateHostWindow(QMainWindow):
         form = QFormLayout()
         self.port_box = QSpinBox()
         self.port_box.setRange(1024, 65535)
-        self.port_box.setValue(int(self.settings.value("server/port", DEFAULT_PORT)))
+        try:
+            configured_port = int(
+                self.settings.value(SETTINGS_PORT_KEY, DEFAULT_PORT)
+            )
+        except (TypeError, ValueError):
+            configured_port = DEFAULT_PORT
+        if not (
+            self.port_box.minimum()
+            <= configured_port
+            <= self.port_box.maximum()
+        ):
+            configured_port = DEFAULT_PORT
+        self.port_box.setValue(configured_port)
         self.url_label = QLabel("未启动")
         self.url_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         latest = _read_latest(self.releases_root)
@@ -433,29 +496,6 @@ class UpdateHostWindow(QMainWindow):
         layout.addWidget(self.log_list)
         self.setCentralWidget(central)
 
-    def _build_tray(self) -> None:
-        self.tray = QSystemTrayIcon(self)
-        self.tray.setIcon(QApplication.windowIcon())
-        self.tray.setToolTip("L2D 局域网更新主机")
-        menu = self.tray.contextMenu()
-        if menu is None:
-            from PySide6.QtWidgets import QMenu
-
-            menu = QMenu()
-            self.tray.setContextMenu(menu)
-        show_action = QAction("显示", self)
-        show_action.triggered.connect(self.showNormal)
-        quit_action = QAction("退出", self)
-        quit_action.triggered.connect(QApplication.instance().quit)
-        menu.addAction(show_action)
-        menu.addAction(quit_action)
-        self.tray.activated.connect(
-            lambda reason: self.showNormal()
-            if reason == QSystemTrayIcon.ActivationReason.DoubleClick
-            else None
-        )
-        self.tray.show()
-
     def toggle_server(self) -> None:
         if self.server is None:
             self.start_server()
@@ -463,13 +503,13 @@ class UpdateHostWindow(QMainWindow):
             self.stop_server()
 
     def start_server(self) -> None:
-        self.releases_root.mkdir(parents=True, exist_ok=True)
         port = self.port_box.value()
         try:
+            self.releases_root.mkdir(parents=True, exist_ok=True)
             server = ReleaseHTTPServer(
                 ("0.0.0.0", port),
                 self.releases_root,
-                self.logReceived.emit,
+                self.enqueue_access_log,
             )
         except OSError as exc:
             QMessageBox.critical(self, "无法启动", str(exc))
@@ -477,7 +517,8 @@ class UpdateHostWindow(QMainWindow):
         self.server = server
         self.server_thread = threading.Thread(target=server.serve_forever, daemon=True)
         self.server_thread.start()
-        self.settings.setValue("server/port", port)
+        self._access_log_timer.start()
+        self.settings.setValue(SETTINGS_PORT_KEY, port)
         urls = [f"http://{ip}:{port}" for ip in local_ipv4_addresses()]
         self.first_url = urls[0] if urls else f"http://127.0.0.1:{port}"
         self.url_label.setText("\n".join(urls) or self.first_url)
@@ -488,10 +529,17 @@ class UpdateHostWindow(QMainWindow):
 
     def stop_server(self) -> None:
         server, self.server = self.server, None
+        server_thread, self.server_thread = self.server_thread, None
         if server is not None:
             server.shutdown()
             server.server_close()
-        self.server_thread = None
+        if (
+            server_thread is not None
+            and server_thread is not threading.current_thread()
+        ):
+            server_thread.join(timeout=5.0)
+        self._access_log_timer.stop()
+        self.flush_pending_access_logs()
         self.url_label.setText("未启动")
         self.first_url = ""
         self.copy_button.setEnabled(False)
@@ -508,19 +556,22 @@ class UpdateHostWindow(QMainWindow):
         )
         if not bundle:
             return
-        key_path = self.data_root / "release_public_key.pem"
-        if not key_path.is_file():
-            QMessageBox.critical(
-                self,
-                "缺少发布公钥",
-                f"请将 release_public_key.pem 放到：\n{key_path}",
-            )
-            return
         try:
-            key = load_public_key(key_path.read_bytes())
+            public_key_pem = self.public_key_pem
+            if public_key_pem is None:
+                key_path = self.data_root / "release_public_key.pem"
+                public_key_pem = key_path.read_bytes()
+            key = load_public_key(public_key_pem)
             version = import_release_bundle(
                 Path(bundle), self.releases_root, key, retain=2
             )
+        except OSError as exc:
+            QMessageBox.critical(
+                self,
+                "缺少发布公钥",
+                f"无法读取用于验证更新包的发布公钥：\n{exc}",
+            )
+            return
         except Exception as exc:
             QMessageBox.critical(self, "导入失败", str(exc))
             return
@@ -536,7 +587,11 @@ class UpdateHostWindow(QMainWindow):
 
     def create_firewall_rule(self) -> None:
         if sys.platform != "win32" or not getattr(sys, "frozen", False):
-            QMessageBox.information(self, "不可用", "防火墙入口只在安装后的 Windows Host 中启用。")
+            QMessageBox.information(
+                self,
+                "不可用",
+                "防火墙入口只在安装后的 Windows 编辑器中启用。",
+            )
             return
         if self.firewall_process is not None:
             return
@@ -569,7 +624,7 @@ class UpdateHostWindow(QMainWindow):
         if exit_code == 0:
             message = (
                 f"已创建规则：TCP {self.port_box.value()}，"
-                "Private/Domain，LocalSubnet，仅限本 Host 程序。"
+                "Private/Domain，LocalSubnet，仅限当前编辑器程序。"
             )
             self.logReceived.emit(message)
             QMessageBox.information(self, "防火墙规则已创建", message)
@@ -594,30 +649,6 @@ class UpdateHostWindow(QMainWindow):
         self.logReceived.emit("无法启动防火墙配置程序")
         QMessageBox.warning(self, "无法启动", "无法启动 PowerShell 防火墙配置程序。")
 
-    def closeEvent(self, event: object) -> None:
-        if self.tray.isVisible():
-            self.hide()
-            event.ignore()  # type: ignore[attr-defined]
-            self.tray.showMessage("L2D 更新主机", "程序仍在托盘中运行")
-        else:
-            self.stop_server()
-            event.accept()  # type: ignore[attr-defined]
-
-
-def main() -> int:
-    app = QApplication(sys.argv)
-    app.setApplicationName("L2D Update Host")
-    app.setOrganizationName(PUBLISHER)
-    icon_path = bundled_asset("L2DUpdateHost.png")
-    if icon_path.is_file():
-        app.setWindowIcon(QIcon(str(icon_path)))
-    app.setQuitOnLastWindowClosed(False)
-    window = UpdateHostWindow()
-    window.show()
-    window.start_server()
-    app.aboutToQuit.connect(window.stop_server)
-    return app.exec()
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self.stop_server()
+        event.accept()

@@ -9,9 +9,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QFontMetricsF
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QFileDialog, QListWidgetItem, QMessageBox
 
 from l2d_config_editor import main as app_main
+from l2d_config_editor.app_settings import create_app_settings
 from l2d_config_editor.canvas import TemporaryConnectionItem
 from l2d_config_editor.controller import EditorController
 from l2d_config_editor.main_window import MainWindow
@@ -39,6 +40,25 @@ class PlannedImprovementTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
 
+    def test_install_root_guard_uses_windows_path_semantics(self) -> None:
+        from l2d_config_editor.main_window import is_path_within_install_root
+
+        install_root = r"C:\Users\Example\AppData\Local\Programs\L2DConfigEditor"
+        self.assertTrue(is_path_within_install_root(install_root, install_root))
+        self.assertTrue(
+            is_path_within_install_root(
+                r"c:\users\example\appdata\local\programs\l2dconfigeditor\projects\a.json",
+                install_root,
+            )
+        )
+        self.assertFalse(
+            is_path_within_install_root(
+                r"C:\Users\Example\AppData\Local\Programs\L2DConfigEditor-backup\a.json",
+                install_root,
+            )
+        )
+        self.assertFalse(is_path_within_install_root(r"D:\Projects\a.json", install_root))
+
     def test_first_run_workspace_is_selected_once_and_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = Mock()
@@ -54,6 +74,58 @@ class PlannedImprovementTests(unittest.TestCase):
             choose.assert_called_once()
             settings.setValue.assert_called_once_with("workspace_root", str(Path(temp_dir).resolve()))
 
+    def test_first_run_reselects_when_workspace_is_inside_frozen_install_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            install_root = root / "installed-app"
+            unsafe_workspace = install_root / "projects"
+            safe_workspace = root / "user-projects"
+            unsafe_workspace.mkdir(parents=True)
+            safe_workspace.mkdir()
+            settings = Mock()
+            settings.value.return_value = None
+
+            with patch.object(
+                app_main.QFileDialog,
+                "getExistingDirectory",
+                side_effect=(str(unsafe_workspace), str(safe_workspace)),
+            ) as choose, patch.object(app_main.QMessageBox, "warning") as warning:
+                resolved = app_main.resolve_initial_workspace(
+                    root,
+                    settings=settings,
+                    install_root=install_root,
+                )
+
+            self.assertEqual(safe_workspace.resolve(), resolved)
+            self.assertEqual(2, choose.call_count)
+            self.assertIn("安装目录", warning.call_args.args[2])
+            settings.setValue.assert_called_once_with(
+                "workspace_root",
+                str(safe_workspace.resolve()),
+            )
+
+    def test_first_run_can_cancel_after_rejecting_install_root_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            install_root = Path(temp_dir) / "installed-app"
+            unsafe_workspace = install_root / "projects"
+            unsafe_workspace.mkdir(parents=True)
+            settings = Mock()
+            settings.value.return_value = None
+
+            with patch.object(
+                app_main.QFileDialog,
+                "getExistingDirectory",
+                side_effect=(str(unsafe_workspace), ""),
+            ), patch.object(app_main.QMessageBox, "warning"):
+                resolved = app_main.resolve_initial_workspace(
+                    temp_dir,
+                    settings=settings,
+                    install_root=install_root,
+                )
+
+            self.assertIsNone(resolved)
+            settings.setValue.assert_not_called()
+
     def test_saved_workspace_skips_the_startup_picker(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = Mock()
@@ -66,6 +138,33 @@ class PlannedImprovementTests(unittest.TestCase):
             self.assertEqual(Path(temp_dir).resolve(), resolved)
             choose.assert_not_called()
 
+    def test_saved_install_root_workspace_is_not_restored(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            install_root = root / "installed-app"
+            unsafe_workspace = install_root / "projects"
+            safe_workspace = root / "user-projects"
+            unsafe_workspace.mkdir(parents=True)
+            safe_workspace.mkdir()
+            settings = Mock()
+            settings.value.return_value = str(unsafe_workspace)
+
+            with patch.object(
+                app_main.QFileDialog,
+                "getExistingDirectory",
+                return_value=str(safe_workspace),
+            ) as choose, patch.object(app_main.QMessageBox, "warning") as warning:
+                resolved = app_main.resolve_initial_workspace(
+                    root,
+                    settings=settings,
+                    install_root=install_root,
+                )
+
+            self.assertEqual(safe_workspace.resolve(), resolved)
+            choose.assert_called_once()
+            self.assertIn("安装目录", warning.call_args.args[2])
+            settings.remove.assert_called_once_with("workspace_root")
+
     def test_workspace_widget_is_removed_and_menu_entry_remains(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
@@ -74,6 +173,167 @@ class PlannedImprovementTests(unittest.TestCase):
             self.assertIn("更改工作区…", labels)
             window._mark_saved_checkpoint(saved=True)
             window.close()
+
+    def test_runtime_workspace_change_rejects_frozen_install_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            install_root = root / "installed-app"
+            unsafe_workspace = install_root / "projects"
+            safe_workspace = root / "user-projects"
+            unsafe_workspace.mkdir(parents=True)
+            safe_workspace.mkdir()
+            with patch.dict(
+                os.environ,
+                {"L2D_CONFIG_EDITOR_SETTINGS_DIR": str(root / "settings")},
+            ):
+                window = MainWindow(
+                    safe_workspace,
+                    prefer_saved_workspace=False,
+                    install_root=install_root,
+                )
+                with patch.object(
+                    QFileDialog,
+                    "getExistingDirectory",
+                    return_value=str(unsafe_workspace),
+                ), patch.object(QMessageBox, "warning") as warning, patch.object(
+                    window,
+                    "_ensure_safe_before_workspace_change",
+                ) as save_prompt:
+                    window._choose_workspace_directory()
+
+                self.assertEqual(safe_workspace.resolve(), window.workdir)
+                self.assertNotEqual(
+                    str(unsafe_workspace.resolve()),
+                    str(window.settings.value(window.SETTINGS_WORKSPACE_ROOT, "") or ""),
+                )
+                self.assertIn("安装目录", warning.call_args.args[2])
+                save_prompt.assert_not_called()
+                window._mark_saved_checkpoint(saved=True)
+                window.close()
+
+    def test_window_does_not_restore_saved_workspace_from_install_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            install_root = root / "installed-app"
+            unsafe_workspace = install_root / "projects"
+            safe_workspace = root / "user-projects"
+            unsafe_workspace.mkdir(parents=True)
+            safe_workspace.mkdir()
+            with patch.dict(
+                os.environ,
+                {"L2D_CONFIG_EDITOR_SETTINGS_DIR": str(root / "settings")},
+            ):
+                settings = create_app_settings()
+                settings.setValue("workspace_root", str(unsafe_workspace))
+                settings.sync()
+
+                window = MainWindow(
+                    safe_workspace,
+                    install_root=install_root,
+                )
+
+                self.assertEqual(safe_workspace.resolve(), window.workdir)
+                window._mark_saved_checkpoint(saved=True)
+                window.close()
+
+    def test_window_refuses_install_root_as_explicit_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            install_root = Path(temp_dir) / "installed-app"
+            unsafe_workspace = install_root / "projects"
+            unsafe_workspace.mkdir(parents=True)
+
+            with self.assertRaisesRegex(ValueError, "安装目录"):
+                MainWindow(
+                    unsafe_workspace,
+                    prefer_saved_workspace=False,
+                    install_root=install_root,
+                )
+
+    def test_external_json_inside_frozen_install_root_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            install_root = root / "installed-app"
+            install_root.mkdir()
+            unsafe_json = install_root / "example.json"
+            unsafe_json.write_text("{}", encoding="utf-8")
+            safe_workspace = root / "user-projects"
+            safe_workspace.mkdir()
+            with patch.dict(
+                os.environ,
+                {"L2D_CONFIG_EDITOR_SETTINGS_DIR": str(root / "settings")},
+            ):
+                window = MainWindow(
+                    safe_workspace,
+                    prefer_saved_workspace=False,
+                    install_root=install_root,
+                )
+                with patch.object(QMessageBox, "warning") as warning:
+                    opened = window.open_external_file(unsafe_json)
+
+                self.assertFalse(opened)
+                self.assertNotEqual(str(unsafe_json.resolve()), window.controller.document.path)
+                self.assertIn("安装目录", warning.call_args.args[2])
+                window._mark_saved_checkpoint(saved=True)
+                window.close()
+
+    def test_open_dialog_rejects_json_inside_frozen_install_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            install_root = root / "installed-app"
+            install_root.mkdir()
+            unsafe_json = install_root / "example.json"
+            unsafe_json.write_text("{}", encoding="utf-8")
+            safe_workspace = root / "user-projects"
+            safe_workspace.mkdir()
+            with patch.dict(
+                os.environ,
+                {"L2D_CONFIG_EDITOR_SETTINGS_DIR": str(root / "settings")},
+            ):
+                window = MainWindow(
+                    safe_workspace,
+                    prefer_saved_workspace=False,
+                    install_root=install_root,
+                )
+                with patch.object(
+                    QFileDialog,
+                    "getOpenFileName",
+                    return_value=(str(unsafe_json), "JSON Files (*.json)"),
+                ), patch.object(QMessageBox, "warning") as warning:
+                    window._open_dialog()
+
+                self.assertNotEqual(str(unsafe_json.resolve()), window.controller.document.path)
+                self.assertIn("安装目录", warning.call_args.args[2])
+                window._mark_saved_checkpoint(saved=True)
+                window.close()
+
+    def test_file_list_cannot_open_install_root_json_from_parent_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            install_root = workspace / "installed-app"
+            install_root.mkdir()
+            unsafe_json = install_root / "example.json"
+            unsafe_json.write_text("{}", encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {"L2D_CONFIG_EDITOR_SETTINGS_DIR": str(workspace / "settings")},
+            ):
+                window = MainWindow(
+                    workspace,
+                    prefer_saved_workspace=False,
+                    install_root=install_root,
+                )
+                item = QListWidgetItem("example")
+                item.setData(
+                    Qt.ItemDataRole.UserRole,
+                    {"kind": "file", "path": "installed-app/example.json"},
+                )
+                with patch.object(QMessageBox, "warning") as warning:
+                    window._open_selected_file(item)
+
+                self.assertNotEqual(str(unsafe_json.resolve()), window.controller.document.path)
+                self.assertIn("安装目录", warning.call_args.args[2])
+                window._mark_saved_checkpoint(saved=True)
+                window.close()
 
     def test_search_is_a_popup_and_does_not_resize_the_canvas(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

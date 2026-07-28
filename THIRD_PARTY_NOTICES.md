@@ -19,7 +19,7 @@ components. The application does not use GPL-only Qt modules.
 - **Pillow 12.1.1** — HPND license.
 
 The local release process copies the license files shipped in the locked Python
-environment into both onedir applications and the release's `licenses`
+environment into the editor onedir application and the release's `licenses`
 directory. Recipients may replace the dynamically linked Qt libraries with
 ABI-compatible versions, subject to the licenses above. The editor's JSON
 format and the Ed25519-signed LAN update protocol are application formats and
