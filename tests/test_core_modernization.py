@@ -99,7 +99,7 @@ class CanvasStrokePersistenceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.schema = get_default_schema()
 
-    def test_strokes_round_trip_in_format_three(self) -> None:
+    def test_strokes_round_trip_in_format_four(self) -> None:
         document = create_document(self.schema)
         document.canvas_strokes.append(
             CanvasStrokeRecord(
@@ -115,8 +115,8 @@ class CanvasStrokePersistenceTests(unittest.TestCase):
             raw = json.loads(path.read_text(encoding="utf-8"))
             loaded = load_document(self.schema, path)
 
-        self.assertEqual(3, EDITOR_DOCUMENT_FORMAT_VERSION)
-        self.assertEqual(3, raw["format_version"])
+        self.assertEqual(4, EDITOR_DOCUMENT_FORMAT_VERSION)
+        self.assertEqual(4, raw["format_version"])
         self.assertEqual(
             {
                 "id": "stroke-1",
@@ -184,12 +184,12 @@ class CanvasStrokePersistenceTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     load_document(self.schema, path)
 
-    def test_v1_and_v2_load_without_strokes_and_future_version_is_rejected(self) -> None:
+    def test_v1_through_v3_load_without_strokes_and_future_version_is_rejected(self) -> None:
         payload = export_document_dict(self.schema, create_document(self.schema))
         payload.pop("canvas_strokes")
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "version.json"
-            for version in (None, 1, 2):
+            for version in (None, 1, 2, 3):
                 with self.subTest(version=version):
                     if version is None:
                         payload.pop("format_version", None)

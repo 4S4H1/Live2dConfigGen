@@ -155,10 +155,9 @@ def main() -> int:
         initial_file = None
     settings = create_app_settings()
     if initial_file is not None:
-        workspace = initial_file.parent
-        if not settings.contains(SETTINGS_WORKSPACE_ROOT):
-            settings.setValue(SETTINGS_WORKSPACE_ROOT, str(workspace))
-            settings.sync()
+        workspace = initial_file.parent.resolve()
+        settings.setValue(SETTINGS_WORKSPACE_ROOT, str(workspace))
+        settings.sync()
     else:
         workspace = resolve_initial_workspace(
             _default_workspace(),

@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import BinaryIO
 from urllib.parse import unquote, urlsplit
 
-from PySide6.QtCore import QProcess, QSettings, Qt, QTimer, Signal
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtCore import QCoreApplication, QProcess, QSettings, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -26,20 +26,125 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
 
 from .app_settings import create_app_settings
+from .update_discovery import DISCOVERY_PORT, UpdateDiscoveryResponder
 from .update_manifest import import_release_bundle, load_public_key, sha256_file
 from .version import PRODUCT_NAME
 
 DEFAULT_PORT = 8765
 MAX_ACCESS_LOG_ENTRIES = 1000
 SETTINGS_PORT_KEY = "update-host/server/port"
+HOST_SETTINGS_PORT_KEY = "server/port"
+HOST_SERVICE_ENABLED_KEY = "host/service_enabled"
+HOST_RESTORE_AT_LOGIN_KEY = "host/restore_at_login"
+HOST_RUN_VALUE_NAME = "L2DUpdateHost"
+
+
+def create_host_settings() -> QSettings:
+    """Use a Host-specific settings namespace independent from the editor."""
+
+    settings_dir = str(
+        os.environ.get("L2D_CONFIG_EDITOR_SETTINGS_DIR") or ""
+    ).strip()
+    if settings_dir:
+        path = (
+            Path(settings_dir).resolve()
+            / "4S4H1"
+            / "L2DUpdateHost.ini"
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return QSettings(str(path), QSettings.Format.IniFormat)
+    return QSettings("4S4H1", "L2DUpdateHost")
+
+
+def bundled_host_asset(name: str) -> Path:
+    """Resolve Host assets in source and both PyInstaller layouts."""
+
+    bundle_root = Path(
+        getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1])
+    )
+    candidates = (
+        bundle_root / "assets" / name,
+        bundle_root / "l2d_config_editor" / "assets" / name,
+        Path(__file__).resolve().parent / "assets" / name,
+    )
+    return next((candidate for candidate in candidates if candidate.is_file()), candidates[0])
+
+
+def set_login_startup(
+    enabled: bool,
+    executable: str | Path | None = None,
+) -> bool:
+    """Set the per-user login restore entry for the standalone Host."""
+
+    if sys.platform != "win32":
+        return False
+    if executable is None:
+        if not getattr(sys, "frozen", False):
+            return False
+        executable = sys.executable
+    command = f'"{Path(executable).resolve()}" --login'
+    try:
+        import winreg
+
+        with winreg.CreateKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+        ) as key:
+            if enabled:
+                winreg.SetValueEx(
+                    key,
+                    HOST_RUN_VALUE_NAME,
+                    0,
+                    winreg.REG_SZ,
+                    command,
+                )
+            else:
+                try:
+                    winreg.DeleteValue(key, HOST_RUN_VALUE_NAME)
+                except FileNotFoundError:
+                    pass
+    except OSError:
+        return False
+    return True
+
+
+def login_startup_enabled() -> bool:
+    """Return whether the per-user Host Run value currently exists."""
+
+    if sys.platform != "win32":
+        return False
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+        ) as key:
+            value, _value_type = winreg.QueryValueEx(key, HOST_RUN_VALUE_NAME)
+    except (FileNotFoundError, OSError):
+        return False
+    return bool(str(value).strip())
+
+
+def setting_is_enabled(
+    settings: QSettings,
+    key: str,
+    default: bool = False,
+) -> bool:
+    value = settings.value(key, default)
+    if isinstance(value, str):
+        return value.strip().casefold() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 def default_data_root() -> Path:
@@ -67,24 +172,50 @@ def _powershell_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def firewall_powershell_command(port: int, program: str) -> str:
+def firewall_powershell_command(
+    port: int,
+    program: str,
+    *,
+    discovery_port: int = DISCOVERY_PORT,
+) -> str:
     """Build the exact elevated firewall operation used by the Host UI."""
 
     if not 1024 <= port <= 65535:
         raise ValueError("端口必须介于 1024 和 65535")
+    if not 1024 <= discovery_port <= 65535:
+        raise ValueError("自动发现端口必须介于 1024 和 65535")
     if not program:
         raise ValueError("缺少 Host 程序路径")
-    rule_name = "L2D Update Host (LocalSubnet)"
-    name = _powershell_quote(rule_name)
+    legacy_name = _powershell_quote("L2D Update Host (LocalSubnet)")
+    http_name = _powershell_quote("L2D Update Host HTTP (LocalSubnet)")
+    discovery_name = _powershell_quote(
+        "L2D Update Host Discovery (LocalSubnet)"
+    )
     executable = _powershell_quote(str(Path(program).resolve()))
     return (
         "$ErrorActionPreference='Stop';"
-        f"$existing=Get-NetFirewallRule -DisplayName {name} "
-        "-ErrorAction SilentlyContinue;"
-        "if($null -ne $existing){$existing|Remove-NetFirewallRule};"
-        f"New-NetFirewallRule -DisplayName {name} -Direction Inbound "
+        f"$ruleNames=@({legacy_name},{http_name},{discovery_name});"
+        "$existing=@();"
+        "foreach($ruleName in $ruleNames){"
+        "$existing+=@(Get-NetFirewallRule -DisplayName $ruleName "
+        "-ErrorAction SilentlyContinue)};"
+        "$newRules=@();"
+        "try{"
+        f"$newRules+=@(New-NetFirewallRule -DisplayName {http_name} "
+        "-Direction Inbound "
         f"-Action Allow -Protocol TCP -LocalPort {port} -Program {executable} "
-        "-RemoteAddress LocalSubnet -Profile Private,Domain|Out-Null"
+        "-RemoteAddress LocalSubnet -Profile Private,Domain -PassThru);"
+        f"$newRules+=@(New-NetFirewallRule -DisplayName {discovery_name} "
+        "-Direction Inbound "
+        f"-Action Allow -Protocol UDP -LocalPort {discovery_port} "
+        f"-Program {executable} -RemoteAddress LocalSubnet "
+        "-Profile Private,Domain -PassThru)"
+        "}catch{"
+        "if($newRules.Count -gt 0){$newRules|Remove-NetFirewallRule "
+        "-ErrorAction SilentlyContinue};"
+        "throw};"
+        "if($existing.Count -gt 0){$existing|Remove-NetFirewallRule "
+        "-ErrorAction SilentlyContinue}"
     )
 
 
@@ -384,15 +515,29 @@ class UpdateHostWindow(QMainWindow):
         *,
         public_key_pem: bytes | None = None,
         settings: QSettings | None = None,
+        discovery_port: int = DISCOVERY_PORT,
+        discovery_bind_address: str = "0.0.0.0",
+        standalone: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent, Qt.WindowType.Window)
         self.data_root = (data_root or default_data_root()).resolve()
         self.releases_root = self.data_root / "releases"
         self.public_key_pem = bytes(public_key_pem) if public_key_pem else None
-        self.settings = settings if settings is not None else create_app_settings()
+        self.standalone = bool(standalone)
+        self.settings = (
+            settings
+            if settings is not None
+            else (create_host_settings() if self.standalone else create_app_settings())
+        )
+        self.settings_port_key = (
+            HOST_SETTINGS_PORT_KEY if self.standalone else SETTINGS_PORT_KEY
+        )
+        self.discovery_port = int(discovery_port)
+        self.discovery_bind_address = discovery_bind_address
         self.server: ReleaseHTTPServer | None = None
         self.server_thread: threading.Thread | None = None
+        self.discovery_responder: UpdateDiscoveryResponder | None = None
         self.firewall_process: QProcess | None = None
         self.first_url = ""
         self._pending_access_logs: deque[str] = deque(
@@ -407,6 +552,10 @@ class UpdateHostWindow(QMainWindow):
         self._access_log_timer = QTimer(self)
         self._access_log_timer.setInterval(100)
         self._access_log_timer.timeout.connect(self.flush_pending_access_logs)
+        if self.standalone:
+            self.tray: QSystemTrayIcon | None = None
+            self.tray_toggle_action: QAction | None = None
+            self._build_tray()
 
     def _append_access_log(self, message: str) -> None:
         self._append_access_logs([message])
@@ -454,7 +603,7 @@ class UpdateHostWindow(QMainWindow):
         self.port_box.setRange(1024, 65535)
         try:
             configured_port = int(
-                self.settings.value(SETTINGS_PORT_KEY, DEFAULT_PORT)
+                self.settings.value(self.settings_port_key, DEFAULT_PORT)
             )
         except (TypeError, ValueError):
             configured_port = DEFAULT_PORT
@@ -469,9 +618,13 @@ class UpdateHostWindow(QMainWindow):
         self.url_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         latest = _read_latest(self.releases_root)
         self.version_label = QLabel(latest.name if latest is not None else "尚未发布")
+        self.discovery_label = QLabel(
+            f"随服务启动（UDP {self.discovery_port}）"
+        )
         form.addRow("端口", self.port_box)
         form.addRow("当前版本", self.version_label)
         form.addRow("局域网地址", self.url_label)
+        form.addRow("自动发现", self.discovery_label)
         layout.addLayout(form)
         row = QHBoxLayout()
         self.start_button = QPushButton("启动服务")
@@ -496,6 +649,88 @@ class UpdateHostWindow(QMainWindow):
         layout.addWidget(self.log_list)
         self.setCentralWidget(central)
 
+    def _build_tray(self) -> None:
+        self.tray = QSystemTrayIcon(QApplication.windowIcon(), self)
+        self.tray.setToolTip("L2D 局域网更新主机")
+        menu = QMenu(self)
+        show_action = QAction("显示", self)
+        show_action.triggered.connect(self.show_from_tray)
+        self.tray_toggle_action = QAction("启动服务", self)
+        self.tray_toggle_action.triggered.connect(self.toggle_server)
+        copy_action = QAction("复制地址", self)
+        copy_action.triggered.connect(self.copy_address)
+        quit_action = QAction("退出", self)
+        quit_action.triggered.connect(self.explicit_exit)
+        menu.addAction(show_action)
+        menu.addAction(self.tray_toggle_action)
+        menu.addAction(copy_action)
+        menu.addSeparator()
+        menu.addAction(quit_action)
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(self._tray_activated)
+        self.tray.show()
+        self._sync_tray_actions()
+
+    def _tray_activated(
+        self, reason: QSystemTrayIcon.ActivationReason
+    ) -> None:
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
+            self.show_from_tray()
+
+    def _sync_tray_actions(self) -> None:
+        tray_toggle_action = getattr(self, "tray_toggle_action", None)
+        if tray_toggle_action is not None:
+            tray_toggle_action.setText(
+                "停止服务" if self.server is not None else "启动服务"
+            )
+        tray = getattr(self, "tray", None)
+        if tray is not None:
+            state = "运行中" if self.server is not None else "已停止"
+            tray.setToolTip(f"L2D 局域网更新主机 - {state}")
+
+    def show_from_tray(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def host_status(self) -> dict[str, object]:
+        latest = _read_latest(self.releases_root)
+        return {
+            "ok": True,
+            "process_running": True,
+            "pid": int(QCoreApplication.applicationPid()),
+            "service_running": self.server is not None,
+            "restore_at_login": setting_is_enabled(
+                self.settings,
+                HOST_RESTORE_AT_LOGIN_KEY,
+                False,
+            ),
+            "login_startup_enabled": login_startup_enabled(),
+            "url": self.first_url,
+            "published_version": latest.name if latest is not None else None,
+        }
+
+    def shutdown_for_update(self) -> None:
+        """Exit without changing the user's login/service restoration choice."""
+
+        self.stop_server(persist=False)
+        QCoreApplication.quit()
+
+    def stop_server_for_exit(self) -> None:
+        self.stop_server(persist=False)
+
+    def explicit_exit(self) -> None:
+        """Only a tray Exit disables restoration at the next user login."""
+
+        self.settings.setValue(HOST_RESTORE_AT_LOGIN_KEY, False)
+        self.settings.sync()
+        set_login_startup(False)
+        self.stop_server(persist=False)
+        QCoreApplication.quit()
+
     def toggle_server(self) -> None:
         if self.server is None:
             self.start_server()
@@ -517,17 +752,48 @@ class UpdateHostWindow(QMainWindow):
         self.server = server
         self.server_thread = threading.Thread(target=server.serve_forever, daemon=True)
         self.server_thread.start()
+        responder = UpdateDiscoveryResponder(
+            http_port=int(server.server_address[1]),
+            release_available=lambda: _read_latest(self.releases_root) is not None,
+            discovery_port=self.discovery_port,
+            bind_address=self.discovery_bind_address,
+            parent=self,
+        )
+        if responder.start():
+            self.discovery_responder = responder
+            self.discovery_label.setText(
+                f"自动发现已启用（UDP {responder.local_port}）"
+            )
+        else:
+            error = responder.error_string or "UDP 端口不可用"
+            responder.stop()
+            responder.deleteLater()
+            self.discovery_responder = None
+            self.discovery_label.setText(
+                f"自动发现不可用（{error}）；仍可复制地址手动配置"
+            )
+            self.logReceived.emit(
+                f"自动发现未启动：{error}；HTTP 服务和手动地址仍可使用"
+            )
         self._access_log_timer.start()
-        self.settings.setValue(SETTINGS_PORT_KEY, port)
+        self.settings.setValue(self.settings_port_key, port)
+        if self.standalone:
+            self.settings.setValue(HOST_SERVICE_ENABLED_KEY, True)
+            self.settings.sync()
         urls = [f"http://{ip}:{port}" for ip in local_ipv4_addresses()]
         self.first_url = urls[0] if urls else f"http://127.0.0.1:{port}"
         self.url_label.setText("\n".join(urls) or self.first_url)
         self.copy_button.setEnabled(True)
         self.start_button.setText("停止服务")
         self.port_box.setEnabled(False)
+        self._sync_tray_actions()
         self.logReceived.emit(f"服务已启动，端口 {port}")
 
-    def stop_server(self) -> None:
+    def stop_server(self, *, persist: bool = True) -> None:
+        responder, self.discovery_responder = self.discovery_responder, None
+        if responder is not None:
+            responder.stop()
+            responder.deleteLater()
         server, self.server = self.server, None
         server_thread, self.server_thread = self.server_thread, None
         if server is not None:
@@ -541,10 +807,17 @@ class UpdateHostWindow(QMainWindow):
         self._access_log_timer.stop()
         self.flush_pending_access_logs()
         self.url_label.setText("未启动")
+        self.discovery_label.setText(
+            f"随服务启动（UDP {self.discovery_port}）"
+        )
         self.first_url = ""
         self.copy_button.setEnabled(False)
         self.start_button.setText("启动服务")
         self.port_box.setEnabled(True)
+        if self.standalone and persist:
+            self.settings.setValue(HOST_SERVICE_ENABLED_KEY, False)
+            self.settings.sync()
+        self._sync_tray_actions()
         self.logReceived.emit("服务已停止")
 
     def import_bundle(self) -> None:
@@ -590,12 +863,16 @@ class UpdateHostWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "不可用",
-                "防火墙入口只在安装后的 Windows 编辑器中启用。",
+                "防火墙入口只在安装后的 Windows 更新主机中启用。",
             )
             return
         if self.firewall_process is not None:
             return
-        command = firewall_powershell_command(self.port_box.value(), sys.executable)
+        command = firewall_powershell_command(
+            self.port_box.value(),
+            sys.executable,
+            discovery_port=self.discovery_port,
+        )
         encoded = base64.b64encode(command.encode("utf-16-le")).decode("ascii")
         outer = (
             "$p=Start-Process -FilePath 'powershell.exe' "
@@ -623,17 +900,19 @@ class UpdateHostWindow(QMainWindow):
         self.firewall_button.setEnabled(True)
         if exit_code == 0:
             message = (
-                f"已创建规则：TCP {self.port_box.value()}，"
-                "Private/Domain，LocalSubnet，仅限当前编辑器程序。"
+                f"已创建规则：HTTP TCP {self.port_box.value()}、"
+                f"自动发现 UDP {self.discovery_port}，Private/Domain，"
+                "LocalSubnet，仅限当前 Host 程序。"
             )
             self.logReceived.emit(message)
             QMessageBox.information(self, "防火墙规则已创建", message)
         else:
-            self.logReceived.emit("防火墙规则未创建或管理员确认被取消")
+            self.logReceived.emit("防火墙规则未创建；本轮可能创建的规则已回滚")
             QMessageBox.warning(
                 self,
                 "未创建规则",
-                "操作失败或管理员确认被取消。未扩大任何网络访问范围。",
+                "操作失败或管理员确认被取消。本轮可能创建的规则已清理，"
+                "未扩大任何网络访问范围。",
             )
 
     def _firewall_start_error(self, _error: QProcess.ProcessError) -> None:
@@ -650,5 +929,16 @@ class UpdateHostWindow(QMainWindow):
         QMessageBox.warning(self, "无法启动", "无法启动 PowerShell 防火墙配置程序。")
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self.standalone:
+            self.hide()
+            event.ignore()
+            if self.tray is not None and self.tray.isVisible():
+                self.tray.showMessage(
+                    "L2D 更新主机",
+                    "主机仍在托盘中运行",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    2500,
+                )
+            return
         self.stop_server()
         event.accept()

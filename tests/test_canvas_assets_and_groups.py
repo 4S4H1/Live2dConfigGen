@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("L2D_CONFIG_EDITOR_TEST_CLOSE_EVENT_POLICY", "discard")
 
 from PySide6.QtCore import QMimeData, QPointF, Qt
-from PySide6.QtGui import QGuiApplication, QImage
+from PySide6.QtGui import QGuiApplication, QImage, QPainter
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QFileDialog, QGraphicsItem, QInputDialog
 
@@ -219,7 +219,7 @@ class CanvasImagePersistenceTests(unittest.TestCase):
             loaded = load_document(schema, path)
 
         self.assertEqual(data_base64, payload["canvas_images"][0]["data_base64"])
-        self.assertEqual(3, payload["format_version"])
+        self.assertEqual(4, payload["format_version"])
         self.assertEqual(document.canvas_images[0], loaded.canvas_images[0])
 
     def test_canvas_image_add_remove_and_move_are_undoable(self) -> None:
@@ -244,6 +244,37 @@ class CanvasImagePersistenceTests(unittest.TestCase):
         self.assertIsNone(controller.get_canvas_image(image_uuid))
         controller.undo_stack.undo()
         self.assertIsNotNone(controller.get_canvas_image(image_uuid))
+
+    def test_canvas_image_resize_is_undoable_and_roundtrips(self) -> None:
+        schema = get_default_schema()
+        controller = EditorController()
+        source = QImage(320, 180, QImage.Format.Format_ARGB32)
+        source.fill(0xFF557799)
+        data_base64, size = encode_reference_image(source)
+        image_uuid = controller.add_canvas_image(data_base64, size, (100.0, 80.0))
+
+        controller.resize_canvas_image(image_uuid, (475.0, 265.0))
+
+        self.assertEqual(
+            {"width": 475.0, "height": 265.0},
+            controller.get_canvas_image(image_uuid).ui_size,
+        )
+        controller.undo_stack.undo()
+        self.assertEqual(
+            {"width": 320.0, "height": 180.0},
+            controller.get_canvas_image(image_uuid).ui_size,
+        )
+        controller.undo_stack.redo()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "resized-image.json"
+            save_document(schema, controller.document, path)
+            loaded = load_document(schema, path)
+
+        self.assertEqual(
+            {"width": 475.0, "height": 265.0},
+            loaded.canvas_images[0].ui_size,
+        )
 
     def test_invalid_embedded_image_is_safely_ignored(self) -> None:
         schema = get_default_schema()
@@ -275,6 +306,45 @@ class CanvasImagePersistenceTests(unittest.TestCase):
         image_uuid = controller.add_canvas_image(data_base64, size, (12.0, 8.0))
         controller.move_canvas_image(image_uuid, (float("nan"), 20.0))
         self.assertEqual({"x": 12.0, "y": 8.0}, controller.get_canvas_image(image_uuid).ui_position)
+        controller.resize_canvas_image(image_uuid, (float("inf"), 20.0))
+        self.assertEqual({"width": 16.0, "height": 8.0}, controller.get_canvas_image(image_uuid).ui_size)
+        controller.get_canvas_image(image_uuid).locked = True
+        controller.resize_canvas_image(image_uuid, (120.0, 60.0))
+        self.assertEqual({"width": 16.0, "height": 8.0}, controller.get_canvas_image(image_uuid).ui_size)
+
+    def test_loading_invalid_canvas_image_display_size_falls_back_to_source(self) -> None:
+        schema = get_default_schema()
+        document = create_document(schema)
+        source = QImage(64, 32, QImage.Format.Format_ARGB32)
+        source.fill(0xFF224466)
+        data_base64, _size = encode_reference_image(source)
+        document.canvas_images.append(
+            CanvasImageRecord(
+                uuid="oversized-image",
+                data_base64=data_base64,
+                ui_size={"width": 1e300, "height": 1e300},
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "oversized-image.json"
+            save_document(schema, document, path)
+            loaded = load_document(schema, path)
+
+        self.assertEqual({"width": 64.0, "height": 32.0}, loaded.canvas_images[0].ui_size)
+
+    def test_resizing_display_does_not_consume_embedded_pixel_budget(self) -> None:
+        controller = EditorController()
+        source = QImage(10, 10, QImage.Format.Format_ARGB32)
+        source.fill(0xFF335577)
+        data_base64, size = encode_reference_image(source)
+        first_uuid = controller.add_canvas_image(data_base64, size, (0.0, 0.0))
+
+        controller.resize_canvas_image(first_uuid, (10_000.0, 10_000.0))
+        second_uuid = controller.add_canvas_image(data_base64, size, (20.0, 20.0))
+
+        self.assertIsNotNone(second_uuid)
+        self.assertEqual(2, len(controller.document.canvas_images))
 
     def test_loading_caps_embedded_reference_image_count(self) -> None:
         schema = get_default_schema()
@@ -570,6 +640,127 @@ class CanvasGroupInteractionTests(unittest.TestCase):
             self.assertEqual(1, len(window.controller.document.canvas_images))
             image_uuid = window.controller.document.canvas_images[0].uuid
             self.assertIn(image_uuid, window.canvas.image_items)
+            self.close_window(window)
+
+    def test_reference_image_handle_resizes_width_and_height_independently(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = self.make_ready_window(temp_dir)
+            source = QImage(240, 120, QImage.Format.Format_ARGB32)
+            source.fill(0xFF446688)
+            image_uuid = window.canvas.add_reference_image(source, position=(5000.0, 5000.0))
+            window.show()
+            self.app.processEvents()
+            item = window.canvas.image_items[image_uuid]
+            item.setSelected(True)
+            window.canvas.centerOn(item)
+            self.app.processEvents()
+            position_before = QPointF(item.pos())
+            undo_index_before = window.controller.undo_stack.index()
+            handle_scene = item.mapToScene(item.resize_handle_rect().center())
+            handle_center = window.canvas.mapFromScene(handle_scene)
+            intermediate_one = window.canvas.mapFromScene(handle_scene + QPointF(30.0, 20.0))
+            intermediate_two = window.canvas.mapFromScene(handle_scene + QPointF(60.0, 35.0))
+            drag_end = window.canvas.mapFromScene(handle_scene + QPointF(90.0, 55.0))
+
+            QTest.mousePress(
+                window.canvas.viewport(),
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+                handle_center,
+            )
+            QTest.mouseMove(window.canvas.viewport(), intermediate_one, delay=10)
+            QTest.mouseMove(window.canvas.viewport(), intermediate_two, delay=10)
+            QTest.mouseMove(window.canvas.viewport(), drag_end, delay=10)
+            QTest.mouseRelease(
+                window.canvas.viewport(),
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+                drag_end,
+            )
+            self.app.processEvents()
+
+            record = window.controller.get_canvas_image(image_uuid)
+            self.assertAlmostEqual(330.0, record.ui_size["width"], delta=2.0)
+            self.assertAlmostEqual(175.0, record.ui_size["height"], delta=2.0)
+            self.assertEqual(position_before, window.canvas.image_items[image_uuid].pos())
+            self.assertEqual(undo_index_before + 1, window.controller.undo_stack.index())
+            self.assertFalse(window.canvas.is_busy())
+            window.controller.undo_stack.undo()
+            self.app.processEvents()
+            restored = window.controller.get_canvas_image(image_uuid)
+            self.assertEqual({"width": 240.0, "height": 120.0}, restored.ui_size)
+            window.controller.undo_stack.redo()
+            self.app.processEvents()
+            resized = window.controller.get_canvas_image(image_uuid)
+            self.assertAlmostEqual(330.0, resized.ui_size["width"], delta=2.0)
+            self.assertAlmostEqual(175.0, resized.ui_size["height"], delta=2.0)
+            self.assertTrue(window.canvas.image_items[image_uuid].isSelected())
+            self.close_window(window)
+
+    def test_unselected_reference_image_paints_persistent_outline(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = self.make_ready_window(temp_dir)
+            source = QImage(80, 40, QImage.Format.Format_ARGB32)
+            source.fill(Qt.GlobalColor.transparent)
+            image_uuid = window.canvas.add_reference_image(source, position=(0.0, 0.0))
+            item = window.canvas.image_items[image_uuid]
+            window.canvas.scene_ref.clearSelection()
+            self.assertFalse(item.isSelected())
+            rendered = QImage(100, 60, QImage.Format.Format_ARGB32_Premultiplied)
+            rendered.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(rendered)
+            painter.translate(10.0, 10.0)
+            item.paint(painter, None)
+            painter.end()
+
+            def edge_has_ink(xs, ys) -> bool:
+                return any(
+                    rendered.pixelColor(x, y).alpha() > 0
+                    for y in ys
+                    for x in xs
+                )
+
+            self.assertTrue(edge_has_ink(range(9, 92), range(8, 13)))
+            self.assertTrue(edge_has_ink(range(9, 92), range(48, 53)))
+            self.assertTrue(edge_has_ink(range(8, 13), range(9, 52)))
+            self.assertTrue(edge_has_ink(range(88, 93), range(9, 52)))
+            self.close_window(window)
+
+    def test_interrupted_reference_image_resize_restores_geometry_and_busy_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = self.make_ready_window(temp_dir)
+            source = QImage(240, 120, QImage.Format.Format_ARGB32)
+            source.fill(0xFF335577)
+            image_uuid = window.canvas.add_reference_image(
+                source,
+                position=(5000.0, 5000.0),
+            )
+            window.show()
+            self.app.processEvents()
+            item = window.canvas.image_items[image_uuid]
+            window.canvas.centerOn(item)
+            self.app.processEvents()
+            handle_center = window.canvas.mapFromScene(
+                item.mapToScene(item.resize_handle_rect().center())
+            )
+            undo_index_before = window.controller.undo_stack.index()
+
+            QTest.mousePress(
+                window.canvas.viewport(),
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+                handle_center,
+            )
+            self.assertTrue(item._resizing)
+            self.assertTrue(window.canvas.is_busy())
+            self.assertIs(item, window.canvas.scene_ref.mouseGrabberItem())
+            item.ungrabMouse()
+            self.app.processEvents()
+
+            self.assertFalse(item._resizing)
+            self.assertFalse(window.canvas.is_busy())
+            self.assertEqual((240.0, 120.0), (item._rect.width(), item._rect.height()))
+            self.assertEqual(undo_index_before, window.controller.undo_stack.index())
             self.close_window(window)
 
     def test_node_clipboard_payload_wins_when_clipboard_also_contains_image(self) -> None:

@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 import uuid
 from pathlib import Path
@@ -58,6 +59,8 @@ Section
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteINIStr "${LEGACY_TEST_METADATA}" "legacy_product" "InstallDir" "$INSTDIR"
   WriteINIStr "${LEGACY_TEST_METADATA}" "legacy_product" "UpgradeCode" "${LEGACY_HOST_GUID}"
+  WriteINIStr "${LEGACY_TEST_METADATA}" "legacy_product" "service_enabled" "true"
+  WriteINIStr "${LEGACY_TEST_METADATA}" "host" "restore_at_login" "true"
   WriteINIStr "${LEGACY_TEST_METADATA}" "legacy_uninstall" "DisplayName" "L2D 局域网更新主机"
   WriteINIStr "${LEGACY_TEST_METADATA}" "legacy_uninstall" "Publisher" "4S4H1"
   WriteINIStr "${LEGACY_TEST_METADATA}" "legacy_uninstall" "UninstallString" '"$INSTDIR\Uninstall.exe"'
@@ -278,6 +281,19 @@ class InstallerRuntimeTests(unittest.TestCase):
                     (target / "payload.txt").read_text(encoding="utf-8"),
                 )
                 self.assertTrue((target / "Uninstall.exe").is_file())
+                self.assertEqual(
+                    "L2DConfigEditor|{E12D3BB6-BC45-4CF0-88DE-3D1B7F228B48}",
+                    (target / ".l2d-install-owner").read_text(
+                        encoding="utf-8"
+                    ),
+                )
+                self.assertEqual(
+                    "L2DUpdateHost|{E12D3BB6-BC45-4CF0-88DE-3D1B7F228B48}",
+                    (
+                        Path(f"{target}.__host")
+                        / ".l2d-install-owner"
+                    ).read_text(encoding="utf-8"),
+                )
                 self.assertFalse(Path(f"{target}.__new").exists())
                 self.assertFalse(Path(f"{target}.__old").exists())
                 if pass_index == 0:
@@ -293,6 +309,325 @@ class InstallerRuntimeTests(unittest.TestCase):
             script_name="editor-installer.nsi",
             installer_name="L2DConfigEditor-Setup-1.0.0-x64.exe",
         )
+
+    def test_installer_rejects_parent_child_program_roots(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="l2d-installer-overlap-",
+            dir=ROOT / "build",
+        ) as directory:
+            root = Path(directory)
+            target = root / "installed"
+            host_target = target / "host"
+            installer = self._compile_editor_test_installer(
+                root,
+                extra_defines={"HOST_INSTALL_DIR": str(host_target)},
+            )
+
+            blocked = subprocess.run(
+                [str(installer), "/S", f"/D={target}"],
+                cwd=root,
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+
+            self.assertEqual(69, blocked.returncode)
+            self.assertFalse(target.exists())
+            self.assertFalse(host_target.exists())
+
+    def test_installer_rejects_an_overbroad_editor_root(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="l2d-installer-broad-",
+            dir=ROOT / "build",
+        ) as directory:
+            root = Path(directory)
+            installer = self._compile_editor_test_installer(root)
+            broad_target = Path(tempfile.gettempdir()).resolve()
+
+            blocked = subprocess.run(
+                [str(installer), "/S", f"/D={broad_target}"],
+                cwd=root,
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+
+            self.assertEqual(73, blocked.returncode)
+
+            host_broad_installer = self._compile_editor_test_installer(
+                root,
+                extra_defines={
+                    "HOST_INSTALL_DIR": str(broad_target),
+                },
+            )
+            host_blocked = subprocess.run(
+                [
+                    str(host_broad_installer),
+                    "/S",
+                    f"/D={root / 'safe-editor-root'}",
+                ],
+                cwd=root,
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+            self.assertEqual(73, host_blocked.returncode)
+            self.assertFalse((root / "safe-editor-root").exists())
+
+    def test_installer_rejects_unknown_editor_root_contents(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="l2d-installer-editor-owner-",
+            dir=ROOT / "build",
+        ) as directory:
+            root = Path(directory)
+            target = root / "installed"
+            target.mkdir()
+            unknown = target / "unrelated.dll"
+            unknown.write_bytes(b"not owned")
+            installer = self._compile_editor_test_installer(root)
+
+            blocked = subprocess.run(
+                [str(installer), "/S", f"/D={target}"],
+                cwd=root,
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+
+            self.assertEqual(72, blocked.returncode)
+            self.assertEqual(b"not owned", unknown.read_bytes())
+            self.assertFalse(Path(f"{target}.__new").exists())
+
+    def test_installer_rejects_unknown_host_root_contents(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="l2d-installer-host-owner-",
+            dir=ROOT / "build",
+        ) as directory:
+            root = Path(directory)
+            target = root / "installed"
+            host_target = root / "host-installed"
+            host_target.mkdir()
+            unknown = host_target / "unrelated.dll"
+            unknown.write_bytes(b"not owned")
+            installer = self._compile_editor_test_installer(
+                root,
+                extra_defines={"HOST_INSTALL_DIR": str(host_target)},
+            )
+
+            blocked = subprocess.run(
+                [str(installer), "/S", f"/D={target}"],
+                cwd=root,
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+
+            self.assertEqual(74, blocked.returncode)
+            self.assertEqual(b"not owned", unknown.read_bytes())
+            self.assertFalse(target.exists())
+
+    def test_uninstaller_rejects_a_tampered_companion_owner_marker(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="l2d-uninstaller-host-owner-",
+            dir=ROOT / "build",
+        ) as directory:
+            root = Path(directory)
+            target = root / "installed"
+            installer = self._compile_editor_test_installer(root)
+            installed = subprocess.run(
+                [str(installer), "/S", f"/D={target}"],
+                cwd=root,
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+            self.assertEqual(0, installed.returncode)
+            host_target = Path(f"{target}.__host")
+            host_marker = host_target / ".l2d-install-owner"
+            host_marker.write_text("another-product", encoding="utf-8")
+
+            blocked = subprocess.run(
+                [
+                    str(target / "Uninstall.exe"),
+                    "/S",
+                    f"_?={target}",
+                ],
+                cwd=root,
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+
+            self.assertEqual(75, blocked.returncode)
+            self.assertTrue((target / "payload.txt").is_file())
+            self.assertTrue((host_target / "payload.txt").is_file())
+            self.assertEqual(
+                "another-product",
+                host_marker.read_text(encoding="utf-8"),
+            )
+
+    def test_clean_install_host_activation_failure_isolated_before_cleanup(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="l2d-installer-clean-rollback-",
+            dir=ROOT / "build",
+        ) as directory:
+            root = Path(directory)
+            target = root / "installed"
+            installer = self._compile_editor_test_installer(
+                root,
+                extra_defines={"FORCE_HOST_ACTIVATE_FAILURE": "1"},
+            )
+
+            failed = subprocess.run(
+                [str(installer), "/S", f"/D={target}"],
+                cwd=root,
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+
+            self.assertEqual(56, failed.returncode)
+            self.assertFalse(target.exists())
+            self.assertFalse(Path(f"{target}.__new").exists())
+            self.assertFalse(Path(f"{target}.__old").exists())
+            self.assertFalse(Path(f"{target}.__host").exists())
+            self.assertFalse(Path(f"{target}.__host.__new").exists())
+
+    def test_editor_upgrade_retries_a_transient_install_directory_cwd_lock(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="l2d-installer-cwd-retry-",
+            dir=ROOT / "build",
+        ) as directory:
+            root = Path(directory)
+            installer = self._compile_editor_test_installer(root)
+            target = root / "installed"
+            installed = subprocess.run(
+                [str(installer), "/S", f"/D={target}"],
+                cwd=root,
+                check=False,
+                timeout=30,
+            )
+            self.assertEqual(0, installed.returncode)
+
+            holder = subprocess.Popen(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "Start-Sleep -Milliseconds 1200",
+                ],
+                cwd=target,
+            )
+            try:
+                time.sleep(0.15)
+                started = time.monotonic()
+                upgraded = subprocess.run(
+                    [str(installer), "/S", f"/D={target}"],
+                    cwd=root,
+                    check=False,
+                    timeout=15,
+                )
+                elapsed = time.monotonic() - started
+            finally:
+                holder.wait(timeout=5)
+
+            self.assertEqual(0, upgraded.returncode)
+            self.assertGreaterEqual(elapsed, 0.75)
+            self.assertLess(elapsed, 6.5)
+            self.assertTrue((target / "payload.txt").is_file())
+            self.assertFalse(Path(f"{target}.__old").exists())
+
+    def test_editor_upgrade_keeps_the_old_install_on_a_permanent_cwd_lock(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="l2d-installer-cwd-blocked-",
+            dir=ROOT / "build",
+        ) as directory:
+            root = Path(directory)
+            installer = self._compile_editor_test_installer(root)
+            target = root / "installed"
+            installed = subprocess.run(
+                [str(installer), "/S", f"/D={target}"],
+                cwd=root,
+                check=False,
+                timeout=30,
+            )
+            self.assertEqual(0, installed.returncode)
+            marker = target / "old-install.marker"
+            marker.write_bytes(b"must survive")
+
+            holder = subprocess.Popen(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "Start-Sleep -Seconds 10",
+                ],
+                cwd=target,
+            )
+            try:
+                time.sleep(0.15)
+                blocked = subprocess.run(
+                    [str(installer), "/S", f"/D={target}"],
+                    cwd=root,
+                    check=False,
+                    timeout=12,
+                )
+            finally:
+                holder.terminate()
+                holder.wait(timeout=5)
+
+            self.assertEqual(51, blocked.returncode)
+            self.assertEqual(b"must survive", marker.read_bytes())
+            self.assertFalse(Path(f"{target}.__old").exists())
+            self.assertFalse(Path(f"{target}.__new").exists())
+
+    def test_host_activation_failure_rolls_back_both_program_roots(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="l2d-installer-dual-rollback-",
+            dir=ROOT / "build",
+        ) as directory:
+            root = Path(directory)
+            installer = self._compile_editor_test_installer(root)
+            target = root / "installed"
+            installed = subprocess.run(
+                [str(installer), "/S", f"/D={target}"],
+                cwd=root,
+                check=False,
+                timeout=30,
+            )
+            self.assertEqual(0, installed.returncode)
+            host_target = Path(f"{target}.__host")
+            editor_marker = target / "editor-old.marker"
+            host_marker = host_target / "host-old.marker"
+            editor_marker.write_bytes(b"editor old")
+            host_marker.write_bytes(b"host old")
+
+            failing_installer = self._compile_editor_test_installer(
+                root,
+                extra_defines={"FORCE_HOST_ACTIVATE_FAILURE": "1"},
+            )
+            failed = subprocess.run(
+                [str(failing_installer), "/S", f"/D={target}"],
+                cwd=root,
+                check=False,
+                timeout=30,
+            )
+
+            self.assertEqual(56, failed.returncode)
+            self.assertEqual(b"editor old", editor_marker.read_bytes())
+            self.assertEqual(b"host old", host_marker.read_bytes())
+            self.assertFalse(Path(f"{target}.__old").exists())
+            self.assertFalse(Path(f"{target}.__new").exists())
+            self.assertFalse(Path(f"{host_target}.__old").exists())
+            self.assertFalse(Path(f"{host_target}.__new").exists())
 
     def test_plain_installer_test_mode_never_touches_legacy_integration(self) -> None:
         with tempfile.TemporaryDirectory(
@@ -706,6 +1041,27 @@ class InstallerRuntimeTests(unittest.TestCase):
                 self.assertFalse(
                     self._metadata_value_exists(
                         metadata_path,
+                        "legacy_product",
+                        "UpgradeCode",
+                    )
+                )
+                self.assertTrue(
+                    self._metadata_value_exists(
+                        metadata_path,
+                        "legacy_product",
+                        "service_enabled",
+                    )
+                )
+                self.assertTrue(
+                    self._metadata_value_exists(
+                        metadata_path,
+                        "host",
+                        "restore_at_login",
+                    )
+                )
+                self.assertFalse(
+                    self._metadata_value_exists(
+                        metadata_path,
                         "legacy_uninstall",
                         "UninstallString",
                     )
@@ -714,6 +1070,79 @@ class InstallerRuntimeTests(unittest.TestCase):
                     b"verified legacy release",
                     cache_payload.read_bytes(),
                 )
+
+    def test_custom_legacy_host_migration_failure_restores_original_root(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="l2d-legacy-reversible-",
+            dir=ROOT / "build",
+        ) as directory:
+            root = Path(directory)
+            legacy_defines = self._legacy_fixture_defines(
+                root,
+                registry_root=(
+                    "Software\\4S4H1\\L2DInstallerTests\\"
+                    f"{uuid.uuid4().hex}"
+                ),
+            )
+            fixture_script = root / "legacy-host-fixture.nsi"
+            fixture_script.write_text(
+                LEGACY_HOST_FIXTURE_NSI,
+                encoding="utf-8-sig",
+            )
+            compiled = self._compile_nsis(
+                fixture_script,
+                defines=legacy_defines,
+            )
+            self.assertEqual(
+                0,
+                compiled.returncode,
+                compiled.stdout + compiled.stderr,
+            )
+            legacy_dir = root / "legacy-custom" / "nested"
+            installed = subprocess.run(
+                [
+                    str(root / "LegacyHostFixture.exe"),
+                    "/S",
+                    f"/D={legacy_dir}",
+                ],
+                cwd=root,
+                capture_output=True,
+                check=False,
+                timeout=60,
+            )
+            self.assertEqual(0, installed.returncode)
+            legacy_payload = (
+                legacy_dir / "L2DUpdateHost.exe"
+            ).read_bytes()
+            editor_installer = self._compile_editor_migration_fixture(
+                root,
+                legacy_defines=legacy_defines,
+                process_name=f"L2DHostAbsent{uuid.uuid4().hex[:8]}",
+                extra_defines={"FORCE_LEGACY_MIGRATION_FAILURE": "1"},
+            )
+            editor_target = root / "editor-installed"
+
+            failed = subprocess.run(
+                [str(editor_installer), "/S", f"/D={editor_target}"],
+                cwd=root,
+                capture_output=True,
+                check=False,
+                timeout=60,
+            )
+
+            self.assertEqual(64, failed.returncode)
+            self.assertEqual(
+                legacy_payload,
+                (legacy_dir / "L2DUpdateHost.exe").read_bytes(),
+            )
+            self.assertTrue((legacy_dir / "Uninstall.exe").is_file())
+            self.assertFalse(
+                Path(f"{legacy_dir}.__l2d_legacy_old").exists()
+            )
+            self.assertFalse(editor_target.exists())
+            self.assertFalse(Path(f"{editor_target}.__host").exists())
 
     def test_editor_upgrade_removes_orphaned_default_legacy_host(self) -> None:
         with tempfile.TemporaryDirectory(

@@ -22,12 +22,24 @@ class AddNodesCommand(QUndoCommand):
 
 
 class RemoveNodesCommand(QUndoCommand):
-    def __init__(self, controller, nodes, connections, groups=None) -> None:
+    def __init__(
+        self,
+        controller,
+        nodes,
+        connections,
+        groups=None,
+        plan_layout=None,
+    ) -> None:
         super().__init__("删除节点")
         self.controller = controller
         self.nodes = [node.clone() for node in nodes]
         self.connections = list(connections)
         self.groups = [group.clone() for group in (groups or [])]
+        self.plan_layout = (
+            plan_layout.clone()
+            if plan_layout is not None
+            else controller.document.plan_layout.clone()
+        )
 
     def redo(self) -> None:
         self.controller._delete_nodes([node.clone() for node in self.nodes], list(self.connections))
@@ -39,6 +51,7 @@ class RemoveNodesCommand(QUndoCommand):
         )
         if self.groups:
             self.controller._set_groups([group.clone() for group in self.groups])
+        self.controller._set_plan_layout(self.plan_layout.clone())
 
 
 class UpdateFieldCommand(QUndoCommand):
@@ -153,6 +166,68 @@ class SetGroupsCommand(QUndoCommand):
         self.controller._set_groups([group.clone() for group in self.old_groups])
 
 
+class SetPlanLayoutCommand(QUndoCommand):
+    def __init__(self, controller, old_layout, new_layout, label: str = "更新计划图") -> None:
+        super().__init__(label)
+        self.controller = controller
+        self.old_layout = old_layout.clone()
+        self.new_layout = new_layout.clone()
+
+    def redo(self) -> None:
+        self.controller._set_plan_layout(self.new_layout.clone())
+
+    def undo(self) -> None:
+        self.controller._set_plan_layout(self.old_layout.clone())
+
+
+class SetPlanViewCommand(QUndoCommand):
+    """Persist a plan viewport change without rebuilding plan topics."""
+
+    def __init__(self, controller, old_state, new_state) -> None:
+        super().__init__("调整计划图视角")
+        self.controller = controller
+        self.old_state = tuple(float(value) for value in old_state)
+        self.new_state = tuple(float(value) for value in new_state)
+
+    def redo(self) -> None:
+        self.controller._set_plan_view_state(*self.new_state)
+
+    def undo(self) -> None:
+        self.controller._set_plan_view_state(*self.old_state)
+
+
+class UpdatePlanGraphCommand(QUndoCommand):
+    """Atomically replace the primary hierarchy and its matching formal edge."""
+
+    def __init__(
+        self,
+        controller,
+        old_layout,
+        new_layout,
+        old_connections,
+        new_connections,
+        label: str = "调整计划主题",
+    ) -> None:
+        super().__init__(label)
+        self.controller = controller
+        self.old_layout = old_layout.clone()
+        self.new_layout = new_layout.clone()
+        self.old_connections = list(old_connections)
+        self.new_connections = list(new_connections)
+
+    def redo(self) -> None:
+        self.controller._set_plan_graph_state(
+            self.new_layout.clone(),
+            list(self.new_connections),
+        )
+
+    def undo(self) -> None:
+        self.controller._set_plan_graph_state(
+            self.old_layout.clone(),
+            list(self.old_connections),
+        )
+
+
 class AddCanvasImagesCommand(QUndoCommand):
     def __init__(self, controller, images) -> None:
         super().__init__("添加参考图")
@@ -191,6 +266,20 @@ class MoveCanvasImagesCommand(QUndoCommand):
 
     def undo(self) -> None:
         self.controller._move_canvas_images(self.old_positions)
+
+
+class ResizeCanvasImagesCommand(QUndoCommand):
+    def __init__(self, controller, old_sizes, new_sizes) -> None:
+        super().__init__("调整参考图大小")
+        self.controller = controller
+        self.old_sizes = dict(old_sizes)
+        self.new_sizes = dict(new_sizes)
+
+    def redo(self) -> None:
+        self.controller._resize_canvas_images(self.new_sizes)
+
+    def undo(self) -> None:
+        self.controller._resize_canvas_images(self.old_sizes)
 
 
 class AddCanvasStrokesCommand(QUndoCommand):
@@ -264,12 +353,19 @@ class AddConnectionCommand(QUndoCommand):
         super().__init__("添加连线")
         self.controller = controller
         self.connection = connection
+        self.before_plan_layout = controller.document.plan_layout.clone()
+        self.after_plan_layout = None
 
     def redo(self) -> None:
         self.controller._add_connection(self.connection)
+        if self.after_plan_layout is None:
+            self.after_plan_layout = self.controller.document.plan_layout.clone()
+        else:
+            self.controller._set_plan_layout(self.after_plan_layout.clone())
 
     def undo(self) -> None:
         self.controller._remove_connection((self.connection.from_uuid, self.connection.to_uuid))
+        self.controller._set_plan_layout(self.before_plan_layout.clone())
 
 
 class RemoveConnectionCommand(QUndoCommand):
@@ -277,9 +373,16 @@ class RemoveConnectionCommand(QUndoCommand):
         super().__init__("删除连线")
         self.controller = controller
         self.connection = connection
+        self.before_plan_layout = controller.document.plan_layout.clone()
+        self.after_plan_layout = None
 
     def redo(self) -> None:
         self.controller._remove_connection((self.connection.from_uuid, self.connection.to_uuid))
+        if self.after_plan_layout is None:
+            self.after_plan_layout = self.controller.document.plan_layout.clone()
+        else:
+            self.controller._set_plan_layout(self.after_plan_layout.clone())
 
     def undo(self) -> None:
         self.controller._add_connection(self.connection)
+        self.controller._set_plan_layout(self.before_plan_layout.clone())

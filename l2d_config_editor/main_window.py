@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDockWidget,
     QFileDialog,
     QFrame,
     QHeaderView,
@@ -35,6 +36,7 @@ from PySide6.QtWidgets import (
     QRadioButton,
     QScrollArea,
     QSplitter,
+    QStackedWidget,
     QStatusBar,
     QTableWidget,
     QTableWidgetItem,
@@ -53,19 +55,22 @@ from .app_settings import create_app_settings
 from .canvas import NodeCanvasView
 from .constants import CLIPBOARD_MIME
 from .controller import EditorController
+from .csv_export import export_current_document_csv
+from .host_process import HostProcessManager
 from .logic import (
-    build_csv_export_filename,
     create_document,
-    export_documents_to_csv,
     load_document,
 )
+from .llm_chat import LLMChatPanel
 from .perf_tools import PerformanceToolDialog
+from .plan_canvas import PlanCanvasView
 from .reference_images import read_reference_image
+from .schema import load_editor_schema
 from .styles import ThemeMode, normalize_theme_mode, stylesheet_for_theme
 from .svn_tools import SvnCommitRunner, discover_svn_executable
 from .template_batch import BatchTemplateDialog, create_base_template_files
+from .tool_service import EditorToolService
 from .update_client import UpdateClient, bundled_public_key_pem
-from .update_host import UpdateHostWindow
 from .update_installer import launch_installer_after_exit
 from .update_manifest import UpdateValidationError
 from .version import PRODUCT_NAME, PUBLISHER, VERSION
@@ -223,76 +228,6 @@ class ConciseDisplayDialog(QDialog):
         fields = {key for key, checkbox in self.field_checkboxes.items() if checkbox.isChecked()}
         elements = {key: checkbox.isChecked() for key, checkbox in self.element_checkboxes.items()}
         return fields, elements
-
-
-class ExportCsvDialog(QDialog):
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("\u5bfc\u51fa\u5230 CSV")
-        self.resize(760, 620)
-        layout = QVBoxLayout(self)
-        description = QLabel("\u9009\u62e9\u672c\u6b21\u8981\u5bfc\u51fa\u7684 JSON \u914d\u7f6e\u3002\u5bfc\u51fa\u6587\u4ef6\u4f1a\u81ea\u52a8\u5e26\u65f6\u95f4\u6233\uff0c\u907f\u514d\u8986\u76d6\u65e7 CSV\u3002")
-        description.setWordWrap(True)
-        layout.addWidget(description)
-
-        self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("\u641c\u7d22\u914d\u7f6e\u6587\u4ef6")
-        self.search_edit.textChanged.connect(self._filter_items)
-        layout.addWidget(self.search_edit)
-
-        self.list_widget = QListWidget()
-        self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        layout.addWidget(self.list_widget, 1)
-
-        quick_row = QHBoxLayout()
-        self.select_all_button = QPushButton("\u5168\u9009")
-        self.clear_button = QPushButton("\u6e05\u7a7a")
-        self.select_all_button.clicked.connect(lambda: self._set_all_checked(True))
-        self.clear_button.clicked.connect(lambda: self._set_all_checked(False))
-        quick_row.addWidget(self.select_all_button)
-        quick_row.addWidget(self.clear_button)
-        quick_row.addStretch(1)
-        layout.addLayout(quick_row)
-
-        self.button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        self.button_box.accepted.connect(self.accept)
-        self.button_box.rejected.connect(self.reject)
-        layout.addWidget(self.button_box)
-
-    def set_files(self, files: list[tuple[str, str]]) -> None:
-        self.list_widget.clear()
-        for relative_path, display_name in files:
-            item = QListWidgetItem(display_name)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Unchecked)
-            item.setData(Qt.ItemDataRole.UserRole, relative_path)
-            item.setToolTip(relative_path)
-            self.list_widget.addItem(item)
-        self._filter_items()
-
-    def selected_files(self) -> list[str]:
-        selected: list[str] = []
-        for index in range(self.list_widget.count()):
-            item = self.list_widget.item(index)
-            if item.checkState() == Qt.CheckState.Checked:
-                relative_path = item.data(Qt.ItemDataRole.UserRole)
-                if isinstance(relative_path, str) and relative_path:
-                    selected.append(relative_path)
-        return selected
-
-    def _set_all_checked(self, checked: bool) -> None:
-        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
-        for index in range(self.list_widget.count()):
-            item = self.list_widget.item(index)
-            if not item.isHidden():
-                item.setCheckState(state)
-
-    def _filter_items(self) -> None:
-        needle = self.search_edit.text().strip().lower()
-        for index in range(self.list_widget.count()):
-            item = self.list_widget.item(index)
-            haystack = f"{item.text()} {item.toolTip()}".lower()
-            item.setHidden(bool(needle) and needle not in haystack)
 
 
 class FileDirectoryDialog(QDialog):
@@ -534,9 +469,14 @@ class MainWindow(QMainWindow):
             raise ValueError("JSON 工作区不能位于程序安装目录内。")
         self.controller = EditorController(self)
         self.controller.set_workspace_root(self.workdir)
+        self.tool_service = EditorToolService(
+            self.controller,
+            workspace_root=lambda: self.workdir,
+            parent=self,
+        )
+        self.tool_service.viewSwitchRequested.connect(self._switch_graph_view)
         self.validation_cache: dict[str, list] = {}
         self.csv_dialog = CsvPreviewDialog(self.controller.schema, self)
-        self.export_csv_dialog = ExportCsvDialog(self)
         self.file_directory_dialog = FileDirectoryDialog(self)
         self.file_search_edit = self.file_directory_dialog.search_edit
         self.file_list = self.file_directory_dialog.list_widget
@@ -545,7 +485,7 @@ class MainWindow(QMainWindow):
         self.delete_button = self.file_directory_dialog.delete_button
         self.node_directory_dialog: NodeDirectoryDialog | None = None
         self.performance_dialog: PerformanceToolDialog | None = None
-        self._update_host_window: UpdateHostWindow | None = None
+        self._update_host_manager = HostProcessManager()
         self._auto_save_timer = QTimer(self)
         self._auto_save_timer.setSingleShot(True)
         self._auto_save_timer.timeout.connect(self._run_auto_save)
@@ -565,6 +505,7 @@ class MainWindow(QMainWindow):
         self._update_check_is_manual = False
         self._pending_update_manifest: dict[str, object] | None = None
         self._approved_update_exit = False
+        self._graph_view_mode = "formal"
 
         self.controller.pathChanged.connect(self._update_window_title)
         self.controller.pathChanged.connect(self._remember_last_opened_document)
@@ -593,7 +534,11 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(PRODUCT_NAME)
         self.resize(1680, 980)
         self._build_ui()
+        self.tool_service.beforeInvocation.connect(
+            self._commit_pending_editor_changes
+        )
         self._build_actions()
+        self._build_ai_chat_dock()
         self._apply_ui_theme(self.theme_mode, persist=False)
         self._build_hidden_inspector_compat()
         self.file_search_edit.textChanged.connect(self._refresh_file_list)
@@ -614,6 +559,35 @@ class MainWindow(QMainWindow):
         self._sync_undo_actions()
         QTimer.singleShot(1500, self._maybe_check_updates)
 
+    def _build_ai_chat_dock(self) -> None:
+        self.llm_chat_panel = LLMChatPanel(
+            self.tool_service,
+            self.settings,
+            parent=self,
+        )
+        self.llm_chat_panel.statusChanged.connect(self._show_status)
+        self.ai_chat_dock = QDockWidget("AI 对话", self)
+        self.ai_chat_dock.setObjectName("aiChatDock")
+        self.ai_chat_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea
+            | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        self.ai_chat_dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetClosable
+            | QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        )
+        self.ai_chat_dock.setMinimumWidth(360)
+        self.ai_chat_dock.setWidget(self.llm_chat_panel)
+        self.addDockWidget(
+            Qt.DockWidgetArea.RightDockWidgetArea,
+            self.ai_chat_dock,
+        )
+        toggle_action = self.ai_chat_dock.toggleViewAction()
+        toggle_action.setText("AI 对话")
+        self.view_menu.addSeparator()
+        self.view_menu.addAction(toggle_action)
+
     def _resolved_workspace_path(self, default: str | Path) -> Path:
         default_path = Path(default).resolve()
         raw = self.settings.value(self.SETTINGS_WORKSPACE_ROOT)
@@ -630,6 +604,7 @@ class MainWindow(QMainWindow):
         candidate = Path(path)
         if candidate.is_file():
             self.settings.setValue(self.SETTINGS_LAST_DOCUMENT, str(candidate.resolve()))
+            self.settings.setValue(self.SETTINGS_WORKSPACE_ROOT, str(self.workdir.resolve()))
             self.settings.sync()
 
     def _restore_last_opened_document(self) -> bool:
@@ -637,16 +612,29 @@ class MainWindow(QMainWindow):
         if raw in (None, ""):
             return False
         candidate = Path(str(raw)).resolve()
-        try:
-            candidate.relative_to(self.workdir.resolve())
-        except Exception:
-            return False
         if not candidate.is_file():
             return False
         try:
             self._open_existing_session_or_file(candidate)
         except Exception:
             return False
+        return True
+
+    def _adopt_workspace_for_document(self, path: Path) -> bool:
+        """Keep the file browser and persisted workspace aligned with an external JSON."""
+
+        candidate = path.resolve()
+        try:
+            candidate.relative_to(self.workdir.resolve())
+            return False
+        except ValueError:
+            pass
+        self.workdir = candidate.parent
+        self.controller.set_workspace_root(self.workdir)
+        self.settings.setValue(self.SETTINGS_WORKSPACE_ROOT, str(self.workdir))
+        self.settings.sync()
+        self._document_sessions.clear()
+        self._current_session_key = None
         return True
 
     def _choose_workspace_directory(self) -> None:
@@ -801,11 +789,26 @@ class MainWindow(QMainWindow):
         self.numeric_linkage_checkbox.toggled.connect(self._toggle_numeric_linkage)
         toolbar.addWidget(self.numeric_linkage_checkbox)
 
-        self.pen_mode_checkbox = QCheckBox("画笔")
-        self.pen_mode_checkbox.setToolTip("开启后：Ctrl+左键自由绘制，Ctrl+右键删除整条线")
-        self.pen_mode_checkbox.toggled.connect(lambda checked: self.canvas.set_pen_mode(checked))
-        toolbar.addWidget(self.pen_mode_checkbox)
+        self.graph_view_button_group = QButtonGroup(self)
+        self.graph_view_button_group.setExclusive(True)
+        self.formal_view_button = QPushButton("正式图")
+        self.formal_view_button.setCheckable(True)
+        self.formal_view_button.setChecked(True)
+        self.plan_view_button = QPushButton("计划图")
+        self.plan_view_button.setCheckable(True)
+        self.graph_view_button_group.addButton(self.formal_view_button)
+        self.graph_view_button_group.addButton(self.plan_view_button)
+        self.formal_view_button.clicked.connect(
+            lambda: self._switch_graph_view("formal")
+        )
+        self.plan_view_button.clicked.connect(
+            lambda: self._switch_graph_view("plan")
+        )
+        toolbar.addWidget(self.formal_view_button)
+        toolbar.addWidget(self.plan_view_button)
+
         self.pen_color_button = QPushButton("颜色")
+        self.pen_color_button.setToolTip("Ctrl+左键直接绘制；Ctrl+右键删除命中的整条笔迹")
         self.pen_color_button.clicked.connect(self._choose_pen_color)
         toolbar.addWidget(self.pen_color_button)
         self.pen_width_combo = QComboBox()
@@ -827,9 +830,11 @@ class MainWindow(QMainWindow):
         self.restore_layout_button.clicked.connect(self._restore_canvas_layout)
         toolbar.addWidget(self.restore_layout_button)
 
-        self.optimize_layout_button = QPushButton("优化连线")
-        self.optimize_layout_button.clicked.connect(self._optimize_connection_layout)
-        toolbar.addWidget(self.optimize_layout_button)
+        self.top_optimize_layout_button = QPushButton("优化连线")
+        self.top_optimize_layout_button.clicked.connect(
+            self._optimize_connection_layout
+        )
+        toolbar.addWidget(self.top_optimize_layout_button)
         self.group_selected_button = QPushButton("打组")
         self.group_selected_button.clicked.connect(self._group_selected_nodes)
         toolbar.addWidget(self.group_selected_button)
@@ -894,7 +899,17 @@ class MainWindow(QMainWindow):
         self.canvas = NodeCanvasView(self.controller.schema, self.controller)
         self.canvas.selectionSummaryChanged.connect(self._handle_selection_summary)
         self.canvas.interactionBusyChanged.connect(self._handle_canvas_busy_changed)
-        layout.addWidget(self.canvas, 1)
+        self.plan_canvas = PlanCanvasView(self.controller.schema, self.controller)
+        self.plan_canvas.selectionSummaryChanged.connect(
+            self._handle_selection_summary
+        )
+        self.plan_canvas.interactionBusyChanged.connect(
+            self._handle_canvas_busy_changed
+        )
+        self.graph_view_stack = QStackedWidget()
+        self.graph_view_stack.addWidget(self.canvas)
+        self.graph_view_stack.addWidget(self.plan_canvas)
+        layout.addWidget(self.graph_view_stack, 1)
 
         self.search_panel = QFrame(self, Qt.WindowType.Popup)
         self.search_panel.setObjectName("searchPanel")
@@ -919,6 +934,62 @@ class MainWindow(QMainWindow):
         search_layout.addWidget(self.search_results)
         self.search_panel.hide()
         return panel
+
+    def _active_canvas(self):
+        if (
+            self._graph_view_mode == "plan"
+            and hasattr(self, "plan_canvas")
+        ):
+            return self.plan_canvas
+        return self.canvas
+
+    def _switch_graph_view(self, view: str) -> None:
+        normalized = "plan" if str(view).strip().lower() == "plan" else "formal"
+        previous = self._graph_view_mode
+        selected_node_uuids = (
+            list(self._active_canvas().selected_node_uuids())
+            if hasattr(self, "canvas")
+            else []
+        )
+        self._graph_view_mode = normalized
+        if hasattr(self, "graph_view_stack"):
+            target = self.plan_canvas if normalized == "plan" else self.canvas
+            self.graph_view_stack.setCurrentWidget(target)
+            if normalized == "plan":
+                self.controller.ensure_plan_layout()
+                self.plan_canvas.rebuild_scene()
+            if normalized != previous:
+                target.select_node_uuids(selected_node_uuids)
+            target.setFocus()
+        for button, checked in (
+            (getattr(self, "formal_view_button", None), normalized == "formal"),
+            (getattr(self, "plan_view_button", None), normalized == "plan"),
+        ):
+            if button is None:
+                continue
+            blocked = button.blockSignals(True)
+            button.setChecked(checked)
+            button.blockSignals(blocked)
+        service = getattr(self, "tool_service", None)
+        if service is not None:
+            service.set_current_view(normalized)
+        formal_only = normalized == "formal"
+        for control in (
+            getattr(self, "top_optimize_layout_button", None),
+            getattr(self, "optimize_layout_button", None),
+            getattr(self, "group_selected_button", None),
+            getattr(self, "pen_color_button", None),
+            getattr(self, "pen_width_combo", None),
+            getattr(self, "concise_mode_checkbox", None),
+            getattr(self, "concise_settings_button", None),
+        ):
+            if control is not None:
+                control.setEnabled(formal_only)
+        if formal_only and hasattr(self, "group_selected_button"):
+            self.group_selected_button.setEnabled(
+                len(self.canvas.selected_node_uuids()) >= 2
+            )
+        self._show_status("已切换到计划图" if normalized == "plan" else "已切换到正式图")
 
     def _build_inspector_panel(self) -> QWidget:
         panel = QWidget()
@@ -1083,7 +1154,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(open_workspace_action)
 
         self.export_csv_action = QAction("\u5bfc\u51fa\u5230 CSV", self)
-        self.export_csv_action.triggered.connect(self._show_export_csv_dialog)
+        self.export_csv_action.triggered.connect(self._export_current_graph_csv)
         self.menuBar().addAction(self.export_csv_action)
         self._register_shortcut_action("export_csv", self.export_csv_action, QKeySequence())
 
@@ -1236,8 +1307,12 @@ class MainWindow(QMainWindow):
         }
 
     def _apply_wheel_settings(self, settings: dict[str, str]) -> None:
-        self.canvas.zoom_wheel_modifier = settings.get("zoom_modifier", "ctrl")
-        self.canvas.horizontal_wheel_modifier = settings.get("horizontal_modifier", "alt_shift")
+        zoom_modifier = settings.get("zoom_modifier", "ctrl")
+        horizontal_modifier = settings.get("horizontal_modifier", "alt_shift")
+        self.canvas.zoom_wheel_modifier = zoom_modifier
+        self.canvas.horizontal_wheel_modifier = horizontal_modifier
+        self.plan_canvas.zoom_wheel_modifier = zoom_modifier
+        self.plan_canvas.horizontal_wheel_modifier = horizontal_modifier
 
     def _show_shortcut_settings_dialog(self) -> None:
         shortcuts = {
@@ -1336,7 +1411,7 @@ class MainWindow(QMainWindow):
         self.controller.refresh_derived()
         self._sync_undo_actions()
 
-    def _open_existing_session_or_file(self, path: str | Path) -> None:
+    def _open_existing_session_or_file(self, path: str | Path, *, force_reload: bool = False) -> None:
         candidate = Path(path).expanduser().resolve()
         if self._is_install_owned_path(candidate):
             raise ValueError(
@@ -1345,10 +1420,19 @@ class MainWindow(QMainWindow):
         path = candidate
         session_key = self._session_key_for_path(path)
         current_key = self._session_key_for_path(self.controller.document.path)
-        if current_key and current_key != session_key:
-            self._stash_current_document_session()
-        session = self._document_sessions.get(session_key or "")
+        try:
+            candidate.relative_to(self.workdir.resolve())
+            workspace_changed = False
+        except ValueError:
+            workspace_changed = True
+        session = (
+            None
+            if force_reload or workspace_changed
+            else self._document_sessions.get(session_key or "")
+        )
         if session:
+            if current_key and current_key != session_key:
+                self._stash_current_document_session()
             self._switch_to_document(
                 session["document"],
                 undo_stack=session["undo_stack"],
@@ -1361,6 +1445,12 @@ class MainWindow(QMainWindow):
             return
         document = load_document(self.controller.schema, path)
         undo_stack = QUndoStack(self)
+        if workspace_changed:
+            self._adopt_workspace_for_document(candidate)
+        elif current_key and current_key != session_key:
+            self._stash_current_document_session()
+        if force_reload and session_key:
+            self._document_sessions.pop(session_key, None)
         try:
             group_dir = str(Path(path).resolve().parent.relative_to(self.workdir.resolve())).replace("\\", "/")
         except Exception:
@@ -1394,7 +1484,6 @@ class MainWindow(QMainWindow):
                 self.activate_from_external_request()
                 return False
             try:
-                self._stash_current_document_session()
                 self._open_existing_session_or_file(candidate)
             except Exception as exc:
                 QMessageBox.warning(self, "无法打开", str(exc))
@@ -1568,6 +1657,8 @@ class MainWindow(QMainWindow):
             app.setStyleSheet(stylesheet_for_theme(self.theme_mode))
         if hasattr(self, "canvas"):
             self.canvas.set_ui_theme(self.theme_mode)
+        if hasattr(self, "plan_canvas"):
+            self.plan_canvas.set_ui_theme(self.theme_mode)
         if hasattr(self, "dark_theme_action"):
             self.dark_theme_action.setChecked(self.theme_mode is ThemeMode.DARK)
             self.light_theme_action.setChecked(self.theme_mode is ThemeMode.LIGHT)
@@ -1736,7 +1827,6 @@ class MainWindow(QMainWindow):
         if not self._ensure_safe_to_leave_document(path):
             return
         try:
-            self._stash_current_document_session()
             self._open_existing_session_or_file(path)
         except Exception as exc:
             QMessageBox.warning(self, "无法打开", str(exc))
@@ -1755,7 +1845,6 @@ class MainWindow(QMainWindow):
         if not self._ensure_safe_to_leave_document(path):
             return
         try:
-            self._stash_current_document_session()
             self._open_existing_session_or_file(path)
         except Exception as exc:
             QMessageBox.warning(self, "无法打开", str(exc))
@@ -1864,7 +1953,7 @@ class MainWindow(QMainWindow):
             selected = self._selected_node_list_uuids()
             if selected:
                 return selected
-        return self.canvas.selected_node_uuids()
+        return self._active_canvas().selected_node_uuids()
 
     def _copy_selection(self) -> None:
         focus_widget = self.focusWidget()
@@ -1872,7 +1961,7 @@ class MainWindow(QMainWindow):
             focus_widget.copy()
             return
         node_uuids = self._active_selected_node_uuids()
-        if not node_uuids:
+        if not node_uuids and self._graph_view_mode == "formal":
             image_uuids = self.canvas.selected_canvas_image_uuids()
             if len(image_uuids) == 1:
                 item = self.canvas.image_items.get(image_uuids[0])
@@ -1918,6 +2007,9 @@ class MainWindow(QMainWindow):
                 self._show_status("截图无法粘贴：格式无效、数量已满或图片数据过大")
 
     def _duplicate_selection(self) -> None:
+        if self._graph_view_mode == "plan":
+            self.plan_canvas.duplicate_selected_as_sibling()
+            return
         node_uuids = self._active_selected_node_uuids()
         payload = self.controller.serialize_selection(node_uuids)
         if not payload:
@@ -1936,6 +2028,9 @@ class MainWindow(QMainWindow):
         self.controller.paste_payload(payload, position, connect_from=connect_from)
 
     def _delete_selection(self) -> None:
+        if self._graph_view_mode == "plan":
+            self.plan_canvas.delete_selected_subtrees(self)
+            return
         node_uuids = self._active_selected_node_uuids()
         image_uuids = self.canvas.selected_canvas_image_uuids()
         connection_pairs = self.canvas.selected_connection_pairs()
@@ -1947,7 +2042,10 @@ class MainWindow(QMainWindow):
             self.controller.remove_connection(from_uuid, to_uuid)
 
     def _group_selected_nodes(self) -> None:
-        node_uuids = self.canvas.selected_node_uuids()
+        if self._graph_view_mode != "formal":
+            self._show_status("计划图请使用拖动主题来排序或调整父级")
+            return
+        node_uuids = self._active_selected_node_uuids()
         if len(node_uuids) < 2:
             self._show_status("请先框选或多选至少两个节点后再打组")
             return
@@ -2015,6 +2113,13 @@ class MainWindow(QMainWindow):
             self._position_search_popup()
 
     def _select_canvas_target(self, node_uuid: str) -> None:
+        if self._graph_view_mode == "plan":
+            self.plan_canvas.focus_on_node(
+                node_uuid,
+                target_scale=None,
+                emphasize=False,
+            )
+            return
         if node_uuid in self.canvas.node_items:
             self.canvas.node_items[node_uuid].setSelected(True)
             return
@@ -2024,37 +2129,34 @@ class MainWindow(QMainWindow):
 
     def _jump_to_search_result(self, item: QListWidgetItem) -> None:
         node_uuid = item.data(Qt.ItemDataRole.UserRole)
-        self.canvas.focus_on_node(node_uuid, target_scale=1.05, emphasize=False)
+        self._active_canvas().focus_on_node(
+            node_uuid,
+            target_scale=1.05,
+            emphasize=False,
+        )
         self._select_canvas_target(node_uuid)
         self.search_panel.close()
 
     def _restore_canvas_layout(self) -> None:
-        self.canvas.reset_view_layout()
+        self._active_canvas().reset_view_layout()
 
     def _show_csv_preview(self) -> None:
         self.csv_dialog.show()
         self.csv_dialog.raise_()
         self.csv_dialog.activateWindow()
 
-    def _open_update_host(self) -> UpdateHostWindow | None:
-        if self._update_host_window is None:
-            try:
-                public_key_pem = bundled_public_key_pem()
-            except UpdateValidationError as exc:
-                QMessageBox.warning(self, "更新主机不可用", str(exc))
-                return None
-            self._update_host_window = UpdateHostWindow(
-                public_key_pem=public_key_pem,
-                parent=self,
-            )
-        self._update_host_window.show()
-        self._update_host_window.raise_()
-        self._update_host_window.activateWindow()
-        return self._update_host_window
+    def _open_update_host(self) -> bool:
+        """Show the independent Host process without taking ownership of it."""
 
-    def _close_update_host(self) -> None:
-        if self._update_host_window is not None:
-            self._update_host_window.close()
+        if self._update_host_manager.show_or_start():
+            self._show_status("局域网更新主机已在独立进程中打开")
+            return True
+        QMessageBox.warning(
+            self,
+            "更新主机不可用",
+            "无法启动 L2DUpdateHost。请重新运行安装器以修复 Host 组件。",
+        )
+        return False
 
     def _open_performance_tool(self) -> None:
         if self.performance_dialog is None:
@@ -2083,40 +2185,25 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "添加参考图失败", "参考图数量已满，或图片数据超过安全限制。")
 
-    def _show_export_csv_dialog(self) -> None:
-        files = [(relative_path, self._read_file_display_meta(self.workdir / relative_path)[1]) for relative_path in self.controller.file_list()]
-        if not files:
-            QMessageBox.information(self, "\u65e0\u53ef\u5bfc\u51fa\u5185\u5bb9", "\u5f53\u524d\u5de5\u4f5c\u76ee\u5f55\u4e0b\u6ca1\u6709\u53ef\u5bfc\u51fa\u7684 JSON \u914d\u7f6e\u3002")
-            return
-        self.export_csv_dialog.set_files(files)
-        if self.export_csv_dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        selected = self.export_csv_dialog.selected_files()
-        if not selected:
-            QMessageBox.information(self, "\u672a\u9009\u62e9\u914d\u7f6e", "\u8bf7\u5148\u9009\u62e9\u8981\u5bfc\u51fa\u7684 JSON \u914d\u7f6e\u3002")
-            return
-        self._export_selected_configs_to_csv(selected)
+    def _export_current_graph_csv(self) -> Path | None:
+        """Export the current in-memory chart without saving or clearing dirty state."""
 
-    def _export_selected_configs_to_csv(self, relative_paths: list[str]) -> None:
-        documents = []
-        current_relative = self._relative_path_for_document(self.controller.document.path)
-        for relative_path in relative_paths:
-            if current_relative and relative_path == current_relative:
-                documents.append(self.controller.document)
-                continue
-            try:
-                documents.append(load_document(self.controller.schema, self.workdir / relative_path))
-            except Exception as exc:
-                QMessageBox.warning(self, "\u5bfc\u51fa\u5931\u8d25", f"{relative_path}\n{exc}")
-                return
-        output_path = self.workdir / build_csv_export_filename()
-        export_documents_to_csv(
-            self.controller.schema,
-            documents,
-            output_path,
-            template_search_roots=(self.workdir, Path(__file__).resolve().parent.parent),
-        )
-        self._show_status(f"\u5df2\u5bfc\u51fa CSV: {output_path.name}")
+        self._commit_pending_editor_changes()
+        try:
+            output_path = export_current_document_csv(
+                self.controller.schema,
+                self.controller.document,
+                self.workdir,
+                template_search_roots=(
+                    self.workdir,
+                    Path(__file__).resolve().parent.parent,
+                ),
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "导出失败", str(exc))
+            return None
+        self._show_status(f"已导出当前图表 CSV: {output_path.name}")
+        return output_path
 
     def _update_csv_preview(self, rows) -> None:
         self.csv_dialog.update_rows(rows)
@@ -2194,7 +2281,8 @@ class MainWindow(QMainWindow):
         value, accepted = QInputDialog.getText(
             self,
             "更新设置",
-            "局域网更新主机地址（例如 http://主机名:8765）：",
+            "手动回退地址（可留空，仅使用局域网自动发现）：\n"
+            "例如 http://主机名:8765",
             QLineEdit.EchoMode.Normal,
             current,
         )
@@ -2204,8 +2292,8 @@ class MainWindow(QMainWindow):
             self.settings.remove(self.SETTINGS_UPDATE_BASE_URL)
             self.settings.remove(self.SETTINGS_UPDATE_LAST_CHECK)
             self.settings.sync()
-            self._show_status("已关闭局域网更新检查")
-            return False
+            self._show_status("已清除手动回退地址；将使用局域网自动发现")
+            return True
         try:
             normalized = UpdateClient.normalize_base_url(value)
         except UpdateValidationError as exc:
@@ -2214,13 +2302,12 @@ class MainWindow(QMainWindow):
         self.settings.setValue(self.SETTINGS_UPDATE_BASE_URL, normalized.rstrip("/"))
         self.settings.remove(self.SETTINGS_UPDATE_LAST_CHECK)
         self.settings.sync()
-        self._show_status(f"更新主机已设置为 {normalized.rstrip('/')}")
+        self._show_status(
+            f"手动回退地址已设置为 {normalized.rstrip('/')}"
+        )
         return True
 
     def _maybe_check_updates(self) -> None:
-        base_url = str(self.settings.value(self.SETTINGS_UPDATE_BASE_URL, "") or "").strip()
-        if not base_url:
-            return
         last_raw = str(self.settings.value(self.SETTINGS_UPDATE_LAST_CHECK, "") or "").strip()
         if last_raw:
             try:
@@ -2235,17 +2322,13 @@ class MainWindow(QMainWindow):
 
     def _check_for_updates(self, *, manual: bool) -> None:
         base_url = str(self.settings.value(self.SETTINGS_UPDATE_BASE_URL, "") or "").strip()
-        if not base_url:
-            if not manual or not self._configure_update_host():
-                return
-            base_url = str(self.settings.value(self.SETTINGS_UPDATE_BASE_URL, "") or "").strip()
         client = self._update_client_or_warn(quiet=not manual)
         if client is None:
             return
         self._update_check_is_manual = manual
         self._pending_update_manifest = None
-        self._show_status("正在检查局域网更新…")
-        client.check(base_url)
+        self._show_status("正在自动发现局域网更新主机并检查更新…")
+        client.check_automatically(base_url)
 
     def _record_successful_update_check(self) -> None:
         self.settings.setValue(
@@ -2350,12 +2433,29 @@ class MainWindow(QMainWindow):
             return
         if not self._confirm_safe_to_close():
             return
+        host_preparation = self._update_host_manager.prepare_for_update()
+        if not host_preparation.stopped:
+            QMessageBox.critical(
+                self,
+                "无法安全停止更新主机",
+                "L2DUpdateHost 未能在 5 秒内优雅退出。为避免损坏安装，已中止升级；"
+                "请从 Host 托盘选择“退出”后重试。",
+            )
+            return
         restart = sys.executable if getattr(sys, "frozen", False) else None
         if not launch_installer_after_exit(
             installer_path,
             current_pid=os.getpid(),
             restart_executable=restart,
+            restart_host_executable=host_preparation.restart_executable,
+            host_pid=host_preparation.pid,
+            restore_host_process=host_preparation.was_running,
+            restore_host_service=host_preparation.service_was_running,
+            restore_host_login=host_preparation.restore_at_login,
+            restore_host_run_entry=host_preparation.login_startup_enabled,
         ):
+            if host_preparation.was_running:
+                self._update_host_manager.show_or_start()
             QMessageBox.critical(self, "无法安装", "无法启动外部安装程序。")
             return
         self._approved_update_exit = True
@@ -2431,7 +2531,11 @@ class MainWindow(QMainWindow):
 
     def _focus_node_from_directory(self, node_uuid: str) -> None:
         if node_uuid:
-            self.canvas.focus_on_node(node_uuid, target_scale=None, emphasize=True)
+            self._active_canvas().focus_on_node(
+                node_uuid,
+                target_scale=None,
+                emphasize=True,
+            )
             self._select_canvas_target(node_uuid)
 
     def _focus_node_from_tree_item(self, item: QTreeWidgetItem, _column: int = 0) -> None:
@@ -2446,10 +2550,12 @@ class MainWindow(QMainWindow):
         elif kind == "group":
             group_uuid = payload.get("group_uuid")
             if isinstance(group_uuid, str) and group_uuid:
+                self._switch_graph_view("formal")
                 self.canvas.focus_on_group(group_uuid)
         elif kind == "table":
             table_id = payload.get("table_id")
             if isinstance(table_id, str) and table_id:
+                self._switch_graph_view("formal")
                 self.canvas.focus_on_parameter_table(table_id)
 
     def _refresh_node_list_panel(self) -> None:
@@ -2644,7 +2750,6 @@ class MainWindow(QMainWindow):
         )
         if not paths:
             return
-        self._stash_current_document_session()
         self._open_existing_session_or_file(paths[0])
         relative_path = self._relative_path_for_document(paths[0])
         if relative_path:
@@ -2654,17 +2759,23 @@ class MainWindow(QMainWindow):
     def _focus_selected_node(self) -> None:
         node_uuid = self.controller.selected_node_uuid
         if not node_uuid:
-            selected = self.canvas.selected_node_uuids()
+            selected = self._active_canvas().selected_node_uuids()
             node_uuid = selected[0] if selected else None
         if not node_uuid:
             return
-        self.canvas.focus_on_node(node_uuid, target_scale=1.15, emphasize=True)
+        self._active_canvas().focus_on_node(
+            node_uuid,
+            target_scale=1.15,
+            emphasize=True,
+        )
         self._select_canvas_target(node_uuid)
 
     def _handle_selection_summary(self, node_uuids, connection_pairs) -> None:
         del connection_pairs
         if hasattr(self, "group_selected_button"):
-            self.group_selected_button.setEnabled(len(node_uuids) >= 2)
+            self.group_selected_button.setEnabled(
+                self._graph_view_mode == "formal" and len(node_uuids) >= 2
+            )
         if len(node_uuids) == 1:
             self.controller.set_selected_node(node_uuids[0])
         elif not node_uuids:
@@ -2694,7 +2805,8 @@ class MainWindow(QMainWindow):
         width = self.search_panel.width()
         height = max(58, popup_size.height())
         self.search_panel.resize(width, height)
-        anchor = self.canvas.viewport().mapToGlobal(self.canvas.viewport().rect().topRight())
+        canvas = self._active_canvas()
+        anchor = canvas.viewport().mapToGlobal(canvas.viewport().rect().topRight())
         x = anchor.x() - width - 16
         y = anchor.y() + 16
         screen = QGuiApplication.screenAt(anchor)
@@ -2715,13 +2827,21 @@ class MainWindow(QMainWindow):
         self.file_search_edit.selectAll()
 
     def _jump_to_validation_node(self, node_uuid: str) -> None:
-        self.canvas.focus_on_node(node_uuid, target_scale=1.25, emphasize=True)
+        self._active_canvas().focus_on_node(
+            node_uuid,
+            target_scale=1.25,
+            emphasize=True,
+        )
         self._select_canvas_target(node_uuid)
 
     def _focus_initial_node_guidance(self, _reason: str = "") -> None:
         idle0 = next((node for node in self.controller.document.nodes if node.type == "Idle0"), None)
         if idle0:
-            self.canvas.focus_on_node(idle0.uuid, target_scale=1.35, emphasize=True)
+            self._active_canvas().focus_on_node(
+                idle0.uuid,
+                target_scale=1.35,
+                emphasize=True,
+            )
             self._select_canvas_target(idle0.uuid)
         if _reason:
             self.statusBar().showMessage(_reason, 6000)
@@ -2755,22 +2875,115 @@ class MainWindow(QMainWindow):
                     self.controller.preferences.debug_json_field_names,
                 )
 
-    def _reload_schema(self) -> None:
+    def _confirm_reload_current_document_from_disk(self) -> bool:
+        if not self.controller.document.path:
+            return True
+        self._auto_save_timer.stop()
+        self._commit_pending_editor_changes()
+        self._auto_save_timer.stop()
+        if not self._is_dirty():
+            return True
+        close_policy = str(os.environ.get("L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY") or "").strip().lower()
+        if close_policy == "save":
+            return bool(self._save_current_file(silent=True, allow_incomplete=True))
+        if close_policy in {"discard", "ignore"} or os.environ.get("L2D_CONFIG_EDITOR_NO_CLOSE_PROMPT") == "1":
+            return True
+        box = QMessageBox(self)
+        box.setWindowTitle("重新读取当前 JSON")
+        box.setText("当前 JSON 有尚未保存的修改。继续重载会放弃这些修改，并以磁盘文件为准。")
+        reload_button = box.addButton("放弃修改并重载", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        return box.clickedButton() == reload_button
+
+    def _activate_reloaded_schema_document(
+        self,
+        schema,
+        document,
+        *,
+        schema_path: str | None,
+    ) -> None:
+        """Atomically install a preflighted schema/document pair."""
+
+        undo_stack = QUndoStack(self)
+        session_key = self._session_key_for_path(document.path)
         try:
-            self.controller.reload_schema()
-            self._show_status("字段配置已重载")
+            group_dir = str(
+                Path(document.path).resolve().parent.relative_to(
+                    self.workdir.resolve()
+                )
+            ).replace("\\", "/")
+        except (AttributeError, TypeError, ValueError):
+            group_dir = ""
+        if group_dir == ".":
+            group_dir = ""
+
+        self._auto_save_timer.stop()
+        self._document_sessions.clear()
+        self.controller.schema = schema
+        self.controller.preferences.schema_path = (
+            str(schema_path) if schema_path else None
+        )
+        self.controller.document = document
+        self.controller.undo_stack = undo_stack
+        self.controller.selected_node_uuid = None
+        self.controller.preferences.global_mode = "simple"
+        self._pending_group_dir = group_dir
+        self._current_session_key = session_key
+        self._set_active_undo_stack(undo_stack)
+        self._mark_saved_checkpoint(saved=True)
+
+        # Views must receive the new schema before any document-derived signals.
+        self.controller.schemaChanged.emit()
+        self.controller.globalModeChanged.emit(
+            self.controller.preferences.global_mode
+        )
+        self.controller.interactionCreationModeChanged.emit(
+            self.controller.document.interaction_creation_mode
+        )
+        self.controller.documentLoaded.emit()
+        self.controller.pathChanged.emit(document.path)
+        self.controller.refresh_derived()
+        self._sync_undo_actions()
+
+    def _reload_schema(self) -> None:
+        current_path = self.controller.document.path
+        if current_path and not self._confirm_reload_current_document_from_disk():
+            self._show_status("已取消重载")
+            return
+        try:
+            if current_path:
+                schema_path = self.controller.preferences.schema_path
+                schema = load_editor_schema(schema_path)
+                document = load_document(schema, current_path)
+                self._activate_reloaded_schema_document(
+                    schema,
+                    document,
+                    schema_path=schema_path,
+                )
+                self._refresh_file_list()
+                self._show_status(f"字段配置与当前 JSON 已重载：{Path(current_path).name}")
+            else:
+                self.controller.reload_schema()
+                self._document_sessions.clear()
+                self._show_status("字段配置已重载")
         except Exception as exc:
             QMessageBox.critical(self, "重载失败", str(exc))
 
     def _handle_schema_changed(self) -> None:
         self.canvas.schema = self.controller.schema
         self.canvas.rebuild_scene()
+        self.plan_canvas.schema = self.controller.schema
+        self.plan_canvas.rebuild_scene()
         self.inspector_form.schema = self.controller.schema
         self.csv_dialog.set_schema(self.controller.schema)
         if self.controller.selected_node_uuid:
             self._update_inspector(self.controller.selected_node_uuid)
 
     def _optimize_connection_layout(self) -> None:
+        if self._graph_view_mode != "formal":
+            self._show_status("优化连线仅适用于正式图")
+            return
         self.canvas.optimize_connection_layout()
 
     def _relative_path_for_document(self, path: str | Path | None) -> str | None:
@@ -2804,7 +3017,7 @@ class MainWindow(QMainWindow):
 
     def _run_auto_save(self) -> None:
         if self._has_saved_snapshot and self.controller.document.path and self._is_dirty():
-            if hasattr(self, "canvas") and self.canvas.is_busy():
+            if hasattr(self, "canvas") and self._active_canvas().is_busy():
                 self._auto_save_timer.start(500)
                 return
             saved = self._save_current_file(silent=True, allow_incomplete=True)
@@ -2855,11 +3068,9 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._approved_update_exit:
-            self._close_update_host()
             event.accept()
             return
         if self._confirm_safe_to_close():
-            self._close_update_host()
             event.accept()
         else:
             event.ignore()

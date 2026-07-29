@@ -26,6 +26,46 @@ class CanvasViewState:
 
 
 @dataclass
+class PlanTopicRecord:
+    """Plan-only metadata for one real graph node."""
+
+    node_uuid: str
+    parent_uuid: str | None = None
+    order: int = 0
+    plan_title: str = ""
+    collapsed: bool = False
+    branch_color: str = ""
+
+    def clone(self) -> "PlanTopicRecord":
+        return PlanTopicRecord(
+            node_uuid=self.node_uuid,
+            parent_uuid=self.parent_uuid,
+            order=int(self.order),
+            plan_title=self.plan_title,
+            collapsed=bool(self.collapsed),
+            branch_color=self.branch_color,
+        )
+
+
+@dataclass
+class PlanLayout:
+    """Plan-view hierarchy and viewport, kept separate from formal coordinates."""
+
+    topics: list[PlanTopicRecord] = field(default_factory=list)
+    view: CanvasViewState = field(default_factory=CanvasViewState)
+
+    def clone(self) -> "PlanLayout":
+        return PlanLayout(
+            topics=[topic.clone() for topic in self.topics],
+            view=CanvasViewState(
+                scale=float(self.view.scale),
+                offset_x=float(self.view.offset_x),
+                offset_y=float(self.view.offset_y),
+            ),
+        )
+
+
+@dataclass
 class ConnectionRecord:
     from_uuid: str
     to_uuid: str
@@ -155,6 +195,7 @@ class DocumentModel:
     canvas_images: list[CanvasImageRecord] = field(default_factory=list)
     canvas_strokes: list[CanvasStrokeRecord] = field(default_factory=list)
     canvas_view: CanvasViewState = field(default_factory=CanvasViewState)
+    plan_layout: PlanLayout = field(default_factory=PlanLayout)
     state: DocumentState = field(default_factory=DocumentState)
     global_mode: str = "simple"
     interaction_creation_mode: str = "auto"

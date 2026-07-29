@@ -1,21 +1,24 @@
 # L2D 交互图表编辑器
 
-面向 Live2D 交互配置的 Windows 节点式编辑器。1.0.0 使用 Python
+面向 Live2D 交互配置的 Windows 节点式编辑器。1.2.0 使用 Python
 3.13.14、PySide6 6.11.1 和动态 Qt 共享库，支持 Windows 10/11 x64。
+本版本的升级要点和兼容提示见
+[`docs/RELEASE_NOTES_1.2.0.md`](docs/RELEASE_NOTES_1.2.0.md)。
 
 ## 安装与启动
 
 普通用户安装：
 
-- `L2DConfigEditor-Setup-1.0.0-x64.exe`：编辑器，默认安装到
-  `%LOCALAPPDATA%\Programs\L2DConfigEditor`。局域网更新主机已经作为编辑器的
-  内置工具提供，不再需要第二个程序或安装器。
+- `L2DConfigEditor-Setup-1.2.0-x64.exe`：一个安装包同时安装两个独立
+  `onedir` 程序。编辑器位于 `%LOCALAPPDATA%\Programs\L2DConfigEditor`，
+  托盘更新主机位于 `%LOCALAPPDATA%\Programs\L2DUpdateHost`。二者只有一个
+  卸载入口，关闭编辑器不会停止 Host。
 
 安装器为当前用户安装，不需要管理员权限。只有用户主动创建
 局域网防火墙规则时才会单独显示 UAC 确认。程序未做 Authenticode 签名，
 Windows 可能显示“未知发布者”。
 
-覆盖安装会安全迁移并移除旧版独立 `L2DUpdateHost` 程序及快捷方式，同时
+覆盖安装会把旧版独立 `L2DUpdateHost` 原地迁移为伴随组件，同时
 保留 `%LOCALAPPDATA%\4S4H1\L2DUpdateHost` 中已经导入的发布缓存。编辑器
 不会把安装目录作为 JSON 工作区；若旧安装目录或安装恢复目录中检测到
 JSON、CSV 或图片工作文件，升级和卸载会中止并提示先迁移文件。
@@ -33,10 +36,20 @@ uv run python -m l2d_config_editor.main
 
 - 唯一 `idle0` 根节点，以及 `TouchIdle`、`TouchDrag`、
   `ParameterTrigger`、返回默认待机和备注等节点。
-- 快速创建和连接、贝塞尔曲线、持久化分组、参考图片、撤销/重做、
-  搜索、CSV 预览与导出。
-- 画笔模式：`Ctrl+左键` 自由绘制，`Ctrl+右键` 删除整条线；颜色、粗细及
+- 快速创建和连接、贝塞尔曲线、持久化分组、可自由调整大小且带外框的参考图片、撤销/重做、
+  搜索、CSV 预览与当前图表直接导出。
+- 无开关画笔：`Ctrl+左键` 直接自由绘制，`Ctrl+右键` 删除整条线；在节点上
+  Ctrl 单击仍用于追加/反选，拖动超过 4 个视口像素才转为绘制。颜色、粗细及
   每条线的点集随 JSON 保存。
+- “正式图 / 计划图”一键切换。计划图使用同一份节点和正式连线，以左根右展
+  脑图快速整理标题、层级、顺序与折叠状态；多父、环和额外边显示为虚线引用，
+  正式图坐标与业务字段不受影响。
+- 右侧“AI 对话”面板支持 OpenAI-compatible
+  `/v1/chat/completions`、流式回复和工具调用。查询自动执行，增改删及文件写入
+  会先显示结构化预览并等待确认。
+- 稳定的用户级 `EditorToolService` 白名单可查询、校验、批量编辑、布局、
+  切换视图、撤销/重做、保存和导出当前图表；不暴露 Shell、进程、更新器或
+  任意文件访问。
 - 简洁展示模式：按用户选择只显示备注、过渡动画、目标待机等字段，并可
   独立隐藏分组、参数表、参考图片和画笔。
 - 深色/浅色主题、缩放感知的节点标题和备注字号。
@@ -45,12 +58,25 @@ uv run python -m l2d_config_editor.main
 
 ## JSON 格式
 
-当前写出格式为 `format_version: 3`。v3 在 v2 的基础上增加顶层
-`canvas_strokes`：
+当前写出格式为 `format_version: 4`。v4 保留 v3 的 `canvas_strokes`，并增加
+与正式坐标分离的顶层 `plan_layout`：
 
 ```json
 {
-  "format_version": 3,
+  "format_version": 4,
+  "plan_layout": {
+    "topics": [
+      {
+        "node_uuid": "uuid",
+        "parent_uuid": null,
+        "order": 0,
+        "plan_title": "计划标题",
+        "collapsed": false,
+        "branch_color": "#2F80ED"
+      }
+    ],
+    "view": {"scale": 1.0, "offset_x": 0.0, "offset_y": 0.0}
+  },
   "canvas_strokes": [
     {
       "id": "uuid",
@@ -62,27 +88,45 @@ uv run python -m l2d_config_editor.main
 }
 ```
 
-v1/v2 文件会在内存中兼容迁移；旧 `Initial` 节点会迁移为 `idle0`，旧回收站
-字段会被忽略。高于 v3 的未知格式会拒绝覆盖保存。保存使用同目录临时文件
+v1-v3 文件会在内存中确定性迁移；旧 `Initial` 节点会迁移为 `idle0`，旧回收站
+字段会被忽略。旧版编辑器会拒绝 v4，避免静默丢失计划数据；高于 v4 的未知
+格式也会拒绝覆盖保存。保存使用同目录临时文件
 和原子替换，避免产生半份 JSON。
 
 默认 schema 位于 `l2d_config_editor/editor_schema.json`。
 
 ## 局域网签名更新
 
-1. 在发布电脑的编辑器中打开“工具 → 局域网更新主机…”。
-2. 更新主机模块导入完整 `.l2dupdate` 包；导入前会验证 Ed25519 原始清单签名、
+1. 在发布电脑的编辑器中打开“工具 → 局域网更新主机…”，编辑器会唤醒独立
+   `L2DUpdateHost` 托盘进程。
+2. 在 Host 中导入完整 `.l2dupdate` 包；导入前会验证 Ed25519 原始清单签名、
    产品/平台/版本、安装器大小及 SHA-256，然后才原子发布。
-3. 点击“复制地址”，在其他电脑的编辑器中保存一次
-   `http://主机名:8765` 或显示的局域网 IP 地址。
-4. 编辑器异步检查并后台下载；下载验证成功后由用户确认安装。
+3. 启动服务并按需创建局域网防火墙规则。其他电脑会通过固定 UDP `48765`
+   自动发现 Host，不需要输入地址或 HTTP 端口；“更新设置…”中的地址仅作为
+   自动发现失败后的手动回退。
+4. 编辑器启动后每天最多自动检查一次，也可随时选择“检查更新…”。发现仅提供
+   候选 HTTP 地址；客户端仍会验证内嵌公钥签名、产品/平台/版本及 SHA-256，
+   下载验证成功后才由用户确认安装。
+
+发布电脑若保留了构建生成的完整安装器，直接运行
+`L2DConfigEditor-Setup-1.2.0-x64.exe` 覆盖安装最简单，不必先启动 Host。
+若当前已是 1.1.0 或更高版本，手上只有 `.l2dupdate` 时也可在 Host
+中导入并发布更高版本、保持服务运行，再在同一个编辑器中选择“检查更新…”；
+客户端会显式探测本机回环地址。1.0.0 尚不包含 UDP 自动发现，因此从 1.0.0
+首次升级到 1.1.0 时，应直接运行 Setup，或先在旧版 Host 发布更新包，再复制
+Host 窗口显示的地址；同机也可按窗口端口手动构造
+`http://127.0.0.1:<HTTP 端口>` 作为回退地址后检查更新。
+确认安装后，编辑器通过 IPC 让 Host 优雅退出，再由缓存目录中的外部交接进程
+覆盖升级；安装成功后重启编辑器，并在升级前 Host 正在运行时恢复 Host。
 
 更新主机只提供 `GET`、`HEAD`、`Range` 和 `ETag`，不提供远程上传接口，只保留
 最新和前一版本；客户端也只缓存两个经过签名复核的安装器供用户确认后手动
 回滚。HTTP 不提供传输保密；真实性与完整性由嵌入公钥、Ed25519 签名和
 SHA-256 负责。低于清单 `minimum_supported_version` 的客户端必须从 Host
-首页手动安装完整版本。防火墙按钮创建的规则仅允许当前编辑器程序、当前
-TCP 端口、Private/Domain 网络和 `LocalSubnet`。
+首页手动安装完整版本。防火墙按钮创建的规则仅允许独立 Host 程序、当前
+HTTP TCP 端口、固定发现 UDP `48765`、Private/Domain 网络和 `LocalSubnet`。
+发现等待和每个候选 Host 的清单请求都有固定超时；发现端口冲突时 HTTP 服务
+仍可用，Host 窗口会提示复制地址作为手动回退。
 
 ## 测试与本地发布
 

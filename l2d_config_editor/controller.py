@@ -23,12 +23,16 @@ from .commands import (
     RemoveCanvasImagesCommand,
     RemoveCanvasStrokesCommand,
     RemoveNodesCommand,
+    ResizeCanvasImagesCommand,
     SetGroupsCommand,
+    SetPlanLayoutCommand,
+    SetPlanViewCommand,
     UpdateEditorSettingsCommand,
     UpdateFieldCommand,
     UpdateFieldsCommand,
     UpdateManyFieldsCommand,
     UpdateNodeLockCommand,
+    UpdatePlanGraphCommand,
 )
 from .constants import CLIPBOARD_MIME
 from .logic import (
@@ -79,6 +83,20 @@ from .models import (
     EditorPreferences,
     GroupRecord,
     NodeRecord,
+    PlanLayout,
+    PlanTopicRecord,
+)
+from .plan import (
+    PLAN_BRANCH_COLORS,
+    PLAN_TITLE_MAX_LENGTH,
+    clone_connections,
+    normalize_plan_layout,
+    plan_children_map,
+    plan_is_descendant,
+    plan_root_uuid,
+    plan_subtree_uuids,
+    plan_topic_map,
+    plan_topic_title,
 )
 from .perf_tools import get_performance_recorder
 from .reference_images import (
@@ -87,7 +105,9 @@ from .reference_images import (
     MAX_REFERENCE_IMAGE_BYTES,
     MAX_REFERENCE_IMAGE_COUNT,
     canonicalize_reference_image,
+    reference_image_dimensions,
     trusted_reference_image_size,
+    validated_reference_image_display_size,
 )
 from .schema import load_editor_schema
 
@@ -116,6 +136,8 @@ class EditorController(QObject):
     groupsChanged = Signal()
     canvasImagesChanged = Signal()
     canvasStrokesChanged = Signal()
+    planLayoutChanged = Signal()
+    planViewChanged = Signal(object)
 
     def __init__(self, parent: QObject | None = None, schema_path: str | None = None) -> None:
         super().__init__(parent)
@@ -217,6 +239,7 @@ class EditorController(QObject):
 
     def refresh_derived(self, *, emit_node_updates: bool = False) -> None:
         with performance_recorder.measure("controller.refresh_derived", "controller", self._perf_document_meta()):
+            self.ensure_plan_layout()
             self._ensure_parameter_table_metadata()
             self.document.groups = normalized_document_groups(self.document)
             with performance_recorder.measure("controller.reassign_function_ids", "controller", self._perf_document_meta()):
@@ -303,6 +326,427 @@ class EditorController(QObject):
     def get_canvas_stroke(self, stroke_uuid: str) -> CanvasStrokeRecord | None:
         return next((stroke for stroke in self.document.canvas_strokes if stroke.uuid == stroke_uuid), None)
 
+    def ensure_plan_layout(self) -> PlanLayout:
+        before = self.document.plan_layout.clone()
+        normalized = normalize_plan_layout(self.document)
+        if normalized != before:
+            self.planLayoutChanged.emit()
+        return normalized
+
+    def plan_topic(self, node_uuid: str) -> PlanTopicRecord | None:
+        topic = plan_topic_map(self.document).get(node_uuid)
+        return topic.clone() if topic is not None else None
+
+    def plan_topic_records(self) -> list[PlanTopicRecord]:
+        self.ensure_plan_layout()
+        return [topic.clone() for topic in self.document.plan_layout.topics]
+
+    def plan_title(self, node_uuid: str) -> str:
+        node = self.get_node(node_uuid)
+        if node is None:
+            return ""
+        return plan_topic_title(self.schema, self.document, node)
+
+    def plan_children(self, parent_uuid: str | None) -> list[str]:
+        return list(plan_children_map(self.document).get(parent_uuid, ()))
+
+    def plan_subtree_uuids(self, node_uuid: str) -> list[str]:
+        return plan_subtree_uuids(self.document, node_uuid)
+
+    def set_plan_view_state(
+        self,
+        scale: float,
+        offset_x: float,
+        offset_y: float,
+    ) -> bool:
+        values = (float(scale), float(offset_x), float(offset_y))
+        if not all(math.isfinite(value) for value in values):
+            return False
+        normalized = (
+            max(0.03, min(8.0, values[0])),
+            values[1],
+            values[2],
+        )
+        current_view = self.document.plan_layout.view
+        current = (
+            float(current_view.scale),
+            float(current_view.offset_x),
+            float(current_view.offset_y),
+        )
+        if all(
+            math.isclose(old, new, rel_tol=0.0, abs_tol=1e-6)
+            for old, new in zip(current, normalized)
+        ):
+            return False
+        self.undo_stack.push(SetPlanViewCommand(self, current, normalized))
+        return True
+
+    def _normalized_plan_layout_for(
+        self,
+        *,
+        nodes: list[NodeRecord] | None = None,
+        connections: list[ConnectionRecord] | None = None,
+        layout: PlanLayout | None = None,
+    ) -> PlanLayout:
+        staging = copy.copy(self.document)
+        staging.nodes = [node.clone() for node in (nodes if nodes is not None else self.document.nodes)]
+        staging.connections = clone_connections(connections if connections is not None else self.document.connections)
+        staging.plan_layout = (layout or self.document.plan_layout).clone()
+        return normalize_plan_layout(staging).clone()
+
+    @staticmethod
+    def _set_plan_sibling_order(
+        layout: PlanLayout,
+        parent_uuid: str | None,
+        ordered_node_uuids: list[str],
+    ) -> None:
+        order_by_uuid = {
+            node_uuid: order for order, node_uuid in enumerate(ordered_node_uuids)
+        }
+        for topic in layout.topics:
+            if topic.parent_uuid == parent_uuid and topic.node_uuid in order_by_uuid:
+                topic.order = order_by_uuid[topic.node_uuid]
+
+    def create_plan_topic(
+        self,
+        parent_uuid: str | None,
+        title: str = "新主题",
+        *,
+        after_uuid: str | None = None,
+    ) -> str | None:
+        allowed, reason = self.can_create_graph_content()
+        if not allowed:
+            self._emit_meta_blocked(reason)
+            return None
+        if parent_uuid is not None and self.get_node(parent_uuid) is None:
+            return None
+        resolved_title = str(title or "").strip() or "新主题"
+        old_layout = self.ensure_plan_layout().clone()
+        siblings = list(plan_children_map(self.document).get(parent_uuid, ()))
+        insert_index = len(siblings)
+        if after_uuid in siblings:
+            insert_index = siblings.index(after_uuid) + 1
+
+        if parent_uuid is not None:
+            parent = self.get_node(parent_uuid)
+            base_x = float(parent.ui_position.get("x", 0.0)) + 420.0
+            base_y = float(parent.ui_position.get("y", 0.0)) + 120.0 * insert_index
+        else:
+            base_x = 420.0
+            base_y = 120.0 * insert_index
+        node = create_node(
+            self.schema,
+            self.document,
+            "Comment",
+            (base_x, base_y),
+        )
+        node.fields["content"] = resolved_title
+        new_layout = old_layout.clone()
+        if parent_uuid is not None:
+            for record in new_layout.topics:
+                if record.node_uuid == parent_uuid:
+                    # Creating a child must reveal it immediately.  Keeping
+                    # this in the same layout command makes Tab a single undo
+                    # transaction even when its parent was collapsed.
+                    record.collapsed = False
+                    break
+        new_layout.topics.append(
+            PlanTopicRecord(
+                node_uuid=node.uuid,
+                parent_uuid=parent_uuid,
+                order=insert_index,
+                plan_title=resolved_title,
+                collapsed=False,
+                branch_color=PLAN_BRANCH_COLORS[insert_index % len(PLAN_BRANCH_COLORS)],
+            )
+        )
+        siblings.insert(insert_index, node.uuid)
+        self._set_plan_sibling_order(new_layout, parent_uuid, siblings)
+        new_connections = clone_connections(self.document.connections)
+        added_connections: list[ConnectionRecord] = []
+        if parent_uuid is not None:
+            connection = ConnectionRecord(from_uuid=parent_uuid, to_uuid=node.uuid)
+            new_connections.append(connection)
+            added_connections.append(connection)
+        new_layout = self._normalized_plan_layout_for(
+            nodes=[*self.document.nodes, node],
+            connections=new_connections,
+            layout=new_layout,
+        )
+        self.undo_stack.beginMacro("新增计划主题")
+        try:
+            self.undo_stack.push(AddNodesCommand(self, [node], added_connections))
+            self.undo_stack.push(
+                SetPlanLayoutCommand(
+                    self,
+                    old_layout,
+                    new_layout,
+                    label="设置计划主题",
+                )
+            )
+        finally:
+            self.undo_stack.endMacro()
+        self.set_selected_node(node.uuid)
+        return node.uuid
+
+    def set_plan_title(self, node_uuid: str, title: str) -> bool:
+        topic = self.plan_topic(node_uuid)
+        if topic is None:
+            return False
+        resolved = str(title or "").strip()
+        if topic.plan_title == resolved:
+            return False
+        old_layout = self.document.plan_layout.clone()
+        new_layout = old_layout.clone()
+        for record in new_layout.topics:
+            if record.node_uuid == node_uuid:
+                record.plan_title = resolved
+                break
+        self.undo_stack.push(
+            SetPlanLayoutCommand(self, old_layout, new_layout, label="修改计划标题")
+        )
+        return True
+
+    def set_plan_collapsed(self, node_uuid: str, collapsed: bool) -> bool:
+        topic = self.plan_topic(node_uuid)
+        if topic is None or topic.collapsed == bool(collapsed):
+            return False
+        old_layout = self.document.plan_layout.clone()
+        new_layout = old_layout.clone()
+        for record in new_layout.topics:
+            if record.node_uuid == node_uuid:
+                record.collapsed = bool(collapsed)
+                break
+        self.undo_stack.push(
+            SetPlanLayoutCommand(self, old_layout, new_layout, label="折叠计划分支")
+        )
+        return True
+
+    def toggle_plan_collapsed(self, node_uuid: str) -> bool:
+        topic = self.plan_topic(node_uuid)
+        return bool(topic and self.set_plan_collapsed(node_uuid, not topic.collapsed))
+
+    def set_plan_branch_color(self, node_uuid: str, color: str) -> bool:
+        resolved = str(color or "").strip().upper()
+        if len(resolved) != 7 or not resolved.startswith("#"):
+            return False
+        try:
+            int(resolved[1:], 16)
+        except ValueError:
+            return False
+        topics = plan_topic_map(self.document)
+        topic = topics.get(node_uuid)
+        root_uuid = plan_root_uuid(self.document)
+        if topic is None or node_uuid == root_uuid:
+            return False
+        branch_root = node_uuid
+        while topics.get(branch_root) and topics[branch_root].parent_uuid not in {None, root_uuid}:
+            branch_root = topics[branch_root].parent_uuid or branch_root
+        descendants = set(plan_subtree_uuids(self.document, branch_root))
+        if all(
+            record.branch_color.upper() == resolved
+            for record in self.document.plan_layout.topics
+            if record.node_uuid in descendants
+        ):
+            return False
+        old_layout = self.document.plan_layout.clone()
+        new_layout = old_layout.clone()
+        for record in new_layout.topics:
+            if record.node_uuid in descendants:
+                record.branch_color = resolved
+        self.undo_stack.push(
+            SetPlanLayoutCommand(self, old_layout, new_layout, label="修改计划分支颜色")
+        )
+        return True
+
+    def reorder_plan_topic(self, node_uuid: str, index: int) -> bool:
+        topic = self.plan_topic(node_uuid)
+        if topic is None or node_uuid == plan_root_uuid(self.document):
+            return False
+        siblings = list(plan_children_map(self.document).get(topic.parent_uuid, ()))
+        if node_uuid not in siblings:
+            return False
+        old_index = siblings.index(node_uuid)
+        siblings.remove(node_uuid)
+        resolved_index = max(0, min(int(index), len(siblings)))
+        siblings.insert(resolved_index, node_uuid)
+        if old_index == resolved_index:
+            return False
+        old_layout = self.document.plan_layout.clone()
+        new_layout = old_layout.clone()
+        self._set_plan_sibling_order(new_layout, topic.parent_uuid, siblings)
+        self.undo_stack.push(
+            SetPlanLayoutCommand(self, old_layout, new_layout, label="重排计划主题")
+        )
+        return True
+
+    def reparent_plan_topic(
+        self,
+        node_uuid: str,
+        new_parent_uuid: str | None,
+        *,
+        index: int | None = None,
+    ) -> bool:
+        root_uuid = plan_root_uuid(self.document)
+        topic = self.plan_topic(node_uuid)
+        if topic is None or node_uuid == root_uuid:
+            return False
+        if new_parent_uuid is not None and self.get_node(new_parent_uuid) is None:
+            return False
+        if new_parent_uuid == node_uuid or (
+            new_parent_uuid is not None
+            and plan_is_descendant(self.document, new_parent_uuid, node_uuid)
+        ):
+            return False
+        if topic.parent_uuid == new_parent_uuid:
+            return self.reorder_plan_topic(
+                node_uuid,
+                topic.order if index is None else index,
+            )
+
+        old_layout = self.document.plan_layout.clone()
+        new_layout = old_layout.clone()
+        old_siblings = list(plan_children_map(self.document).get(topic.parent_uuid, ()))
+        if node_uuid in old_siblings:
+            old_siblings.remove(node_uuid)
+        new_siblings = list(plan_children_map(self.document).get(new_parent_uuid, ()))
+        if node_uuid in new_siblings:
+            new_siblings.remove(node_uuid)
+        resolved_index = len(new_siblings) if index is None else max(0, min(int(index), len(new_siblings)))
+        new_siblings.insert(resolved_index, node_uuid)
+        for record in new_layout.topics:
+            if record.node_uuid == node_uuid:
+                record.parent_uuid = new_parent_uuid
+                record.order = resolved_index
+                break
+        self._set_plan_sibling_order(new_layout, topic.parent_uuid, old_siblings)
+        self._set_plan_sibling_order(new_layout, new_parent_uuid, new_siblings)
+
+        old_connections = clone_connections(self.document.connections)
+        new_connections = [
+            connection
+            for connection in clone_connections(self.document.connections)
+            if not (
+                topic.parent_uuid is not None
+                and connection.from_uuid == topic.parent_uuid
+                and connection.to_uuid == node_uuid
+            )
+        ]
+        if new_parent_uuid is not None and not any(
+            connection.from_uuid == new_parent_uuid and connection.to_uuid == node_uuid
+            for connection in new_connections
+        ):
+            new_connections.append(
+                ConnectionRecord(from_uuid=new_parent_uuid, to_uuid=node_uuid)
+            )
+        new_layout = self._normalized_plan_layout_for(
+            connections=new_connections,
+            layout=new_layout,
+        )
+        self.undo_stack.push(
+            UpdatePlanGraphCommand(
+                self,
+                old_layout,
+                new_layout,
+                old_connections,
+                new_connections,
+                label="调整计划主题层级",
+            )
+        )
+        return True
+
+    def promote_plan_topic(self, node_uuid: str) -> bool:
+        topics = plan_topic_map(self.document)
+        topic = topics.get(node_uuid)
+        root_uuid = plan_root_uuid(self.document)
+        if topic is None or node_uuid == root_uuid:
+            return False
+        if topic.parent_uuid is None:
+            # A top-level item in the virtual "unconnected" branch is
+            # promoted into the real root rather than becoming a no-op.
+            return bool(
+                root_uuid
+                and self.reparent_plan_topic(node_uuid, root_uuid)
+            )
+        parent = topics.get(topic.parent_uuid)
+        if parent is None or parent.parent_uuid is None:
+            return False
+        parent_siblings = list(plan_children_map(self.document).get(parent.parent_uuid, ()))
+        try:
+            insert_index = parent_siblings.index(parent.node_uuid) + 1
+        except ValueError:
+            insert_index = len(parent_siblings)
+        return self.reparent_plan_topic(
+            node_uuid,
+            parent.parent_uuid,
+            index=insert_index,
+        )
+
+    def delete_plan_subtree(self, node_uuid: str) -> bool:
+        return self.delete_plan_subtrees([node_uuid])
+
+    def delete_plan_subtrees(self, node_uuids: list[str]) -> bool:
+        root_uuid = plan_root_uuid(self.document)
+        subtree: set[str] = set()
+        for node_uuid in node_uuids:
+            if node_uuid == root_uuid:
+                continue
+            subtree.update(plan_subtree_uuids(self.document, node_uuid))
+        nodes = [
+            node
+            for node in self.document.nodes
+            if node.uuid in subtree and self.schema.nodes[node.type].copyable
+        ]
+        if not nodes:
+            return False
+        removed_ids = {node.uuid for node in nodes}
+        connections = [
+            connection
+            for connection in self.document.connections
+            if connection.from_uuid in removed_ids or connection.to_uuid in removed_ids
+        ]
+        old_layout = self.ensure_plan_layout().clone()
+        remaining_nodes = [
+            node for node in self.document.nodes if node.uuid not in removed_ids
+        ]
+        remaining_connections = [
+            connection
+            for connection in self.document.connections
+            if connection.from_uuid not in removed_ids
+            and connection.to_uuid not in removed_ids
+        ]
+        pruned_layout = old_layout.clone()
+        pruned_layout.topics = [
+            topic for topic in pruned_layout.topics if topic.node_uuid not in removed_ids
+        ]
+        new_layout = self._normalized_plan_layout_for(
+            nodes=remaining_nodes,
+            connections=remaining_connections,
+            layout=pruned_layout,
+        )
+        self.undo_stack.beginMacro(f"删除计划子树（{len(nodes)} 个节点）")
+        try:
+            self.undo_stack.push(
+                SetPlanLayoutCommand(
+                    self,
+                    old_layout,
+                    new_layout,
+                    label="删除计划主题布局",
+                )
+            )
+            self.undo_stack.push(
+                RemoveNodesCommand(
+                    self,
+                    nodes,
+                    connections,
+                    self.group_records(),
+                    plan_layout=old_layout,
+                )
+            )
+        finally:
+            self.undo_stack.endMacro()
+        return True
+
     def add_canvas_stroke(
         self,
         points: list[tuple[float, float]],
@@ -365,14 +809,13 @@ class EditorController(QObject):
             return None
         current_pixels = 0.0
         for record in self.document.canvas_images:
-            try:
-                width = max(1.0, float(record.ui_size.get("width", 1.0)))
-                height = max(1.0, float(record.ui_size.get("height", 1.0)))
-            except (AttributeError, OverflowError, TypeError, ValueError):
+            intrinsic_size = reference_image_dimensions(
+                record.data_base64,
+                record.mime_type,
+            )
+            if intrinsic_size is None:
                 return None
-            if not math.isfinite(width) or not math.isfinite(height):
-                return None
-            current_pixels += width * height
+            current_pixels += intrinsic_size[0] * intrinsic_size[1]
         if current_pixels + actual_size[0] * actual_size[1] > MAX_DOCUMENT_REFERENCE_IMAGE_PIXELS:
             return None
         image = CanvasImageRecord(
@@ -409,6 +852,27 @@ class EditorController(QObject):
             self.undo_stack.push(
                 MoveCanvasImagesCommand(self, {image_uuid: old_position}, {image_uuid: new_position})
             )
+
+    def resize_canvas_image(self, image_uuid: str, size: tuple[float, float]) -> None:
+        image = self.get_canvas_image(image_uuid)
+        if not image or image.locked:
+            return
+        new_size = validated_reference_image_display_size(size)
+        old_size = validated_reference_image_display_size(
+            (
+                image.ui_size.get("width", 1.0),
+                image.ui_size.get("height", 1.0),
+            )
+        )
+        if new_size is None or old_size is None or old_size == new_size:
+            return
+        self.undo_stack.push(
+            ResizeCanvasImagesCommand(
+                self,
+                {image_uuid: old_size},
+                {image_uuid: new_size},
+            )
+        )
 
     def set_selected_node(self, node_uuid: str | None) -> None:
         self.selected_node_uuid = node_uuid
@@ -861,10 +1325,24 @@ class EditorController(QObject):
             for connection in self.document.connections
             if connection.from_uuid in selected_set and connection.to_uuid in selected_set
         ]
+        topics = plan_topic_map(self.document)
+        plan_topics = [
+            {
+                "node_uuid": node.uuid,
+                "parent_uuid": topics[node.uuid].parent_uuid,
+                "order": int(topics[node.uuid].order),
+                "plan_title": topics[node.uuid].plan_title,
+                "collapsed": bool(topics[node.uuid].collapsed),
+                "branch_color": topics[node.uuid].branch_color,
+            }
+            for node in selected_nodes
+            if node.uuid in topics
+        ]
         payload = {
-            "clipboard_version": 2,
+            "clipboard_version": 3,
             "nodes": [self._serialize_node(node) for node in selected_nodes],
             "connections": connections,
+            "plan_topics": plan_topics,
             "source_bounds": {"min_x": min_x, "min_y": min_y, "max_x": max_x, "max_y": max_y},
         }
         return json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -879,8 +1357,14 @@ class EditorController(QObject):
             raise ValueError("节点剪贴板数据必须是对象")
         raw_nodes = raw.get("nodes", [])
         raw_connections = raw.get("connections", [])
+        raw_plan_topics = raw.get("plan_topics", [])
         raw_bounds = raw.get("source_bounds", {})
-        if not isinstance(raw_nodes, list) or not isinstance(raw_connections, list) or not isinstance(raw_bounds, dict):
+        if (
+            not isinstance(raw_nodes, list)
+            or not isinstance(raw_connections, list)
+            or not isinstance(raw_plan_topics, list)
+            or not isinstance(raw_bounds, dict)
+        ):
             raise ValueError("节点剪贴板数据结构无效")
 
         nodes: list[dict[str, Any]] = []
@@ -930,6 +1414,60 @@ class EditorController(QObject):
                 raise ValueError("节点剪贴板连线端点无效")
             connections.append({"from_uuid": from_uuid, "to_uuid": to_uuid})
 
+        plan_topics: list[dict[str, Any]] = []
+        seen_plan_topics: set[str] = set()
+        for item in raw_plan_topics:
+            if not isinstance(item, dict):
+                raise ValueError("节点剪贴板包含无效计划主题")
+            node_uuid = item.get("node_uuid")
+            parent_uuid = item.get("parent_uuid")
+            order = item.get("order", 0)
+            title = item.get("plan_title", "")
+            collapsed = item.get("collapsed", False)
+            branch_color = item.get("branch_color", "")
+            if (
+                not isinstance(node_uuid, str)
+                or not node_uuid
+                or node_uuid in seen_plan_topics
+            ):
+                raise ValueError("节点剪贴板计划主题标识无效")
+            if parent_uuid is not None and (
+                not isinstance(parent_uuid, str) or not parent_uuid
+            ):
+                raise ValueError("节点剪贴板计划父主题无效")
+            if isinstance(order, bool) or not isinstance(order, int) or order < 0:
+                raise ValueError("节点剪贴板计划顺序无效")
+            if not isinstance(title, str) or len(title) > PLAN_TITLE_MAX_LENGTH:
+                raise ValueError("节点剪贴板计划标题无效")
+            if not isinstance(collapsed, bool):
+                raise ValueError("节点剪贴板计划折叠状态无效")
+            if (
+                not isinstance(branch_color, str)
+                or (
+                    branch_color
+                    and (
+                        len(branch_color) != 7
+                        or not branch_color.startswith("#")
+                        or any(
+                            character not in "0123456789abcdefABCDEF"
+                            for character in branch_color[1:]
+                        )
+                    )
+                )
+            ):
+                raise ValueError("节点剪贴板计划分支颜色无效")
+            seen_plan_topics.add(node_uuid)
+            plan_topics.append(
+                {
+                    "node_uuid": node_uuid,
+                    "parent_uuid": parent_uuid,
+                    "order": order,
+                    "plan_title": title,
+                    "collapsed": collapsed,
+                    "branch_color": branch_color.upper(),
+                }
+            )
+
         bounds: dict[str, float] = {}
         for key in ("min_x", "min_y", "max_x", "max_y"):
             try:
@@ -939,7 +1477,13 @@ class EditorController(QObject):
             if not math.isfinite(value):
                 raise ValueError("节点剪贴板范围无效")
             bounds[key] = value
-        return {**raw, "nodes": nodes, "connections": connections, "source_bounds": bounds}
+        return {
+            **raw,
+            "nodes": nodes,
+            "connections": connections,
+            "plan_topics": plan_topics,
+            "source_bounds": bounds,
+        }
 
     def clipboard_bounds(self, payload: bytes) -> tuple[float, float, float, float]:
         raw = self._decode_clipboard_document(payload)
@@ -951,7 +1495,15 @@ class EditorController(QObject):
             float(bounds.get("max_y", 0.0)),
         )
 
-    def deserialize_clipboard(self, payload: bytes, position: tuple[float, float] | None = None) -> tuple[list[NodeRecord], list[ConnectionRecord]]:
+    def _deserialize_clipboard_content(
+        self,
+        payload: bytes,
+        position: tuple[float, float] | None = None,
+    ) -> tuple[
+        list[NodeRecord],
+        list[ConnectionRecord],
+        list[PlanTopicRecord],
+    ]:
         raw = self._decode_clipboard_document(payload)
         nodes: list[NodeRecord] = []
         staging_document = copy.copy(self.document)
@@ -1061,6 +1613,56 @@ class EditorController(QObject):
             for item in raw.get("connections", [])
             if item["from_uuid"] in uuid_map and item["to_uuid"] in uuid_map
         ]
+        plan_topics: list[PlanTopicRecord] = []
+        connection_pairs = {
+            (connection.from_uuid, connection.to_uuid)
+            for connection in connections
+        }
+        for item in raw.get("plan_topics", []):
+            old_uuid = item["node_uuid"]
+            new_uuid_value = uuid_map.get(old_uuid)
+            if new_uuid_value is None:
+                continue
+            source_parent_uuid = item.get("parent_uuid")
+            parent_uuid = uuid_map.get(source_parent_uuid or "")
+            if (
+                parent_uuid is None
+                and source_parent_uuid is not None
+                and self.get_node(source_parent_uuid) is not None
+            ):
+                # Same-document paste keeps an external plan parent.  A
+                # cross-document paste safely falls back to "unconnected".
+                parent_uuid = source_parent_uuid
+            plan_topics.append(
+                PlanTopicRecord(
+                    node_uuid=new_uuid_value,
+                    parent_uuid=parent_uuid,
+                    order=int(item.get("order", 0)),
+                    plan_title=str(item.get("plan_title", "")),
+                    collapsed=bool(item.get("collapsed", False)),
+                    branch_color=str(item.get("branch_color", "")),
+                )
+            )
+            pair = (parent_uuid, new_uuid_value)
+            if parent_uuid is not None and pair not in connection_pairs:
+                connections.append(
+                    ConnectionRecord(
+                        from_uuid=parent_uuid,
+                        to_uuid=new_uuid_value,
+                    )
+                )
+                connection_pairs.add(pair)
+        return nodes, connections, plan_topics
+
+    def deserialize_clipboard(
+        self,
+        payload: bytes,
+        position: tuple[float, float] | None = None,
+    ) -> tuple[list[NodeRecord], list[ConnectionRecord]]:
+        nodes, connections, _plan_topics = self._deserialize_clipboard_content(
+            payload,
+            position,
+        )
         return nodes, connections
 
     def paste_payload(
@@ -1069,14 +1671,102 @@ class EditorController(QObject):
         position: tuple[float, float] | None = None,
         *,
         connect_from: str | None = None,
+        override_plan_parent: bool = False,
+        plan_parent_uuid: str | None = None,
+        plan_after_uuid: str | None = None,
     ) -> list[str]:
-        nodes, connections = self.deserialize_clipboard(payload, position)
+        nodes, connections, plan_topics = self._deserialize_clipboard_content(
+            payload,
+            position,
+        )
         if not nodes:
             return []
         if connect_from and len(nodes) == 1:
             connections = list(connections)
-            connections.append(ConnectionRecord(from_uuid=connect_from, to_uuid=nodes[0].uuid))
-        self.undo_stack.push(AddNodesCommand(self, nodes, connections))
+            if not any(
+                connection.from_uuid == connect_from
+                and connection.to_uuid == nodes[0].uuid
+                for connection in connections
+            ):
+                connections.append(
+                    ConnectionRecord(
+                        from_uuid=connect_from,
+                        to_uuid=nodes[0].uuid,
+                    )
+                )
+        if len(nodes) == 1 and (override_plan_parent or connect_from):
+            destination_parent = (
+                plan_parent_uuid
+                if override_plan_parent
+                else connect_from
+            )
+            record = next(
+                (
+                    topic
+                    for topic in plan_topics
+                    if topic.node_uuid == nodes[0].uuid
+                ),
+                None,
+            )
+            previous_parent = record.parent_uuid if record is not None else None
+            if record is None:
+                record = PlanTopicRecord(node_uuid=nodes[0].uuid)
+                plan_topics.append(record)
+            record.parent_uuid = destination_parent
+            destination_siblings = plan_children_map(self.document).get(
+                destination_parent,
+                (),
+            )
+            if plan_after_uuid in destination_siblings:
+                after_topic = self.plan_topic(plan_after_uuid or "")
+                record.order = int(after_topic.order if after_topic else 0)
+            else:
+                record.order = len(destination_siblings)
+            if previous_parent != destination_parent:
+                connections = [
+                    connection
+                    for connection in connections
+                    if not (
+                        connection.from_uuid == previous_parent
+                        and connection.to_uuid == nodes[0].uuid
+                    )
+                ]
+            if destination_parent is not None and not any(
+                connection.from_uuid == destination_parent
+                and connection.to_uuid == nodes[0].uuid
+                for connection in connections
+            ):
+                connections.append(
+                    ConnectionRecord(
+                        from_uuid=destination_parent,
+                        to_uuid=nodes[0].uuid,
+                    )
+                )
+
+        old_layout = self.ensure_plan_layout().clone()
+        staged_layout = old_layout.clone()
+        staged_layout.topics.extend(topic.clone() for topic in plan_topics)
+        new_layout = self._normalized_plan_layout_for(
+            nodes=[*self.document.nodes, *nodes],
+            connections=[
+                *clone_connections(self.document.connections),
+                *clone_connections(connections),
+            ],
+            layout=staged_layout,
+        )
+        self.undo_stack.beginMacro("粘贴节点")
+        try:
+            self.undo_stack.push(AddNodesCommand(self, nodes, connections))
+            self.undo_stack.push(
+                SetPlanLayoutCommand(
+                    self,
+                    old_layout,
+                    new_layout,
+                    label="恢复计划主题元数据",
+                )
+            )
+        finally:
+            self.undo_stack.endMacro()
         self.set_selected_node(nodes[0].uuid)
         return [node.uuid for node in nodes]
 
@@ -1278,6 +1968,46 @@ class EditorController(QObject):
         self.document.groups = [group.clone() for group in groups]
         self.refresh_derived()
 
+    def _set_plan_layout(self, layout: PlanLayout) -> None:
+        current_view = self.document.plan_layout.view
+        replacement = layout.clone()
+        replacement.view.scale = float(current_view.scale)
+        replacement.view.offset_x = float(current_view.offset_x)
+        replacement.view.offset_y = float(current_view.offset_y)
+        self.document.plan_layout = replacement
+        self.planLayoutChanged.emit()
+
+    def _set_plan_view_state(
+        self,
+        scale: float,
+        offset_x: float,
+        offset_y: float,
+    ) -> None:
+        state = self.document.plan_layout.view
+        state.scale = max(0.03, min(8.0, float(scale)))
+        state.offset_x = float(offset_x)
+        state.offset_y = float(offset_y)
+        self.planViewChanged.emit(
+            (state.scale, state.offset_x, state.offset_y)
+        )
+
+    def _set_plan_graph_state(
+        self,
+        layout: PlanLayout,
+        connections: list[ConnectionRecord],
+    ) -> None:
+        current_view = self.document.plan_layout.view
+        self.document.connections = clone_connections(connections)
+        replacement = layout.clone()
+        replacement.view.scale = float(current_view.scale)
+        replacement.view.offset_x = float(current_view.offset_x)
+        replacement.view.offset_y = float(current_view.offset_y)
+        self.document.plan_layout = replacement
+        normalize_plan_layout(self.document)
+        self.connectionsChanged.emit()
+        self.planLayoutChanged.emit()
+        self.refresh_derived()
+
     def _insert_canvas_images(self, images: list[CanvasImageRecord]) -> None:
         existing = {image.uuid for image in self.document.canvas_images}
         self.document.canvas_images.extend(image for image in images if image.uuid not in existing)
@@ -1293,6 +2023,14 @@ class EditorController(QObject):
             image = self.get_canvas_image(image_uuid)
             if image is not None:
                 image.ui_position = {"x": float(position[0]), "y": float(position[1])}
+        self.canvasImagesChanged.emit()
+
+    def _resize_canvas_images(self, sizes: dict[str, tuple[float, float]]) -> None:
+        for image_uuid, size in sizes.items():
+            image = self.get_canvas_image(image_uuid)
+            validated = validated_reference_image_display_size(size)
+            if image is not None and validated is not None:
+                image.ui_size = {"width": validated[0], "height": validated[1]}
         self.canvasImagesChanged.emit()
 
     def _insert_canvas_strokes(self, strokes: list[CanvasStrokeRecord]) -> None:
@@ -1338,6 +2076,27 @@ class EditorController(QObject):
             self.nodeMoved.emit(node_uuid)
 
     def _add_connection(self, connection: ConnectionRecord) -> None:
+        target_topic = next(
+            (
+                topic
+                for topic in self.document.plan_layout.topics
+                if topic.node_uuid == connection.to_uuid
+            ),
+            None,
+        )
+        if (
+            target_topic is not None
+            and target_topic.parent_uuid is None
+            and target_topic.node_uuid != plan_root_uuid(self.document)
+        ):
+            siblings = [
+                topic
+                for topic in self.document.plan_layout.topics
+                if topic.parent_uuid == connection.from_uuid
+                and topic.node_uuid != connection.to_uuid
+            ]
+            target_topic.parent_uuid = connection.from_uuid
+            target_topic.order = len(siblings)
         self.document.connections.append(connection)
         self.connectionsChanged.emit()
         self.refresh_derived()

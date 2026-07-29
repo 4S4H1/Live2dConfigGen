@@ -75,10 +75,10 @@ class Idle0DocumentTests(unittest.TestCase):
 
         self.assertEqual([], document_to_csv_rows(self.schema, document))
 
-    def test_new_document_exports_format_version_three_with_idle0_root(self) -> None:
+    def test_new_document_exports_format_version_four_with_idle0_root(self) -> None:
         payload = export_document_dict(self.schema, create_document(self.schema))
 
-        self.assertEqual(3, payload["format_version"])
+        self.assertEqual(4, payload["format_version"])
         self.assertEqual("idle0", payload["meta"]["default_state"])
         self.assertEqual(["Idle0"], [node["type"] for node in payload["nodes"]])
 

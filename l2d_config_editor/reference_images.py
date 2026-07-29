@@ -14,6 +14,7 @@ MAX_REFERENCE_IMAGE_EDGE = 4096
 MAX_REFERENCE_IMAGE_PIXELS = 16_000_000
 MAX_REFERENCE_IMAGE_BYTES = 64 * 1024 * 1024
 MAX_REFERENCE_IMAGE_COUNT = 32
+MAX_REFERENCE_IMAGE_DISPLAY_EDGE = 100_000.0
 MAX_DOCUMENT_REFERENCE_IMAGE_BYTES = 128 * 1024 * 1024
 MAX_DOCUMENT_REFERENCE_IMAGE_PIXELS = 64_000_000
 SUPPORTED_REFERENCE_IMAGE_MIME_TYPES = {
@@ -24,6 +25,28 @@ SUPPORTED_REFERENCE_IMAGE_MIME_TYPES = {
     "image/webp",
 }
 SUPPORTED_REFERENCE_IMAGE_FORMATS = {b"png", b"jpeg", b"jpg", b"bmp", b"webp"}
+
+
+def validated_reference_image_display_size(
+    size: tuple[float, float] | list[float],
+) -> tuple[float, float] | None:
+    """Return a finite, positive canvas size that is safe for scene geometry."""
+
+    try:
+        width = float(size[0])
+        height = float(size[1])
+    except (IndexError, OverflowError, TypeError, ValueError):
+        return None
+    if not math.isfinite(width) or not math.isfinite(height):
+        return None
+    if (
+        width < 1.0
+        or height < 1.0
+        or width > MAX_REFERENCE_IMAGE_DISPLAY_EDGE
+        or height > MAX_REFERENCE_IMAGE_DISPLAY_EDGE
+    ):
+        return None
+    return width, height
 
 
 def _bounded_dimensions(width: int, height: int) -> tuple[int, int]:
@@ -82,6 +105,32 @@ def _decoded_reference_image_bytes(data_base64: str) -> bytes | None:
 def decoded_reference_image_size(data_base64: str) -> int | None:
     raw = _decoded_reference_image_bytes(data_base64)
     return len(raw) if raw is not None else None
+
+
+def reference_image_dimensions(
+    data_base64: str,
+    mime_type: str = "image/png",
+) -> tuple[float, float] | None:
+    """Read bounded intrinsic dimensions without decoding the full pixel buffer."""
+
+    if str(mime_type or "image/png").lower() not in SUPPORTED_REFERENCE_IMAGE_MIME_TYPES:
+        return None
+    raw = _decoded_reference_image_bytes(data_base64)
+    if raw is None:
+        return None
+    buffer = QBuffer()
+    buffer.setData(QByteArray(raw))
+    if not buffer.open(QIODevice.OpenModeFlag.ReadOnly):
+        return None
+    reader = QImageReader(buffer)
+    reader.setDecideFormatFromContent(True)
+    if bytes(reader.format()).lower() not in SUPPORTED_REFERENCE_IMAGE_FORMATS:
+        return None
+    source_size = reader.size()
+    if not source_size.isValid() or source_size.width() <= 0 or source_size.height() <= 0:
+        return None
+    width, height = _bounded_dimensions(source_size.width(), source_size.height())
+    return float(width), float(height)
 
 
 def trusted_reference_image_size(data_base64: str) -> int:

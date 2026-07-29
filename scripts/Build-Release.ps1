@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
     [string]$KeyDirectory = "$env:LOCALAPPDATA\4S4H1\release-keys",
-    [string]$Notes = "L2D 交互图表编辑器 1.0.0",
+    [string]$Notes = "1.2.0：独立托盘 Host、无开关画笔、计划模式、Tool/LLM 与当前图表 CSV。",
     [string]$MinimumSupportedVersion = "1.0.0"
 )
 
@@ -95,6 +95,8 @@ try {
     Assert-NativeSuccess "生成图标"
     & $VenvPython scripts/release_tools.py version-info --output build/windows/version_info.txt
     Assert-NativeSuccess "生成编辑器版本资源"
+    & $VenvPython scripts/release_tools.py version-info --host --output build/windows/host_version_info.txt
+    Assert-NativeSuccess "生成 Host 版本资源"
     & $VenvPython scripts/release_tools.py collect-licenses --output build/licenses
     Assert-NativeSuccess "收集第三方许可证"
     & $VenvPython scripts/run_tests.py
@@ -106,9 +108,16 @@ try {
     Clear-KnownBuildDirectory $WorkDir -Create
     & $VenvPython -m PyInstaller --noconfirm --clean --distpath $PyInstallerDist --workpath $WorkDir packaging/L2DConfigEditor.spec
     Assert-NativeSuccess "构建编辑器 onedir"
+    & $VenvPython -m PyInstaller --noconfirm --clean --distpath $PyInstallerDist --workpath $WorkDir packaging/L2DUpdateHost.spec
+    Assert-NativeSuccess "构建独立 Host onedir"
 
-    & $MakeNsis "/DVERSION=$Version" "/DSOURCE_DIR=$(Join-Path $PyInstallerDist 'L2DConfigEditor')" "/DOUTPUT_DIR=$ReleaseStageDir" packaging/editor-installer.nsi
-    Assert-NativeSuccess "构建编辑器安装器"
+    $EditorSourceDir = Join-Path $PyInstallerDist "L2DConfigEditor"
+    $HostSourceDir = Join-Path $PyInstallerDist "L2DUpdateHost"
+    if (-not (Test-Path -LiteralPath (Join-Path $HostSourceDir "L2DUpdateHost.exe") -PathType Leaf)) {
+        throw "Host onedir 未生成预期入口：$HostSourceDir"
+    }
+    & $MakeNsis "/DVERSION=$Version" "/DSOURCE_DIR=$EditorSourceDir" "/DHOST_SOURCE_DIR=$HostSourceDir" "/DOUTPUT_DIR=$ReleaseStageDir" packaging/editor-installer.nsi
+    Assert-NativeSuccess "构建双程序安装器"
 
     $EditorInstaller = Join-Path $ReleaseStageDir "L2DConfigEditor-Setup-$Version-x64.exe"
     if (-not (Test-Path -LiteralPath $EditorInstaller -PathType Leaf)) {

@@ -1615,6 +1615,153 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
                 if settings is not None:
                     settings.clear()
 
+    def test_main_window_restores_last_document_opened_outside_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ,
+            {"L2D_CONFIG_EDITOR_SETTINGS_DIR": str(Path(temp_dir) / "settings")},
+        ):
+            settings = None
+            first = None
+            second = None
+            try:
+                root = Path(temp_dir)
+                workspace = root / "workspace"
+                external = root / "svn" / "restore.json"
+                workspace.mkdir()
+                external.parent.mkdir()
+                save_document(get_default_schema(), create_document(get_default_schema()), external)
+
+                first = MainWindow(workspace, prefer_saved_workspace=False)
+                settings = first.settings
+                settings.clear()
+                first._open_existing_session_or_file(external)
+                self.assertEqual(str(external.resolve()), first.controller.document.path)
+                first.close()
+                first = None
+                settings.sync()
+
+                second = MainWindow(workspace, prefer_saved_workspace=False)
+                self.assertEqual(external.parent.resolve(), second.workdir)
+                self.assertEqual(str(external.resolve()), second.controller.document.path)
+                self.assertEqual(
+                    str(external.parent.resolve()),
+                    str(second.settings.value(MainWindow.SETTINGS_WORKSPACE_ROOT)),
+                )
+            finally:
+                if first is not None:
+                    first.close()
+                if second is not None:
+                    second.close()
+                if settings is not None:
+                    settings.clear()
+
+    def test_reload_schema_rereads_current_document_from_disk_and_bypasses_session_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            schema = get_default_schema()
+            first_path = root / "a.json"
+            second_path = root / "b.json"
+
+            first_document = create_document(schema)
+            first_document.meta.memo = "before SVN update"
+            save_document(schema, first_document, first_path)
+            save_document(schema, create_document(schema), second_path)
+
+            window = MainWindow(root, prefer_saved_workspace=False)
+            window._open_existing_session_or_file(first_path)
+            window._open_existing_session_or_file(second_path)
+            window._open_existing_session_or_file(first_path)
+            self.assertEqual("before SVN update", window.controller.document.meta.memo)
+            cached_undo_stack = window.controller.undo_stack
+            previous_schema = window.controller.schema
+
+            updated_document = create_document(schema)
+            updated_document.meta.memo = "after SVN update"
+            save_document(schema, updated_document, first_path)
+
+            window._reload_schema()
+
+            self.assertEqual("after SVN update", window.controller.document.meta.memo)
+            self.assertEqual(str(first_path.resolve()), window.controller.document.path)
+            self.assertIsNot(previous_schema, window.controller.schema)
+            self.assertIsNot(cached_undo_stack, window.controller.undo_stack)
+            self.assertEqual(0, window.controller.undo_stack.index())
+            self.assertEqual({}, window._document_sessions)
+            window.close()
+
+    def test_opening_invalid_external_json_does_not_change_workspace_or_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            current_path = workspace / "current.json"
+            invalid_path = root / "svn" / "broken.json"
+            invalid_path.parent.mkdir()
+            save_document(
+                get_default_schema(),
+                create_document(get_default_schema()),
+                current_path,
+            )
+            invalid_path.write_text("{", encoding="utf-8")
+
+            window = MainWindow(workspace, prefer_saved_workspace=False)
+            window._open_existing_session_or_file(current_path)
+            previous_document = window.controller.document
+            previous_undo_stack = window.controller.undo_stack
+            previous_sessions = dict(window._document_sessions)
+            previous_setting = str(
+                window.settings.value(MainWindow.SETTINGS_WORKSPACE_ROOT, "")
+                or ""
+            )
+
+            with self.assertRaises(json.JSONDecodeError):
+                window._open_existing_session_or_file(invalid_path)
+
+            self.assertEqual(workspace.resolve(), window.workdir)
+            self.assertIs(previous_document, window.controller.document)
+            self.assertIs(previous_undo_stack, window.controller.undo_stack)
+            self.assertEqual(previous_sessions, window._document_sessions)
+            self.assertEqual(
+                previous_setting,
+                str(
+                    window.settings.value(
+                        MainWindow.SETTINGS_WORKSPACE_ROOT,
+                        "",
+                    )
+                    or ""
+                ),
+            )
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
+    def test_failed_schema_document_reload_keeps_previous_runtime_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            current_path = root / "current.json"
+            save_document(
+                get_default_schema(),
+                create_document(get_default_schema()),
+                current_path,
+            )
+            window = MainWindow(root, prefer_saved_workspace=False)
+            window._open_existing_session_or_file(current_path)
+            previous_schema = window.controller.schema
+            previous_document = window.controller.document
+            previous_undo_stack = window.controller.undo_stack
+            previous_sessions = dict(window._document_sessions)
+            current_path.write_text("{", encoding="utf-8")
+
+            with patch.object(QMessageBox, "critical") as critical:
+                window._reload_schema()
+
+            critical.assert_called_once()
+            self.assertIs(previous_schema, window.controller.schema)
+            self.assertIs(previous_document, window.controller.document)
+            self.assertIs(previous_undo_stack, window.controller.undo_stack)
+            self.assertEqual(previous_sessions, window._document_sessions)
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
     def test_node_title_updates_when_draw_name_changes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)

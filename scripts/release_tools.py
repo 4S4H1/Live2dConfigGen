@@ -116,9 +116,11 @@ def verify_environment() -> None:
         raise SystemExit("锁定构建环境版本不匹配：" + "；".join(mismatches))
 
 
-def version_info(output: Path) -> None:
+def version_info(output: Path, *, host: bool = False) -> None:
     parts = [int(part) for part in Version(VERSION).release]
     parts += [0] * (4 - len(parts))
+    product_id = "L2DUpdateHost" if host else PRODUCT_ID
+    product_name = "L2D 局域网更新主机" if host else PRODUCT_NAME
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
         f"""VSVersionInfo(
@@ -126,11 +128,11 @@ def version_info(output: Path) -> None:
     mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)),
   kids=[StringFileInfo([StringTable('080404B0', [
     StringStruct('CompanyName', '{PUBLISHER}'),
-    StringStruct('FileDescription', '{PRODUCT_NAME}'),
+    StringStruct('FileDescription', '{product_name}'),
     StringStruct('FileVersion', '{VERSION}'),
-    StringStruct('InternalName', '{PRODUCT_ID}'),
-    StringStruct('OriginalFilename', '{PRODUCT_ID}.exe'),
-    StringStruct('ProductName', '{PRODUCT_NAME}'),
+    StringStruct('InternalName', '{product_id}'),
+    StringStruct('OriginalFilename', '{product_id}.exe'),
+    StringStruct('ProductName', '{product_name}'),
     StringStruct('ProductVersion', '{VERSION}')])]),
     VarFileInfo([VarStruct('Translation', [2052, 1200])])])
 """,
@@ -277,11 +279,18 @@ def main() -> None:
     sub.add_parser("verify-environment")
     vi = sub.add_parser("version-info")
     vi.add_argument("--output", type=Path, required=True)
+    vi.add_argument("--host", action="store_true")
     bundle = sub.add_parser("bundle")
     bundle.add_argument("--installer", type=Path, required=True)
     bundle.add_argument("--private-key", type=Path, required=True)
     bundle.add_argument("--output", type=Path, required=True)
-    bundle.add_argument("--notes", default="L2D 交互图表编辑器 1.0.0")
+    bundle.add_argument(
+        "--notes",
+        default=(
+            "1.1.1：粘贴到画布的参考图支持自由调整宽高，"
+            "并增加持续可见的外框描边。"
+        ),
+    )
     bundle.add_argument(
         "--minimum-supported-version",
         default=MINIMUM_SUPPORTED_VERSION,
@@ -299,7 +308,7 @@ def main() -> None:
     elif args.command == "verify-environment":
         verify_environment()
     elif args.command == "version-info":
-        version_info(args.output)
+        version_info(args.output, host=args.host)
     elif args.command == "bundle":
         build_bundle(
             args.installer,

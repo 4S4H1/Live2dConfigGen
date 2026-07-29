@@ -5,7 +5,7 @@
 发布使用 `pyproject.toml` 和 `uv.lock` 中的 Python 3.13.14、PySide6
 6.11.1、PyInstaller 6.21.0、cryptography 48.0.0 和 packaging 26.2。
 安装器严格使用仓库隔离的 `.tools\nsis-3.12\makensis.exe`。包含局域网更新
-主机模块的编辑器使用 PyInstaller `onedir`，Qt DLL 保持动态链接。
+主机分别使用独立的 PyInstaller `onedir`，Qt DLL 保持动态链接。
 
 首次发布前执行：
 
@@ -21,11 +21,11 @@
 ## 构建
 
 ```powershell
-.\scripts\Build-Release.ps1 -Notes "1.0.0 首次完整安装版"
+.\scripts\Build-Release.ps1 -Notes "1.2.0：独立托盘 Host、计划模式、Tool/LLM 与当前图表 CSV"
 ```
 
-脚本先以锁定环境运行全部测试，再生成图标、PE 版本信息、一个 `onedir`、
-一个当前用户 NSIS 安装器、签名 `.l2dupdate`、第三方声明和
+脚本先以锁定环境运行全部测试，再生成图标、PE 版本信息、编辑器与 Host 两个
+独立 `onedir`、一个当前用户 NSIS 安装器、签名 `.l2dupdate`、第三方声明和
 `SHA256SUMS.txt`。测试通过后，脚本只清理经过绝对路径白名单确认的暂存
 发布目录与 PyInstaller 临时目录，防止旧产物混入新版本；暂存产物全部通过
 白名单检查后才替换 `dist\release`，失败时保留上一份完整发布。
@@ -33,32 +33,45 @@
 默认 `minimum_supported_version` 为 `1.0.0`。提高最低支持版本会让更旧
 客户端拒绝自动更新；这些用户需要从更新主机首页手动安装完整版本。
 
-`L2DConfigEditor-Setup-1.0.0-x64.exe` 用于首次安装及覆盖升级；局域网更新
-主机是编辑器的内置模块，不再生成第二个程序或安装器。
+`L2DConfigEditor-Setup-1.2.0-x64.exe` 用于首次安装及覆盖升级；同一个安装器
+把编辑器和独立托盘 Host 安装到各自的程序根，并只注册一个卸载入口。
 Windows 会因未做 Authenticode 签名显示“未知发布者”。
 
-覆盖安装会验证并调用旧版独立 Host 自己的卸载器，兼容默认、自定义以及
-固定默认目录中缺少注册项的遗留安装；只清理旧程序、注册项和精确快捷方式，
+覆盖安装会把默认目录中的旧版独立 Host 原地迁移为伴随组件，并兼容自定义目录
+及缺少注册项的遗留安装；只清理旧卸载入口、注册项和精确快捷方式，
 不会删除 `%LOCALAPPDATA%\4S4H1\L2DUpdateHost` 发布缓存。安装目录或
 `.__old`/`.__new` 恢复目录中检测到 JSON、CSV 或图片工作文件时，安装和
 卸载必须中止，待用户把工作文件移出后再继续。
 
 ## 发布到更新主机
 
-在发布电脑的编辑器中打开“工具 → 局域网更新主机…”，点击“导入签名更新包”，
+在发布电脑的编辑器中打开“工具 → 局域网更新主机…”唤醒独立托盘 Host，
+点击“导入签名更新包”，
 选择 `.l2dupdate`。也可运行：
 
 ```powershell
-.\scripts\Publish-Release.ps1 -Bundle .\dist\release\L2DConfigEditor-1.0.0.l2dupdate
+.\scripts\Publish-Release.ps1 -Bundle .\dist\release\L2DConfigEditor-1.2.0.l2dupdate
 ```
 
 导入流程先验证 Ed25519 原始清单签名、产品/平台/SemVer、文件大小和
 SHA-256，在隐藏暂存目录完成后才原子切换 `latest`。更新主机只保留最新与
 前一版本。
 
-更新主机默认监听 TCP 8765。只有确有需要时，使用管理员 PowerShell 单独执行
-`Add-UpdateHostFirewallRule.ps1`；规则仅适用于 Private/Domain 网络和
-`LocalSubnet`。客户端保存一次 `http://主机名:8765` 即可。
+更新主机默认监听 HTTP TCP 8765，并在固定 UDP 48765 上响应自动发现。客户端
+会探测活动 IPv4 网卡的广播地址与 `127.0.0.1`，无需保存 Host 地址或端口；
+“更新设置…”中的地址只作为发现失败后的手动回退。只有确有需要时，使用管理员
+PowerShell 单独执行 `Add-UpdateHostFirewallRule.ps1`；它为 HTTP TCP 端口和
+发现 UDP 48765 分别创建规则，且都仅适用于独立 Host EXE、Private/Domain 网络和
+`LocalSubnet`。
+
+发布电脑若有构建生成的完整安装器，直接覆盖安装最简单。1.1.0 及更高版本
+若只有 `.l2dupdate`，可由当前编辑器唤醒独立 Host、导入发布包，再在编辑器
+中点击“检查更新”；回环探测会发现自身。1.0.0 不包含 UDP 自动发现，因此
+首次升级到 1.1.0 时必须直接运行 Setup，或复制旧版 Host 窗口显示的地址；
+同机也可按窗口端口手动构造 `http://127.0.0.1:<HTTP 端口>`。安装器下载并
+验签完成后，编辑器先通过 IPC 优雅停止 Host，再由缓存目录中的交接进程启动
+安装器。PowerShell、安装器及安装后重启均不得以任一程序安装根为当前目录；
+两个安装根同时激活或同时回滚，成功后恢复升级前运行的 Host。
 
 ## 验收和回滚
 

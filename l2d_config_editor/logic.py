@@ -29,12 +29,14 @@ from .models import (
     SearchHit,
     ValidationIssue,
 )
+from .plan import load_plan_layout, normalize_plan_layout, serialize_plan_layout
 from .schema import EditorSchema, FieldSchema, NodeSchema, load_editor_schema
 from .reference_images import (
     MAX_DOCUMENT_REFERENCE_IMAGE_BYTES,
     MAX_DOCUMENT_REFERENCE_IMAGE_PIXELS,
     MAX_REFERENCE_IMAGE_COUNT,
     canonicalize_reference_image,
+    validated_reference_image_display_size,
 )
 
 RANGE_PATTERN = re.compile(r"^\{\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\}$")
@@ -58,7 +60,7 @@ HIDDEN_NODE_FIELDS = {
     "_table_text_color",
 }
 EDITOR_DOCUMENT_SIGNATURE = "l2d_config_editor/v1"
-EDITOR_DOCUMENT_FORMAT_VERSION = 3
+EDITOR_DOCUMENT_FORMAT_VERSION = 4
 CANVAS_STROKE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 CANVAS_STROKE_COLOR_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
 MAX_CANVAS_STROKES = 10_000
@@ -1242,6 +1244,7 @@ def create_document(schema: EditorSchema | None = None) -> DocumentModel:
     active_schema = schema or get_default_schema()
     document = DocumentModel(global_mode="simple")
     document.nodes.append(create_node(active_schema, document, "Idle0", (72.0, 72.0)))
+    normalize_plan_layout(document)
     reassign_function_ids(active_schema, document)
     recompute_document_state(active_schema, document)
     return document
@@ -1466,6 +1469,7 @@ def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[
         "canvas_strokes": serialized_strokes,
         "connections": [asdict(connection) for connection in document.connections],
         "canvas_view": asdict(document.canvas_view),
+        "plan_layout": serialize_plan_layout(document),
     }
 
 
@@ -1647,6 +1651,15 @@ def _load_canvas_image_records(payload: list[Any]) -> list[CanvasImageRecord]:
         if total_pixels + pixels > MAX_DOCUMENT_REFERENCE_IMAGE_PIXELS:
             continue
         position = item.get("ui_position") if isinstance(item.get("ui_position"), dict) else {}
+        persisted_size = item.get("ui_size") if isinstance(item.get("ui_size"), dict) else {}
+        display_size = validated_reference_image_display_size(
+            (
+                persisted_size.get("width", size[0]),
+                persisted_size.get("height", size[1]),
+            )
+        )
+        if display_size is None:
+            display_size = size
         opacity = min(1.0, max(0.0, _finite_float(item.get("opacity", 1.0), 1.0)))
         records.append(
             CanvasImageRecord(
@@ -1658,7 +1671,7 @@ def _load_canvas_image_records(payload: list[Any]) -> list[CanvasImageRecord]:
                     "x": _finite_float(position.get("x", 0.0), 0.0),
                     "y": _finite_float(position.get("y", 0.0), 0.0),
                 },
-                ui_size={"width": size[0], "height": size[1]},
+                ui_size={"width": display_size[0], "height": display_size[1]},
                 opacity=opacity,
                 locked=bool(item.get("locked", False)),
             )
@@ -1712,6 +1725,10 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
     if not isinstance(canvas_images_payload, list):
         canvas_images_payload = []
     canvas_strokes_payload = payload.get("canvas_strokes", [])
+    plan_layout = load_plan_layout(
+        payload.get("plan_layout"),
+        required=format_version >= 4,
+    )
     meta_keys = set(MetaRecord.__dataclass_fields__.keys())
     resolved_meta = {
         key: meta_payload[key] if key in meta_payload else legacy_meta[key]
@@ -1729,6 +1746,7 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
         canvas_strokes=_load_canvas_stroke_records(canvas_strokes_payload),
         connections=[ConnectionRecord(**item) for item in payload.get("connections", [])],
         canvas_view=CanvasViewState(**payload.get("canvas_view", {})),
+        plan_layout=plan_layout,
         path=str(path),
     )
     function_types = set(function_node_types(schema))
@@ -1864,6 +1882,7 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
             node.fields["action_trigger"] = _infer_expected_actions(schema, node)[0]
     reassign_function_ids(schema, document)
     recompute_document_state(schema, document)
+    normalize_plan_layout(document)
     return document
 
 

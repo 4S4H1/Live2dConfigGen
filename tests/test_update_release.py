@@ -10,13 +10,15 @@ import threading
 import unittest
 import zipfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from PySide6.QtCore import QSettings
+from PySide6.QtNetwork import QAbstractSocket, QHostAddress, QUdpSocket
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -25,8 +27,10 @@ from PySide6.QtWidgets import (
     QPushButton,
 )
 
+from l2d_config_editor.update_discovery import DISCOVERY_PORT, UpdateHostDiscovery
 from l2d_config_editor.update_host import (
     DEFAULT_PORT,
+    HOST_RESTORE_AT_LOGIN_KEY,
     ReleaseHTTPServer,
     SETTINGS_PORT_KEY,
     UpdateHostWindow,
@@ -78,6 +82,64 @@ class IntegratedUpdateHostTests(unittest.TestCase):
             self.assertNotIn("\ufffd", "".join(visible_text))
             self.assertFalse(hasattr(host, "tray"))
             self.assertEqual(QSettings.Format.IniFormat, host.settings.format())
+            host.close()
+
+    def test_firewall_rule_uses_the_hosts_configured_discovery_port(self):
+        with tempfile.TemporaryDirectory() as directory:
+            host = UpdateHostWindow(
+                data_root=Path(directory),
+                public_key_pem=bundled_public_key_pem(),
+                discovery_port=54321,
+            )
+            fake_process = Mock()
+            with (
+                patch("l2d_config_editor.update_host.sys.platform", "win32"),
+                patch(
+                    "l2d_config_editor.update_host.sys.frozen",
+                    True,
+                    create=True,
+                ),
+                patch(
+                    "l2d_config_editor.update_host.firewall_powershell_command",
+                    return_value="Write-Output configured",
+                ) as build_command,
+                patch(
+                    "l2d_config_editor.update_host.QProcess",
+                    return_value=fake_process,
+                ),
+            ):
+                host.create_firewall_rule()
+
+            self.assertEqual(
+                54321,
+                build_command.call_args.kwargs["discovery_port"],
+            )
+            fake_process.start.assert_called_once()
+            host.firewall_process = None
+            host.close()
+
+    def test_host_status_reports_exact_pid_and_restore_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = QSettings(
+                str(Path(directory) / "host.ini"),
+                QSettings.Format.IniFormat,
+            )
+            settings.setValue(HOST_RESTORE_AT_LOGIN_KEY, True)
+            host = UpdateHostWindow(
+                data_root=Path(directory) / "data",
+                public_key_pem=bundled_public_key_pem(),
+                settings=settings,
+            )
+            with patch(
+                "l2d_config_editor.update_host.login_startup_enabled",
+                return_value=True,
+            ):
+                status = host.host_status()
+
+            self.assertEqual(os.getpid(), status["pid"])
+            self.assertTrue(status["process_running"])
+            self.assertTrue(status["restore_at_login"])
+            self.assertTrue(status["login_startup_enabled"])
             host.close()
 
     def test_embedded_window_close_stops_and_joins_the_server_thread(self):
@@ -154,6 +216,75 @@ class IntegratedUpdateHostTests(unittest.TestCase):
                 self.assertIn("99000", host.log_list.item(999).text())
             finally:
                 host.close()
+
+    def test_running_host_is_discoverable_from_the_same_machine(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            release = root / "host-data" / "releases" / "1.2.0"
+            release.mkdir(parents=True)
+            (release.parent / "latest").write_text("1.2.0", encoding="utf-8")
+            host = UpdateHostWindow(
+                data_root=root / "host-data",
+                public_key_pem=bundled_public_key_pem(),
+                discovery_port=0,
+                discovery_bind_address="127.0.0.1",
+            )
+            host.port_box.setMinimum(0)
+            host.port_box.setValue(0)
+            host.start_server()
+            discovered = []
+            self.assertIsNotNone(host.discovery_responder)
+            discovery = UpdateHostDiscovery(
+                discovery_port=host.discovery_responder.local_port,
+                targets=("127.0.0.1",),
+                timeout_ms=100,
+            )
+            discovery.finished.connect(discovered.append)
+            try:
+                discovery.start()
+                for _ in range(40):
+                    self.app.processEvents()
+                    if discovered:
+                        break
+                    QTest.qWait(10)
+                self.assertEqual(
+                    [[f"http://127.0.0.1:{host.server.server_address[1]}"]],
+                    discovered,
+                )
+                self.assertIn("自动发现已启用", host.discovery_label.text())
+            finally:
+                host.close()
+
+            self.assertIsNone(host.discovery_responder)
+
+    def test_discovery_port_collision_keeps_http_and_manual_address_available(self):
+        blocker = QUdpSocket()
+        self.assertTrue(
+            blocker.bind(
+                QHostAddress.SpecialAddress.LocalHost,
+                0,
+                QAbstractSocket.BindFlag.DontShareAddress,
+            )
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            host = UpdateHostWindow(
+                data_root=Path(directory),
+                public_key_pem=bundled_public_key_pem(),
+                discovery_port=blocker.localPort(),
+                discovery_bind_address="127.0.0.1",
+            )
+            host.port_box.setMinimum(0)
+            host.port_box.setValue(0)
+            try:
+                host.start_server()
+
+                self.assertIsNotNone(host.server)
+                self.assertIsNone(host.discovery_responder)
+                self.assertTrue(host.copy_button.isEnabled())
+                self.assertIn("仍可复制地址手动配置", host.discovery_label.text())
+            finally:
+                host.close()
+                blocker.close()
 
     def test_invalid_text_port_setting_falls_back_to_8765(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -277,31 +408,68 @@ class IntegratedUpdateHostTests(unittest.TestCase):
             )
             host.close()
 
-    def test_editor_opens_and_reuses_one_non_modal_update_host_window(self):
+    def test_editor_wakes_independent_host_without_owning_its_lifecycle(self):
         with tempfile.TemporaryDirectory() as directory:
             editor = MainWindow(directory, prefer_saved_workspace=False)
             action_labels = [action.text() for action in editor.tools_menu.actions()]
             self.assertIn("局域网更新主机…", action_labels)
+            manager = Mock()
+            manager.show_or_start.return_value = True
+            editor._update_host_manager = manager
 
             first = editor._open_update_host()
             second = editor._open_update_host()
 
-            self.assertIs(first, second)
-            self.assertIs(editor, first.parent())
-            self.assertTrue(first.isVisible())
-            first.close()
+            self.assertTrue(first)
+            self.assertTrue(second)
+            self.assertEqual(2, manager.show_or_start.call_count)
             editor._mark_saved_checkpoint(saved=True)
             editor.close()
+            manager.prepare_for_update.assert_not_called()
+            manager.shutdown_for_update.assert_not_called()
 
-    def test_release_pipeline_builds_only_the_integrated_editor(self):
+    def test_manual_check_discovers_without_prompting_for_an_address(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            editor = MainWindow(root, prefer_saved_workspace=False)
+            editor.settings = QSettings(
+                str(root / "settings.ini"),
+                QSettings.Format.IniFormat,
+            )
+            client = Mock()
+            try:
+                with (
+                    patch.object(
+                        editor,
+                        "_update_client_or_warn",
+                        return_value=client,
+                    ),
+                    patch.object(
+                        editor,
+                        "_configure_update_host",
+                        side_effect=AssertionError(
+                            "自动发现不应先要求输入地址"
+                        ),
+                    ),
+                ):
+                    editor._check_for_updates(manual=True)
+
+                client.check_automatically.assert_called_once_with("")
+                self.assertIn("自动发现", editor.statusBar().currentMessage())
+            finally:
+                editor._mark_saved_checkpoint(saved=True)
+                editor.close()
+
+    def test_release_pipeline_builds_editor_and_companion_host_in_one_installer(self):
         build_script = (ROOT / "scripts" / "Build-Release.ps1").read_text("utf-8")
         project = (ROOT / "pyproject.toml").read_text("utf-8")
 
-        self.assertNotIn("L2DUpdateHost.spec", build_script)
+        self.assertIn("L2DUpdateHost.spec", build_script)
+        self.assertIn("HOST_SOURCE_DIR", build_script)
         self.assertNotIn("host-installer.nsi", build_script)
         self.assertNotIn("L2DUpdateHost-Setup", build_script)
-        self.assertNotIn("l2d-update-host", project)
-        self.assertFalse((ROOT / "packaging" / "L2DUpdateHost.spec").exists())
+        self.assertIn("l2d-update-host", project)
+        self.assertTrue((ROOT / "packaging" / "L2DUpdateHost.spec").exists())
         self.assertFalse((ROOT / "packaging" / "host-installer.nsi").exists())
 
 
@@ -739,17 +907,49 @@ class HTTPServerTests(unittest.TestCase):
 
 
 class FirewallCommandTests(unittest.TestCase):
-    def test_rule_is_scoped_to_program_port_profiles_and_local_subnet(self):
+    def test_rules_cover_http_and_discovery_with_the_same_lan_scope(self):
         command = firewall_powershell_command(
             8765, r"C:\Program Files\L2DConfigEditor\L2DConfigEditor.exe"
         )
-        self.assertIn("-LocalPort 8765", command)
-        self.assertIn("-Profile Private,Domain", command)
-        self.assertIn("-RemoteAddress LocalSubnet", command)
-        self.assertIn("-Program 'C:\\Program Files\\L2DConfigEditor", command)
-        self.assertIn("L2D Update Host (LocalSubnet)", command)
+        self.assertIn("-Protocol TCP -LocalPort 8765", command)
+        self.assertIn(
+            f"-Protocol UDP -LocalPort {DISCOVERY_PORT}",
+            command,
+        )
+        self.assertEqual(2, command.count("-Profile Private,Domain"))
+        self.assertEqual(2, command.count("-RemoteAddress LocalSubnet"))
+        self.assertEqual(
+            2,
+            command.count("-Program 'C:\\Program Files\\L2DConfigEditor"),
+        )
+        self.assertIn("L2D Update Host HTTP (LocalSubnet)", command)
+        self.assertIn("L2D Update Host Discovery (LocalSubnet)", command)
+        self.assertIn("}catch{", command)
+        self.assertIn(
+            "$newRules|Remove-NetFirewallRule -ErrorAction SilentlyContinue",
+            command,
+        )
+        self.assertIn(
+            "$existing|Remove-NetFirewallRule -ErrorAction SilentlyContinue",
+            command,
+        )
+        # Existing working rules stay active until both replacements exist.
+        first_create = command.index(
+            "$newRules+=@(New-NetFirewallRule -DisplayName "
+            "'L2D Update Host HTTP (LocalSubnet)'"
+        )
+        second_create = command.index(
+            "$newRules+=@(New-NetFirewallRule -DisplayName "
+            "'L2D Update Host Discovery (LocalSubnet)'"
+        )
+        failure_cleanup = command.index("}catch{")
+        old_rule_cleanup = command.index(
+            "if($existing.Count -gt 0){$existing|Remove-NetFirewallRule"
+        )
+        self.assertLess(first_create, second_create)
+        self.assertLess(second_create, failure_cleanup)
+        self.assertLess(failure_cleanup, old_rule_cleanup)
         self.assertNotIn("Public", command)
-        self.assertNotIn("Any", command)
 
     def test_rejects_privileged_or_invalid_port(self):
         for port in (0, 80, 65536):
