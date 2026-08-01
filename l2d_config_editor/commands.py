@@ -228,6 +228,30 @@ class UpdatePlanGraphCommand(QUndoCommand):
         )
 
 
+class MaterializePlanTopicsCommand(QUndoCommand):
+    """Atomically replace plan-origin nodes without changing their edges."""
+
+    def __init__(self, controller, old_nodes, new_nodes, old_layout, new_layout) -> None:
+        super().__init__("计划主题转正式节点")
+        self.controller = controller
+        self.old_nodes = [node.clone() for node in old_nodes]
+        self.new_nodes = [node.clone() for node in new_nodes]
+        self.old_layout = old_layout.clone()
+        self.new_layout = new_layout.clone()
+
+    def redo(self) -> None:
+        self.controller._replace_plan_nodes(
+            [node.clone() for node in self.new_nodes],
+            self.new_layout.clone(),
+        )
+
+    def undo(self) -> None:
+        self.controller._replace_plan_nodes(
+            [node.clone() for node in self.old_nodes],
+            self.old_layout.clone(),
+        )
+
+
 class AddCanvasImagesCommand(QUndoCommand):
     def __init__(self, controller, images) -> None:
         super().__init__("添加参考图")
@@ -283,26 +307,32 @@ class ResizeCanvasImagesCommand(QUndoCommand):
 
 
 class AddCanvasStrokesCommand(QUndoCommand):
-    def __init__(self, controller, strokes) -> None:
+    def __init__(self, controller, strokes, layer: str = "formal") -> None:
         super().__init__("添加画笔线条")
         self.controller = controller
         self.strokes = [stroke.clone() for stroke in strokes]
+        self.layer = layer
 
     def redo(self) -> None:
-        self.controller._insert_canvas_strokes([stroke.clone() for stroke in self.strokes])
+        self.controller._insert_canvas_strokes(
+            [stroke.clone() for stroke in self.strokes], self.layer
+        )
 
     def undo(self) -> None:
-        self.controller._remove_canvas_strokes([stroke.uuid for stroke in self.strokes])
+        self.controller._remove_canvas_strokes(
+            [stroke.uuid for stroke in self.strokes], self.layer
+        )
 
 
 class RemoveCanvasStrokesCommand(QUndoCommand):
-    def __init__(self, controller, strokes) -> None:
+    def __init__(self, controller, strokes, layer: str = "formal") -> None:
         super().__init__("删除画笔线条")
         self.controller = controller
         self.strokes = [stroke.clone() for stroke in strokes]
+        self.layer = layer
         index_by_uuid = {
             stroke.uuid: index
-            for index, stroke in enumerate(controller.document.canvas_strokes)
+            for index, stroke in enumerate(controller._canvas_stroke_records(layer))
         }
         self.indexed_strokes = [
             (index_by_uuid[stroke.uuid], stroke.clone())
@@ -311,11 +341,14 @@ class RemoveCanvasStrokesCommand(QUndoCommand):
         ]
 
     def redo(self) -> None:
-        self.controller._remove_canvas_strokes([stroke.uuid for stroke in self.strokes])
+        self.controller._remove_canvas_strokes(
+            [stroke.uuid for stroke in self.strokes], self.layer
+        )
 
     def undo(self) -> None:
         self.controller._restore_canvas_strokes(
-            [(index, stroke.clone()) for index, stroke in self.indexed_strokes]
+            [(index, stroke.clone()) for index, stroke in self.indexed_strokes],
+            self.layer,
         )
 
 

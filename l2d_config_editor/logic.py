@@ -60,7 +60,7 @@ HIDDEN_NODE_FIELDS = {
     "_table_text_color",
 }
 EDITOR_DOCUMENT_SIGNATURE = "l2d_config_editor/v1"
-EDITOR_DOCUMENT_FORMAT_VERSION = 4
+EDITOR_DOCUMENT_FORMAT_VERSION = 5
 CANVAS_STROKE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 CANVAS_STROKE_COLOR_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
 MAX_CANVAS_STROKES = 10_000
@@ -247,6 +247,7 @@ def default_node_theme(schema: EditorSchema, node: NodeRecord) -> dict[str, str]
         "ParameterTrigger": {"body": "#071b2d", "border": "#25b7ff", "text": "#e8f8ff"},
         "DrawFrame": {"body": "#12191f", "border": "#7aa6c2", "text": "#d9e8f3"},
         "Comment": {"body": "#2f2618", "border": "#e2b86a", "text": "#fff8eb"},
+        "PlanPlaceholder": {"body": "#242933", "border": "#8b95a5", "text": "#d7dce5"},
     }
     palette = palette_by_type.get(node.type)
     if node.type == "Comment":
@@ -1369,6 +1370,9 @@ def node_title(schema: EditorSchema, node: NodeRecord) -> str:
         content = _text(node.fields.get("content", "")).strip().splitlines()
         first_line = content[0][:24] if content else ""
         return f"{definition.title}-{first_line}" if first_line else definition.title
+    if node.type == "PlanPlaceholder":
+        source = _text(node.fields.get("plan_source_title", "")).strip()
+        return f"{definition.title} - {source}" if source else definition.title
     if node.type == "DrawFrame":
         title = _text(node.fields.get("title", "")).strip()
         return f"{definition.title}-{title}" if title else definition.title
@@ -1447,15 +1451,16 @@ def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[
             payload["target_idle"] = _coerce_int(node.fields.get("target_idle"), 0)
         serialized_nodes.append(payload)
     serialized_groups = [asdict(group) for group in normalized_document_groups(document)]
-    serialized_strokes = [
-        {
-            "id": stroke.uuid,
-            "points": [[x, y] for x, y in stroke.points],
-            "color": stroke.color,
-            "width": stroke.width,
-        }
-        for stroke in validate_canvas_strokes(document.canvas_strokes)
-    ]
+    def serialized_strokes(strokes: list[CanvasStrokeRecord]) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": stroke.uuid,
+                "points": [[x, y] for x, y in stroke.points],
+                "color": stroke.color,
+                "width": stroke.width,
+            }
+            for stroke in validate_canvas_strokes(strokes)
+        ]
     return {
         "editor_signature": EDITOR_DOCUMENT_SIGNATURE,
         "format_version": EDITOR_DOCUMENT_FORMAT_VERSION,
@@ -1466,7 +1471,8 @@ def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[
         "nodes": serialized_nodes,
         "groups": serialized_groups,
         "canvas_images": [asdict(image) for image in document.canvas_images],
-        "canvas_strokes": serialized_strokes,
+        "canvas_strokes": serialized_strokes(document.canvas_strokes),
+        "plan_canvas_strokes": serialized_strokes(document.plan_canvas_strokes),
         "connections": [asdict(connection) for connection in document.connections],
         "canvas_view": asdict(document.canvas_view),
         "plan_layout": serialize_plan_layout(document),
@@ -1681,8 +1687,20 @@ def _load_canvas_image_records(payload: list[Any]) -> list[CanvasImageRecord]:
     return records
 
 
-def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+def load_document_payload(
+    schema: EditorSchema,
+    payload: bytes | bytearray | dict[str, Any],
+    *,
+    path: str | Path | None = None,
+) -> DocumentModel:
+    """Load an editor document directly from SVN bytes or an in-memory mapping."""
+
+    if isinstance(payload, (bytes, bytearray)):
+        payload = json.loads(bytes(payload))
+    elif isinstance(payload, dict):
+        payload = dict(payload)
+    else:
+        raise TypeError("Document payload must be bytes or an object")
     if not is_editor_document_payload(payload):
         raise ValueError("不是 L2D Config Editor 配置文件")
     format_version = _document_format_version(payload)
@@ -1725,9 +1743,11 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
     if not isinstance(canvas_images_payload, list):
         canvas_images_payload = []
     canvas_strokes_payload = payload.get("canvas_strokes", [])
+    plan_canvas_strokes_payload = payload.get("plan_canvas_strokes", [])
     plan_layout = load_plan_layout(
         payload.get("plan_layout"),
         required=format_version >= 4,
+        required_formalization_state=format_version >= 5,
     )
     meta_keys = set(MetaRecord.__dataclass_fields__.keys())
     resolved_meta = {
@@ -1744,10 +1764,11 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
         meta=MetaRecord(**resolved_meta),
         canvas_images=_load_canvas_image_records(canvas_images_payload),
         canvas_strokes=_load_canvas_stroke_records(canvas_strokes_payload),
+        plan_canvas_strokes=_load_canvas_stroke_records(plan_canvas_strokes_payload),
         connections=[ConnectionRecord(**item) for item in payload.get("connections", [])],
         canvas_view=CanvasViewState(**payload.get("canvas_view", {})),
         plan_layout=plan_layout,
-        path=str(path),
+        path=str(path) if path is not None else None,
     )
     function_types = set(function_node_types(schema))
     sequence_map: dict[str, int] = {}
@@ -1884,6 +1905,11 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
     recompute_document_state(schema, document)
     normalize_plan_layout(document)
     return document
+
+
+def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
+    target = Path(path)
+    return load_document_payload(schema, target.read_bytes(), path=target)
 
 
 def _csv_value_for_mapping(mapping, document: DocumentModel, node: NodeRecord) -> Any:

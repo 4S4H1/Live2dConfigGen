@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -13,8 +14,10 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from l2d_config_editor.app_settings import create_app_settings
+from l2d_config_editor.canvas import CanvasStrokeItem
 from l2d_config_editor.logic import load_document
 from l2d_config_editor.main_window import MainWindow
+from l2d_config_editor.models import CanvasStrokeRecord
 from l2d_config_editor.styles import ThemeMode
 
 
@@ -74,6 +77,120 @@ class CanvasModernizationTests(unittest.TestCase):
             self.assertEqual({}, canvas.stroke_items)
             window.controller.undo_stack.undo()
             self.assertEqual(1, len(window.controller.document.canvas_strokes))
+            self._close(window)
+
+    def test_fast_right_drag_sweep_deletes_all_hit_strokes_as_one_command(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            window = self._window(root)
+            canvas = window.canvas
+            first = [canvas.mapToScene(QPoint(x, 120)) for x in (80, 240)]
+            second = [canvas.mapToScene(QPoint(x, 155)) for x in (80, 240)]
+            survivor = [canvas.mapToScene(QPoint(x, 300)) for x in (80, 240)]
+            first_id = window.controller.add_canvas_stroke(
+                [(point.x(), point.y()) for point in first], "#112233", 4
+            )
+            second_id = window.controller.add_canvas_stroke(
+                [(point.x(), point.y()) for point in second], "#445566", 4
+            )
+            survivor_id = window.controller.add_canvas_stroke(
+                [(point.x(), point.y()) for point in survivor], "#778899", 4
+            )
+            survivor_item = canvas.stroke_items[survivor_id]
+            before_index = window.controller.undo_stack.index()
+
+            QTest.mousePress(
+                canvas.viewport(),
+                Qt.MouseButton.RightButton,
+                Qt.KeyboardModifier.ControlModifier,
+                QPoint(160, 100),
+            )
+            QTest.mouseMove(canvas.viewport(), QPoint(160, 175), 10)
+            QTest.mouseRelease(
+                canvas.viewport(),
+                Qt.MouseButton.RightButton,
+                Qt.KeyboardModifier.ControlModifier,
+                QPoint(160, 180),
+            )
+            self.app.processEvents()
+
+            self.assertEqual(before_index + 1, window.controller.undo_stack.index())
+            self.assertEqual(
+                [survivor_id],
+                [stroke.uuid for stroke in window.controller.document.canvas_strokes],
+            )
+            self.assertIs(survivor_item, canvas.stroke_items[survivor_id])
+            window.controller.undo_stack.undo()
+            self.assertEqual(
+                {first_id, second_id, survivor_id},
+                {stroke.uuid for stroke in window.controller.document.canvas_strokes},
+            )
+            self._close(window)
+
+    def test_eraser_scene_index_keeps_move_event_p95_under_sixteen_ms(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            window = self._window(root)
+            canvas = window.canvas
+            window.controller.document.canvas_strokes = [
+                CanvasStrokeRecord(
+                    uuid=f"perf-{row}-{column}",
+                    points=[
+                        (column * 80.0, row * 40.0),
+                        (column * 80.0 + 50.0, row * 40.0),
+                    ],
+                    color="#336699",
+                    width=4.0,
+                )
+                for row in range(40)
+                for column in range(40)
+            ]
+            canvas._rebuild_canvas_strokes()
+            self.app.processEvents()
+
+            original_shape = CanvasStrokeItem.shape
+            inspected: set[str] = set()
+
+            def tracked_shape(item):
+                inspected.add(item.record.uuid)
+                return original_shape(item)
+
+            start = QPointF(801.0, 801.0)
+            end = QPointF(847.0, 801.0)
+            durations: list[float] = []
+            with patch.object(CanvasStrokeItem, "shape", tracked_shape):
+                for _ in range(10):
+                    canvas._stroke_uuids_in_eraser_segment(start, end)
+                inspected.clear()
+                for _ in range(100):
+                    started = time.perf_counter_ns()
+                    canvas._stroke_uuids_in_eraser_segment(start, end)
+                    durations.append((time.perf_counter_ns() - started) / 1_000_000.0)
+
+            p95_ms = sorted(durations)[94]
+            self.assertLess(len(inspected), len(canvas.stroke_items) // 10)
+            self.assertLess(p95_ms, 16.0)
+            self._close(window)
+
+    def test_comment_and_plan_placeholder_keep_visible_connection_pins(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            window = self._window(root)
+            root_uuid = window.controller.document.nodes[0].uuid
+            comment_uuid = window.controller.create_node("Comment", (420.0, 120.0))
+            window.controller.add_connection(root_uuid, comment_uuid)
+            placeholder_uuid = window.controller.create_plan_topic(
+                root_uuid,
+                "not-a-touchidle-rule",
+            )
+            window.controller.materialize_plan_topics()
+            self.app.processEvents()
+
+            for node_uuid in (comment_uuid, placeholder_uuid):
+                item = window.canvas.node_items[node_uuid]
+                self.assertTrue(item.input_pin_rect().isValid())
+                self.assertTrue(item.output_pin_rect().isValid())
+                self.assertIn(
+                    (root_uuid, node_uuid),
+                    window.canvas.connection_items,
+                )
             self._close(window)
 
     def test_pen_stroke_drawn_over_node_stays_above_and_round_trips(self) -> None:

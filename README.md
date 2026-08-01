@@ -1,15 +1,15 @@
 # L2D 交互图表编辑器
 
-面向 Live2D 交互配置的 Windows 节点式编辑器。1.2.0 使用 Python
+面向 Live2D 交互配置的 Windows 节点式编辑器。1.3.0 使用 Python
 3.13.14、PySide6 6.11.1 和动态 Qt 共享库，支持 Windows 10/11 x64。
 本版本的升级要点和兼容提示见
-[`docs/RELEASE_NOTES_1.2.0.md`](docs/RELEASE_NOTES_1.2.0.md)。
+[`docs/RELEASE_NOTES_1.3.0.md`](docs/RELEASE_NOTES_1.3.0.md)。
 
 ## 安装与启动
 
 普通用户安装：
 
-- `L2DConfigEditor-Setup-1.2.0-x64.exe`：一个安装包同时安装两个独立
+- `L2DConfigEditor-Setup-1.3.0-x64.exe`：一个安装包同时安装两个独立
   `onedir` 程序。编辑器位于 `%LOCALAPPDATA%\Programs\L2DConfigEditor`，
   托盘更新主机位于 `%LOCALAPPDATA%\Programs\L2DUpdateHost`。二者只有一个
   卸载入口，关闭编辑器不会停止 Host。
@@ -20,8 +20,9 @@ Windows 可能显示“未知发布者”。
 
 覆盖安装会把旧版独立 `L2DUpdateHost` 原地迁移为伴随组件，同时
 保留 `%LOCALAPPDATA%\4S4H1\L2DUpdateHost` 中已经导入的发布缓存。编辑器
-不会把安装目录作为 JSON 工作区；若旧安装目录或安装恢复目录中检测到
-JSON、CSV 或图片工作文件，升级和卸载会中止并提示先迁移文件。
+不会把安装目录作为默认 JSON 工作区。安装器以受管文件清单限定升级和卸载
+范围；不属于清单的 JSON、CSV、图片及其他用户文件不会阻断安装，也不会被删除。
+安装根所有权、进程/文件锁、分阶段替换、签名、SHA-256 与失败回滚保护仍保留。
 
 从源码启动：
 
@@ -38,18 +39,24 @@ uv run python -m l2d_config_editor.main
   `ParameterTrigger`、返回默认待机和备注等节点。
 - 快速创建和连接、贝塞尔曲线、持久化分组、可自由调整大小且带外框的参考图片、撤销/重做、
   搜索、CSV 预览与当前图表直接导出。
-- 无开关画笔：`Ctrl+左键` 直接自由绘制，`Ctrl+右键` 删除整条线；在节点上
+- 无开关画笔：`Ctrl+左键` 直接自由绘制，按住 `Ctrl+右键` 滑过的笔迹会即时
+  按整条删除，一次滑动只产生一次撤销；在节点上
   Ctrl 单击仍用于追加/反选，拖动超过 4 个视口像素才转为绘制。颜色、粗细及
-  每条线的点集随 JSON 保存。
+  每条线的点集随 JSON 保存。正式图与计划图各有独立画笔层，互不转换。
 - “正式图 / 计划图”一键切换。计划图使用同一份节点和正式连线，以左根右展
   脑图快速整理标题、层级、顺序与折叠状态；多父、环和额外边显示为虚线引用，
-  正式图坐标与业务字段不受影响。
+  正式图坐标与业务字段不受影响。计划标题符合
+  `touchidle<编号>-touch_idle<编号>` 时会正式化为同 UUID 的 `TouchIdle`；
+  其他标题先成为可连线但不导出 CSV 的虚节点，修改标题后可再次识别。
 - 右侧“AI 对话”面板支持 OpenAI-compatible
   `/v1/chat/completions`、流式回复和工具调用。查询自动执行，增改删及文件写入
   会先显示结构化预览并等待确认。
 - 稳定的用户级 `EditorToolService` 白名单可查询、校验、批量编辑、布局、
   切换视图、撤销/重做、保存和导出当前图表；不暴露 Shell、进程、更新器或
   任意文件访问。
+- 工具栏“SVN 图表 Diff…”可比较任意两个文件提交版本或打开窗口时的当前
+  内存内容，按节点、字段、位置、连线、分组、计划层、两套画笔和参考图片摘要
+  展示结构化差异；历史通过外部 SVN CLI 读取，不创建本地 Diff 快照。
 - 简洁展示模式：按用户选择只显示备注、过渡动画、目标待机等字段，并可
   独立隐藏分组、参数表、参考图片和画笔。
 - 深色/浅色主题、缩放感知的节点标题和备注字号。
@@ -58,12 +65,12 @@ uv run python -m l2d_config_editor.main
 
 ## JSON 格式
 
-当前写出格式为 `format_version: 4`。v4 保留 v3 的 `canvas_strokes`，并增加
-与正式坐标分离的顶层 `plan_layout`：
+当前写出格式为 `format_version: 5`。v5 增加独立的计划图画笔层、计划主题
+正式化状态和内部 `PlanPlaceholder` 虚节点：
 
 ```json
 {
-  "format_version": 4,
+  "format_version": 5,
   "plan_layout": {
     "topics": [
       {
@@ -72,7 +79,8 @@ uv run python -m l2d_config_editor.main
         "order": 0,
         "plan_title": "计划标题",
         "collapsed": false,
-        "branch_color": "#2F80ED"
+        "branch_color": "#2F80ED",
+        "formalization_state": "draft"
       }
     ],
     "view": {"scale": 1.0, "offset_x": 0.0, "offset_y": 0.0}
@@ -84,12 +92,14 @@ uv run python -m l2d_config_editor.main
       "color": "#2F80ED",
       "width": 4.0
     }
-  ]
+  ],
+  "plan_canvas_strokes": []
 }
 ```
 
-v1-v3 文件会在内存中确定性迁移；旧 `Initial` 节点会迁移为 `idle0`，旧回收站
-字段会被忽略。旧版编辑器会拒绝 v4，避免静默丢失计划数据；高于 v4 的未知
+v1-v4 文件会在内存中安全迁移；旧计划主题统一标为 `formal`，不会根据标题
+启发式改成 TouchIdle。旧 `Initial` 节点会迁移为 `idle0`，旧回收站字段会被忽略。
+旧版编辑器会拒绝 v5，避免静默丢失计划数据；高于 v5 的未知
 格式也会拒绝覆盖保存。保存使用同目录临时文件
 和原子替换，避免产生半份 JSON。
 
@@ -109,7 +119,7 @@ v1-v3 文件会在内存中确定性迁移；旧 `Initial` 节点会迁移为 `i
    下载验证成功后才由用户确认安装。
 
 发布电脑若保留了构建生成的完整安装器，直接运行
-`L2DConfigEditor-Setup-1.2.0-x64.exe` 覆盖安装最简单，不必先启动 Host。
+`L2DConfigEditor-Setup-1.3.0-x64.exe` 覆盖安装最简单，不必先启动 Host。
 若当前已是 1.1.0 或更高版本，手上只有 `.l2dupdate` 时也可在 Host
 中导入并发布更高版本、保持服务运行，再在同一个编辑器中选择“检查更新…”；
 客户端会显式探测本机回环地址。1.0.0 尚不包含 UDP 自动发现，因此从 1.0.0

@@ -115,8 +115,8 @@ class CanvasStrokePersistenceTests(unittest.TestCase):
             raw = json.loads(path.read_text(encoding="utf-8"))
             loaded = load_document(self.schema, path)
 
-        self.assertEqual(4, EDITOR_DOCUMENT_FORMAT_VERSION)
-        self.assertEqual(4, raw["format_version"])
+        self.assertEqual(5, EDITOR_DOCUMENT_FORMAT_VERSION)
+        self.assertEqual(5, raw["format_version"])
         self.assertEqual(
             {
                 "id": "stroke-1",

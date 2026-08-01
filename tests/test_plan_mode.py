@@ -65,7 +65,7 @@ class PlanModelTests(unittest.TestCase):
             payload = json.loads(path.read_text(encoding="utf-8"))
             loaded = load_document(controller.schema, path)
 
-        self.assertEqual(4, payload["format_version"])
+        self.assertEqual(5, payload["format_version"])
         self.assertIn("plan_layout", payload)
         loaded_topics = {
             topic.node_uuid: topic for topic in loaded.plan_layout.topics
@@ -79,7 +79,8 @@ class PlanModelTests(unittest.TestCase):
             next(node for node in loaded.nodes if node.uuid == root_uuid).ui_position,
         )
         child = next(node for node in loaded.nodes if node.uuid == child_uuid)
-        self.assertEqual("子主题", child.fields["content"])
+        self.assertEqual("PlanPlaceholder", child.type)
+        self.assertEqual("独立计划标题", child.fields["plan_source_title"])
         self.assertEqual([], document_to_csv_rows(controller.schema, loaded))
 
     def test_v1_through_v3_deterministically_migrate_forest_cycle_and_multi_parent(self) -> None:
@@ -330,7 +331,8 @@ class PlanModelTests(unittest.TestCase):
         source = controller.get_node(source_uuid)
         clone = controller.get_node(pasted_uuid)
         self.assertEqual(source.type, clone.type)
-        self.assertEqual(source.fields["content"], clone.fields["content"])
+        self.assertEqual(source.type, "PlanPlaceholder")
+        self.assertEqual(source.fields, clone.fields)
         topic = controller.plan_topic(pasted_uuid)
         self.assertEqual(root_uuid, topic.parent_uuid)
         self.assertEqual("计划标题", topic.plan_title)
@@ -686,6 +688,72 @@ class DirectPenGestureTests(unittest.TestCase):
         self.app.processEvents()
         self.assertEqual(1, len(controller.document.canvas_strokes))
         self.assertGreaterEqual(len(controller.document.canvas_strokes[0].points), 3)
+        canvas.close()
+
+    def test_plan_canvas_draws_and_sweep_erases_only_plan_strokes(self) -> None:
+        controller = make_ready_controller()
+        canvas = PlanCanvasView(controller.schema, controller)
+        canvas.resize(1000, 700)
+        canvas.show()
+        self.app.processEvents()
+        blank = next(
+            point
+            for point in (QPoint(20, 20), QPoint(950, 30), QPoint(30, 650))
+            if canvas._topic_item_at_view_point(point) is None
+        )
+        end = blank + QPoint(110, 50)
+        before_index = controller.undo_stack.index()
+
+        QTest.mousePress(
+            canvas.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.ControlModifier,
+            blank,
+        )
+        QTest.mouseMove(canvas.viewport(), blank + QPoint(35, 16), delay=10)
+        QTest.mouseMove(canvas.viewport(), end, delay=10)
+        QTest.mouseRelease(
+            canvas.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.ControlModifier,
+            end,
+        )
+        self.app.processEvents()
+        self.assertEqual(before_index + 1, controller.undo_stack.index())
+        self.assertEqual(1, len(controller.document.plan_canvas_strokes))
+        self.assertEqual([], controller.document.canvas_strokes)
+
+        erase_index = controller.undo_stack.index()
+        QTest.mousePress(
+            canvas.viewport(),
+            Qt.MouseButton.RightButton,
+            Qt.KeyboardModifier.ControlModifier,
+            blank - QPoint(5, 0),
+        )
+        QTest.mouseMove(canvas.viewport(), blank + QPoint(55, 25), delay=10)
+        QTest.mouseRelease(
+            canvas.viewport(),
+            Qt.MouseButton.RightButton,
+            Qt.KeyboardModifier.ControlModifier,
+            end + QPoint(5, 0),
+        )
+        self.app.processEvents()
+        self.assertEqual(erase_index + 1, controller.undo_stack.index())
+        self.assertEqual([], controller.document.plan_canvas_strokes)
+        controller.undo_stack.undo()
+        self.assertEqual(1, len(controller.document.plan_canvas_strokes))
+
+        QTest.mousePress(
+            canvas.viewport(),
+            Qt.MouseButton.RightButton,
+            Qt.KeyboardModifier.ControlModifier,
+            blank,
+        )
+        QTest.mouseMove(canvas.viewport(), end, delay=10)
+        QTest.keyClick(canvas, Qt.Key.Key_Escape)
+        self.app.processEvents()
+        self.assertEqual(1, len(controller.document.plan_canvas_strokes))
+        self.assertTrue(next(iter(canvas.stroke_items.values())).isVisible())
         canvas.close()
 
     def test_blank_draw_delete_escape_undo_redo_and_roundtrip_need_no_switch(self) -> None:

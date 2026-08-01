@@ -84,6 +84,14 @@ class CanvasTextLayoutTests(unittest.TestCase):
                     2.0,
                     10.0,
                 ),
+                (
+                    "parameter",
+                    item._card_layout["parameter"],
+                    item._compact_parameter_font(),
+                    item.CARD_PARAMETER_MIN_POINT_SIZE,
+                    12.0,
+                    4.0,
+                ),
             )
             for field_key, rect, font, min_size, horizontal_padding, vertical_padding in cases:
                 short_plan = item._compact_field_text_layout(

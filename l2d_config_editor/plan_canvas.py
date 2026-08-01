@@ -6,7 +6,7 @@ import math
 from collections import defaultdict
 from typing import Any
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QLineF, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QContextMenuEvent,
@@ -16,6 +16,7 @@ from PySide6.QtGui import (
     QMouseEvent,
     QPainter,
     QPainterPath,
+    QPainterPathStroker,
     QPen,
     QWheelEvent,
 )
@@ -32,11 +33,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .canvas import CanvasStrokeItem
 from .plan import (
     PLAN_ROOT_COLOR,
     PLAN_UNCONNECTED_TITLE,
     PLAN_UNCONNECTED_UUID,
     plan_root_uuid,
+    parse_touchidle_plan_title,
     plan_topic_map,
     plan_topic_title,
 )
@@ -74,6 +77,7 @@ class PlanTopicItem(QGraphicsObject):
         collapsed: bool = False,
         virtual: bool = False,
         root: bool = False,
+        semantic_title=None,
     ) -> None:
         super().__init__()
         self.view = view
@@ -83,6 +87,7 @@ class PlanTopicItem(QGraphicsObject):
         self.collapsed = bool(collapsed)
         self.virtual = bool(virtual)
         self.root = bool(root)
+        self.semantic_title = semantic_title
         self._drag_start = QPointF()
         flags = QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
         if not self.root and not self.virtual:
@@ -143,18 +148,62 @@ class PlanTopicItem(QGraphicsObject):
         font.setBold(self.root)
         metrics = QFontMetricsF(font)
         available = max(20.0, self.width - 36.0)
-        display = metrics.elidedText(
-            self.title,
-            Qt.TextElideMode.ElideRight,
-            int(available),
-        )
         painter.setFont(font)
-        painter.setPen(text_color)
-        painter.drawText(
-            QRectF(18.0, 3.0, available, 29.0),
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            display,
-        )
+        text_rect = QRectF(18.0, 3.0, available, 29.0)
+        if self.semantic_title is None:
+            display = metrics.elidedText(
+                self.title,
+                Qt.TextElideMode.ElideRight,
+                int(available),
+            )
+            painter.setPen(text_color)
+            painter.drawText(
+                text_rect,
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                display,
+            )
+        else:
+            spec = self.semantic_title
+            separator_width = min(
+                available * 0.18,
+                metrics.horizontalAdvance(spec.separator_text),
+            )
+            remaining = max(20.0, available - separator_width)
+            draw_width = remaining * 0.5
+            action_width = remaining - draw_width
+            draw_text = metrics.elidedText(
+                spec.draw_text,
+                Qt.TextElideMode.ElideRight,
+                max(1, int(draw_width)),
+            )
+            action_text = metrics.elidedText(
+                spec.action_text,
+                Qt.TextElideMode.ElideRight,
+                max(1, int(action_width)),
+            )
+            blue = QColor(
+                "#78B1FF"
+                if self.view.theme_mode is ThemeMode.DARK
+                else "#1D4ED8"
+            )
+            orange = QColor(
+                "#F6C85F"
+                if self.view.theme_mode is ThemeMode.DARK
+                else "#9A3412"
+            )
+            x = text_rect.left()
+            for segment, width, color in (
+                (draw_text, draw_width, blue),
+                (spec.separator_text, separator_width, text_color),
+                (action_text, action_width, orange),
+            ):
+                painter.setPen(color)
+                painter.drawText(
+                    QRectF(x, text_rect.top(), width, text_rect.height()),
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                    segment,
+                )
+                x += width
         if self.collapsed:
             painter.setPen(branch_color)
             painter.drawText(
@@ -227,6 +276,23 @@ class PlanCanvasView(QGraphicsView):
         self.topic_items: dict[str, PlanTopicItem] = {}
         self.reference_items: list[QGraphicsPathItem] = []
         self.primary_items: list[QGraphicsPathItem] = []
+        self.stroke_items: dict[str, CanvasStrokeItem] = {}
+        self.pen_color = "#2F80ED"
+        self.pen_width = 4.0
+        self._drawing_stroke = False
+        self._drawing_points: list[QPointF] = []
+        self._pending_ctrl_stroke = False
+        self._ctrl_stroke_start_view = QPointF()
+        self._ctrl_stroke_start_scene = QPointF()
+        self._ctrl_stroke_topic_uuid: str | None = None
+        self._ctrl_stroke_threshold_px = 4.0
+        self._erasing_strokes = False
+        self._erased_stroke_uuids: set[str] = set()
+        self._eraser_last_scene = QPointF()
+        self._temporary_stroke = QGraphicsPathItem()
+        self._temporary_stroke.setZValue(92.0)
+        self._temporary_stroke.hide()
+        self.scene_ref.addItem(self._temporary_stroke)
         self._busy_flags: set[str] = set()
         self._panning = False
         self._pan_start = QPointF()
@@ -246,10 +312,13 @@ class PlanCanvasView(QGraphicsView):
         controller.planLayoutChanged.connect(self._on_plan_layout_changed)
         controller.planViewChanged.connect(self._apply_stored_view_state)
         controller.selectionChanged.connect(self._handle_controller_selection)
+        controller.planCanvasStrokesChanged.connect(self._sync_canvas_strokes)
         self.set_ui_theme(self.theme_mode)
         self.rebuild_scene(restore_view=True)
 
     def _on_document_loaded(self) -> None:
+        self.cancel_stroke_preview()
+        self.cancel_erase_gesture()
         self._temporarily_expanded.clear()
         self._restore_view_on_rebuild = True
         self._schedule_rebuild()
@@ -290,6 +359,23 @@ class PlanCanvasView(QGraphicsView):
 
     def is_busy(self) -> bool:
         return bool(self._busy_flags)
+
+    def set_pen_style(self, color: str, width: float) -> None:
+        resolved = QColor(str(color))
+        self.pen_color = resolved.name() if resolved.isValid() else "#2f80ed"
+        self.pen_width = (
+            2.0 if float(width) <= 2.0 else (4.0 if float(width) <= 4.0 else 8.0)
+        )
+        if self._drawing_stroke:
+            self._temporary_stroke.setPen(
+                QPen(
+                    QColor(self.pen_color),
+                    self.pen_width,
+                    Qt.PenStyle.SolidLine,
+                    Qt.PenCapStyle.RoundCap,
+                    Qt.PenJoinStyle.RoundJoin,
+                )
+            )
 
     def _visible_layout(
         self,
@@ -349,10 +435,14 @@ class PlanCanvasView(QGraphicsView):
         selected = set(self.selected_node_uuids())
         self._selection_guard = True
         try:
-            self.scene_ref.clear()
+            for item in list(self.topic_items.values()):
+                self.scene_ref.removeItem(item)
+            for item in [*self.reference_items, *self.primary_items]:
+                self.scene_ref.removeItem(item)
             self.topic_items.clear()
             self.reference_items.clear()
             self.primary_items.clear()
+            self._sync_canvas_strokes()
             layout = self.controller.ensure_plan_layout()
             topics = {
                 topic.node_uuid: topic
@@ -407,6 +497,11 @@ class PlanCanvasView(QGraphicsView):
                         topic.branch_color or PLAN_ROOT_COLOR,
                         collapsed=topic.collapsed,
                         root=node_uuid == root_uuid,
+                        semantic_title=(
+                            parse_touchidle_plan_title(topic_title)
+                            if topic.formalization_state != "formal"
+                            else None
+                        ),
                     )
                 item.setPos(position)
                 self.scene_ref.addItem(item)
@@ -698,7 +793,192 @@ class PlanCanvasView(QGraphicsView):
         event.accept()
         self._store_view_state()
 
+    def _sync_canvas_strokes(self) -> None:
+        records = {
+            str(record.uuid): record
+            for record in self.controller.document.plan_canvas_strokes
+        }
+        for stroke_uuid in list(self.stroke_items):
+            if stroke_uuid in records:
+                continue
+            item = self.stroke_items.pop(stroke_uuid)
+            self.scene_ref.removeItem(item)
+        for stroke_uuid, record in records.items():
+            item = self.stroke_items.get(stroke_uuid)
+            if item is None:
+                item = CanvasStrokeItem(self, record)
+                self.scene_ref.addItem(item)
+                self.stroke_items[stroke_uuid] = item
+            elif item.record != record:
+                item.prepareGeometryChange()
+                item.record = record
+                item.setPath(CanvasStrokeItem.path_for_points(record.points))
+                item.update()
+            item.show()
+
+    def _topic_item_at_view_point(self, point: QPointF) -> PlanTopicItem | None:
+        item = self.itemAt(point.toPoint() if hasattr(point, "toPoint") else point)
+        return item if isinstance(item, PlanTopicItem) and not item.virtual else None
+
+    def _append_stroke_point(
+        self, scene_point: QPointF, *, force: bool = False
+    ) -> None:
+        if self._drawing_points and not force:
+            previous_view = QPointF(self.mapFromScene(self._drawing_points[-1]))
+            current_view = QPointF(self.mapFromScene(scene_point))
+            if (
+                math.hypot(
+                    current_view.x() - previous_view.x(),
+                    current_view.y() - previous_view.y(),
+                )
+                < 2.0
+            ):
+                return
+        self._drawing_points.append(QPointF(scene_point))
+        self._temporary_stroke.setPath(
+            CanvasStrokeItem.path_for_points(self._drawing_points)
+        )
+
+    def _start_stroke_preview(self, scene_point: QPointF) -> None:
+        self.cancel_stroke_preview()
+        self._drawing_stroke = True
+        self._drawing_points = []
+        self._temporary_stroke.setPen(
+            QPen(
+                QColor(self.pen_color),
+                self.pen_width,
+                Qt.PenStyle.SolidLine,
+                Qt.PenCapStyle.RoundCap,
+                Qt.PenJoinStyle.RoundJoin,
+            )
+        )
+        self._append_stroke_point(scene_point, force=True)
+        self._temporary_stroke.show()
+        self.viewport().setCursor(Qt.CursorShape.CrossCursor)
+        self._set_busy("stroke", True)
+
+    def cancel_stroke_preview(self) -> None:
+        if self._drawing_stroke:
+            self._set_busy("stroke", False)
+        self._drawing_stroke = False
+        self._drawing_points = []
+        self._temporary_stroke.setPath(QPainterPath())
+        self._temporary_stroke.hide()
+        self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+
+    def cancel_pen_gestures(self) -> None:
+        self.cancel_stroke_preview()
+        self.cancel_erase_gesture()
+        self._pending_ctrl_stroke = False
+        self._ctrl_stroke_topic_uuid = None
+
+    def _finish_stroke_preview(self, scene_point: QPointF) -> None:
+        if not self._drawing_stroke:
+            return
+        self._append_stroke_point(scene_point, force=True)
+        points = [(point.x(), point.y()) for point in self._drawing_points]
+        self.cancel_stroke_preview()
+        if len(points) == 1:
+            points.append(points[0])
+        self.controller.add_canvas_stroke(
+            points,
+            self.pen_color,
+            self.pen_width,
+            "plan",
+        )
+
+    def _stroke_uuids_in_eraser_segment(
+        self,
+        start_scene: QPointF,
+        end_scene: QPointF,
+    ) -> list[str]:
+        scale = max(0.001, abs(float(self.transform().m11())))
+        radius = 12.0 / scale
+        segment = QPainterPath(QPointF(start_scene))
+        if QLineF(start_scene, end_scene).length() <= 0.001:
+            end_scene = QPointF(start_scene.x() + 0.01, start_scene.y() + 0.01)
+        segment.lineTo(end_scene)
+        stroker = QPainterPathStroker()
+        stroker.setWidth(radius * 2.0)
+        stroker.setCapStyle(Qt.PenCapStyle.RoundCap)
+        stroker.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        corridor = stroker.createStroke(segment)
+        matches: list[str] = []
+        for candidate in self.scene_ref.items(corridor.boundingRect()):
+            if not isinstance(candidate, CanvasStrokeItem) or not candidate.isVisible():
+                continue
+            if corridor.intersects(candidate.mapToScene(candidate.shape())):
+                matches.append(str(candidate.record.uuid))
+        return matches
+
+    def _erase_stroke_segment(
+        self,
+        start_scene: QPointF,
+        end_scene: QPointF,
+    ) -> None:
+        for stroke_uuid in self._stroke_uuids_in_eraser_segment(
+            start_scene, end_scene
+        ):
+            if stroke_uuid in self._erased_stroke_uuids:
+                continue
+            item = self.stroke_items.get(stroke_uuid)
+            if item is None:
+                continue
+            item.hide()
+            self._erased_stroke_uuids.add(stroke_uuid)
+
+    def _start_erase_gesture(self, scene_point: QPointF) -> None:
+        self.cancel_erase_gesture()
+        self._erasing_strokes = True
+        self._erased_stroke_uuids.clear()
+        self._eraser_last_scene = QPointF(scene_point)
+        self._set_busy("erase", True)
+        self.viewport().setCursor(Qt.CursorShape.CrossCursor)
+        self._erase_stroke_segment(scene_point, scene_point)
+
+    def cancel_erase_gesture(self) -> None:
+        if self._erasing_strokes:
+            self._set_busy("erase", False)
+        for stroke_uuid in self._erased_stroke_uuids:
+            item = self.stroke_items.get(stroke_uuid)
+            if item is not None:
+                item.show()
+        self._erasing_strokes = False
+        self._erased_stroke_uuids.clear()
+        self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+
+    def _finish_erase_gesture(self, scene_point: QPointF) -> None:
+        if not self._erasing_strokes:
+            return
+        self._erase_stroke_segment(self._eraser_last_scene, scene_point)
+        erased = list(self._erased_stroke_uuids)
+        self._erasing_strokes = False
+        self._erased_stroke_uuids.clear()
+        self._set_busy("erase", False)
+        self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+        if erased:
+            self.controller.remove_canvas_strokes(erased, "plan")
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            if event.button() == Qt.MouseButton.LeftButton:
+                scene_point = self.mapToScene(event.position().toPoint())
+                topic_item = self._topic_item_at_view_point(event.position())
+                if topic_item is None:
+                    self._start_stroke_preview(scene_point)
+                else:
+                    self._pending_ctrl_stroke = True
+                    self._ctrl_stroke_start_view = QPointF(event.position())
+                    self._ctrl_stroke_start_scene = QPointF(scene_point)
+                    self._ctrl_stroke_topic_uuid = topic_item.node_uuid
+                event.accept()
+                return
+            if event.button() == Qt.MouseButton.RightButton:
+                self._start_erase_gesture(
+                    self.mapToScene(event.position().toPoint())
+                )
+                event.accept()
+                return
         if event.button() == Qt.MouseButton.MiddleButton:
             self._panning = True
             self._pan_start = QPointF(event.position())
@@ -709,6 +989,31 @@ class PlanCanvasView(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._erasing_strokes:
+            current = self.mapToScene(event.position().toPoint())
+            self._erase_stroke_segment(self._eraser_last_scene, current)
+            self._eraser_last_scene = QPointF(current)
+            event.accept()
+            return
+        if self._pending_ctrl_stroke:
+            delta = event.position() - self._ctrl_stroke_start_view
+            if math.hypot(delta.x(), delta.y()) > self._ctrl_stroke_threshold_px:
+                start = QPointF(self._ctrl_stroke_start_scene)
+                self._pending_ctrl_stroke = False
+                self._ctrl_stroke_topic_uuid = None
+                self._start_stroke_preview(start)
+                self._append_stroke_point(
+                    self.mapToScene(event.position().toPoint()),
+                    force=True,
+                )
+            event.accept()
+            return
+        if self._drawing_stroke:
+            self._append_stroke_point(
+                self.mapToScene(event.position().toPoint())
+            )
+            event.accept()
+            return
         if self._panning:
             delta = event.position() - self._pan_start
             self._pan_start = QPointF(event.position())
@@ -723,6 +1028,27 @@ class PlanCanvasView(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.RightButton and self._erasing_strokes:
+            self._finish_erase_gesture(
+                self.mapToScene(event.position().toPoint())
+            )
+            event.accept()
+            return
+        if event.button() == Qt.MouseButton.LeftButton and self._pending_ctrl_stroke:
+            node_uuid = self._ctrl_stroke_topic_uuid
+            self._pending_ctrl_stroke = False
+            self._ctrl_stroke_topic_uuid = None
+            item = self.topic_items.get(node_uuid or "")
+            if item is not None:
+                item.setSelected(not item.isSelected())
+            event.accept()
+            return
+        if event.button() == Qt.MouseButton.LeftButton and self._drawing_stroke:
+            self._finish_stroke_preview(
+                self.mapToScene(event.position().toPoint())
+            )
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.MiddleButton and self._panning:
             self._panning = False
             self._set_busy("pan", False)
@@ -874,6 +1200,9 @@ class PlanCanvasView(QGraphicsView):
         return self.controller.delete_plan_subtrees(roots)
 
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            event.accept()
+            return
         item = self.itemAt(event.pos())
         topic_item = item if isinstance(item, PlanTopicItem) else None
         menu = QMenu(self)
@@ -911,6 +1240,19 @@ class PlanCanvasView(QGraphicsView):
         return False
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Escape and self._erasing_strokes:
+            self.cancel_erase_gesture()
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_Escape and self._drawing_stroke:
+            self.cancel_stroke_preview()
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_Escape and self._pending_ctrl_stroke:
+            self._pending_ctrl_stroke = False
+            self._ctrl_stroke_topic_uuid = None
+            event.accept()
+            return
         selected = self.selected_node_uuids()
         node_uuid = selected[0] if selected else None
         if event.key() in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:

@@ -1923,6 +1923,51 @@
         }
       ]
     },
+    "PlanPlaceholder": {
+      "title": "虚节点",
+      "category": "placeholder",
+      "copyable": true,
+      "quick_create": false,
+      "resizable": false,
+      "header_color": "#4f5968",
+      "body_color": "#242933",
+      "accent_color": "#8b95a5",
+      "fields": [
+        {
+          "key": "plan_source_title",
+          "label": "计划标题",
+          "editor": "text",
+          "default": "",
+          "read_only": true,
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "planned_draw_name",
+          "label": "预期框名",
+          "editor": "text",
+          "default": "",
+          "read_only": true,
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        },
+        {
+          "key": "planned_action_name",
+          "label": "预期动画名",
+          "editor": "text",
+          "default": "",
+          "read_only": true,
+          "show_in_modes": [
+            "simple",
+            "advanced"
+          ]
+        }
+      ]
+    },
     "Comment": {
       "title": "备注节点",
       "category": "comment",

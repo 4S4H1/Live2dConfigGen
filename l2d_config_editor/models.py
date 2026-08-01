@@ -35,6 +35,7 @@ class PlanTopicRecord:
     plan_title: str = ""
     collapsed: bool = False
     branch_color: str = ""
+    formalization_state: str = "formal"
 
     def clone(self) -> "PlanTopicRecord":
         return PlanTopicRecord(
@@ -44,6 +45,7 @@ class PlanTopicRecord:
             plan_title=self.plan_title,
             collapsed=bool(self.collapsed),
             branch_color=self.branch_color,
+            formalization_state=self.formalization_state,
         )
 
 
@@ -194,6 +196,7 @@ class DocumentModel:
     groups: list[GroupRecord] = field(default_factory=list)
     canvas_images: list[CanvasImageRecord] = field(default_factory=list)
     canvas_strokes: list[CanvasStrokeRecord] = field(default_factory=list)
+    plan_canvas_strokes: list[CanvasStrokeRecord] = field(default_factory=list)
     canvas_view: CanvasViewState = field(default_factory=CanvasViewState)
     plan_layout: PlanLayout = field(default_factory=PlanLayout)
     state: DocumentState = field(default_factory=DocumentState)

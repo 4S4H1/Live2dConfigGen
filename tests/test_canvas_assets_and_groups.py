@@ -219,7 +219,7 @@ class CanvasImagePersistenceTests(unittest.TestCase):
             loaded = load_document(schema, path)
 
         self.assertEqual(data_base64, payload["canvas_images"][0]["data_base64"])
-        self.assertEqual(4, payload["format_version"])
+        self.assertEqual(5, payload["format_version"])
         self.assertEqual(document.canvas_images[0], loaded.canvas_images[0])
 
     def test_canvas_image_add_remove_and_move_are_undoable(self) -> None:

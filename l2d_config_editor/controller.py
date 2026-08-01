@@ -19,6 +19,7 @@ from .commands import (
     MoveCanvasImagesCommand,
     MoveNodeCommand,
     MoveNodesCommand,
+    MaterializePlanTopicsCommand,
     RemoveConnectionCommand,
     RemoveCanvasImagesCommand,
     RemoveCanvasStrokesCommand,
@@ -97,6 +98,8 @@ from .plan import (
     plan_subtree_uuids,
     plan_topic_map,
     plan_topic_title,
+    parse_touchidle_plan_title,
+    placeholder_fields_for_title,
 )
 from .perf_tools import get_performance_recorder
 from .reference_images import (
@@ -136,6 +139,7 @@ class EditorController(QObject):
     groupsChanged = Signal()
     canvasImagesChanged = Signal()
     canvasStrokesChanged = Signal()
+    planCanvasStrokesChanged = Signal()
     planLayoutChanged = Signal()
     planViewChanged = Signal(object)
 
@@ -323,8 +327,24 @@ class EditorController(QObject):
     def get_canvas_image(self, image_uuid: str) -> CanvasImageRecord | None:
         return next((image for image in self.document.canvas_images if image.uuid == image_uuid), None)
 
-    def get_canvas_stroke(self, stroke_uuid: str) -> CanvasStrokeRecord | None:
-        return next((stroke for stroke in self.document.canvas_strokes if stroke.uuid == stroke_uuid), None)
+    def _canvas_stroke_records(self, layer: str = "formal") -> list[CanvasStrokeRecord]:
+        return (
+            self.document.plan_canvas_strokes
+            if layer == "plan"
+            else self.document.canvas_strokes
+        )
+
+    def get_canvas_stroke(
+        self, stroke_uuid: str, layer: str = "formal"
+    ) -> CanvasStrokeRecord | None:
+        return next(
+            (
+                stroke
+                for stroke in self._canvas_stroke_records(layer)
+                if stroke.uuid == stroke_uuid
+            ),
+            None,
+        )
 
     def ensure_plan_layout(self) -> PlanLayout:
         before = self.document.plan_layout.clone()
@@ -437,10 +457,10 @@ class EditorController(QObject):
         node = create_node(
             self.schema,
             self.document,
-            "Comment",
+            "PlanPlaceholder",
             (base_x, base_y),
         )
-        node.fields["content"] = resolved_title
+        node.fields.update(placeholder_fields_for_title(resolved_title))
         new_layout = old_layout.clone()
         if parent_uuid is not None:
             for record in new_layout.topics:
@@ -458,6 +478,7 @@ class EditorController(QObject):
                 plan_title=resolved_title,
                 collapsed=False,
                 branch_color=PLAN_BRANCH_COLORS[insert_index % len(PLAN_BRANCH_COLORS)],
+                formalization_state="draft",
             )
         )
         siblings.insert(insert_index, node.uuid)
@@ -501,9 +522,126 @@ class EditorController(QObject):
         for record in new_layout.topics:
             if record.node_uuid == node_uuid:
                 record.plan_title = resolved
+                if record.formalization_state in {"virtual", "materialized"}:
+                    record.formalization_state = "draft"
                 break
+        node = self.get_node(node_uuid)
+        placeholder_updates: list[tuple[str, Any, Any]] = []
+        if node is not None and node.type == "PlanPlaceholder":
+            for key, value in placeholder_fields_for_title(resolved).items():
+                old_value = node.fields.get(key)
+                if old_value != value:
+                    placeholder_updates.append((key, old_value, value))
+        self.undo_stack.beginMacro("修改计划标题")
+        try:
+            self.undo_stack.push(
+                SetPlanLayoutCommand(
+                    self, old_layout, new_layout, label="修改计划标题"
+                )
+            )
+            if placeholder_updates:
+                self.undo_stack.push(
+                    UpdateFieldsCommand(
+                        self,
+                        node_uuid,
+                        placeholder_updates,
+                        "advanced",
+                        label="同步虚节点占位字段",
+                    )
+                )
+        finally:
+            self.undo_stack.endMacro()
+        return True
+
+    def materialize_plan_topics(self) -> bool:
+        """Convert all pending plan topics as one undoable transaction."""
+
+        old_layout = self.ensure_plan_layout().clone()
+        candidates = [
+            topic
+            for topic in old_layout.topics
+            if topic.formalization_state in {"draft", "virtual"}
+        ]
+        if not candidates:
+            return False
+        candidate_ids = {topic.node_uuid for topic in candidates}
+        old_nodes = [
+            node.clone()
+            for node in self.document.nodes
+            if node.uuid in candidate_ids
+        ]
+        staging = copy.copy(self.document)
+        staging.nodes = [
+            node.clone()
+            for node in self.document.nodes
+            if node.uuid not in candidate_ids
+        ]
+        new_layout = old_layout.clone()
+        topic_by_uuid = {
+            topic.node_uuid: topic for topic in new_layout.topics
+        }
+        new_nodes: list[NodeRecord] = []
+        for old_node in old_nodes:
+            topic = topic_by_uuid[old_node.uuid]
+            parsed = parse_touchidle_plan_title(topic.plan_title)
+            if parsed is None:
+                replacement = old_node.clone()
+                replacement.type = "PlanPlaceholder"
+                replacement.fields = placeholder_fields_for_title(topic.plan_title)
+                replacement.type_slot = None
+                replacement.export_slot = None
+                replacement.sequence_no = None
+                replacement.numeric_linkage_enabled = False
+                replacement.manual_fields.clear()
+                apply_node_appearance_defaults(self.schema, replacement)
+                topic.formalization_state = "virtual"
+            else:
+                replacement = create_node(
+                    self.schema,
+                    staging,
+                    "TouchIdle",
+                    (
+                        float(old_node.ui_position.get("x", 0.0)),
+                        float(old_node.ui_position.get("y", 0.0)),
+                    ),
+                )
+                replacement.uuid = old_node.uuid
+                replacement.locked = old_node.locked
+                replacement.ui_size = (
+                    dict(old_node.ui_size) if old_node.ui_size else None
+                )
+                replacement.fields["transition_type"] = "animated"
+                replacement.fields["draw_able_name"] = (
+                    f"TouchIdle{parsed.draw_index}"
+                )
+                replacement.fields["parameter"] = "empty"
+                replacement.fields["action_trigger"] = normalize_field_input(
+                    self.schema,
+                    replacement,
+                    "action_trigger",
+                    f"touch_idle{parsed.action_index}",
+                )
+                replacement.manual_fields.update(
+                    {"draw_able_name", "parameter", "action_trigger"}
+                )
+                apply_auto_rules(
+                    self.schema,
+                    staging,
+                    replacement,
+                    source_mode="advanced",
+                    force_generated=False,
+                )
+                topic.formalization_state = "materialized"
+            staging.nodes.append(replacement.clone())
+            new_nodes.append(replacement)
         self.undo_stack.push(
-            SetPlanLayoutCommand(self, old_layout, new_layout, label="修改计划标题")
+            MaterializePlanTopicsCommand(
+                self,
+                old_nodes,
+                new_nodes,
+                old_layout,
+                new_layout,
+            )
         )
         return True
 
@@ -752,7 +890,9 @@ class EditorController(QObject):
         points: list[tuple[float, float]],
         color: str = "#2F80ED",
         width: float = 4.0,
+        layer: str = "formal",
     ) -> str | None:
+        resolved_layer = "plan" if layer == "plan" else "formal"
         try:
             stroke = validate_canvas_stroke(
                 CanvasStrokeRecord(
@@ -764,20 +904,35 @@ class EditorController(QObject):
             )
             # Reject before mutating the undo stack if the document-wide
             # stroke/point budget would make the next save impossible.
-            validate_canvas_strokes([*self.document.canvas_strokes, stroke])
+            validate_canvas_strokes(
+                [*self._canvas_stroke_records(resolved_layer), stroke]
+            )
         except ValueError:
             return None
-        self.undo_stack.push(AddCanvasStrokesCommand(self, [stroke]))
+        self.undo_stack.push(
+            AddCanvasStrokesCommand(self, [stroke], resolved_layer)
+        )
         return stroke.uuid
 
-    def remove_canvas_stroke(self, stroke_uuid: str) -> None:
-        self.remove_canvas_strokes([stroke_uuid])
+    def remove_canvas_stroke(
+        self, stroke_uuid: str, layer: str = "formal"
+    ) -> None:
+        self.remove_canvas_strokes([stroke_uuid], layer)
 
-    def remove_canvas_strokes(self, stroke_uuids: list[str]) -> None:
+    def remove_canvas_strokes(
+        self, stroke_uuids: list[str], layer: str = "formal"
+    ) -> None:
+        resolved_layer = "plan" if layer == "plan" else "formal"
         selected = set(stroke_uuids)
-        strokes = [stroke for stroke in self.document.canvas_strokes if stroke.uuid in selected]
+        strokes = [
+            stroke
+            for stroke in self._canvas_stroke_records(resolved_layer)
+            if stroke.uuid in selected
+        ]
         if strokes:
-            self.undo_stack.push(RemoveCanvasStrokesCommand(self, strokes))
+            self.undo_stack.push(
+                RemoveCanvasStrokesCommand(self, strokes, resolved_layer)
+            )
 
     def add_canvas_image(
         self,
@@ -1334,6 +1489,7 @@ class EditorController(QObject):
                 "plan_title": topics[node.uuid].plan_title,
                 "collapsed": bool(topics[node.uuid].collapsed),
                 "branch_color": topics[node.uuid].branch_color,
+                "formalization_state": topics[node.uuid].formalization_state,
             }
             for node in selected_nodes
             if node.uuid in topics
@@ -1425,6 +1581,7 @@ class EditorController(QObject):
             title = item.get("plan_title", "")
             collapsed = item.get("collapsed", False)
             branch_color = item.get("branch_color", "")
+            formalization_state = item.get("formalization_state", "formal")
             if (
                 not isinstance(node_uuid, str)
                 or not node_uuid
@@ -1441,6 +1598,13 @@ class EditorController(QObject):
                 raise ValueError("节点剪贴板计划标题无效")
             if not isinstance(collapsed, bool):
                 raise ValueError("节点剪贴板计划折叠状态无效")
+            if formalization_state not in {
+                "formal",
+                "draft",
+                "virtual",
+                "materialized",
+            }:
+                raise ValueError("节点剪贴板计划正式化状态无效")
             if (
                 not isinstance(branch_color, str)
                 or (
@@ -1465,6 +1629,7 @@ class EditorController(QObject):
                     "plan_title": title,
                     "collapsed": collapsed,
                     "branch_color": branch_color.upper(),
+                    "formalization_state": formalization_state,
                 }
             )
 
@@ -1641,6 +1806,11 @@ class EditorController(QObject):
                     plan_title=str(item.get("plan_title", "")),
                     collapsed=bool(item.get("collapsed", False)),
                     branch_color=str(item.get("branch_color", "")),
+                    formalization_state=(
+                        "draft"
+                        if item.get("formalization_state") in {"draft", "virtual"}
+                        else str(item.get("formalization_state", "formal"))
+                    ),
                 )
             )
             pair = (parent_uuid, new_uuid_value)
@@ -2008,6 +2178,30 @@ class EditorController(QObject):
         self.planLayoutChanged.emit()
         self.refresh_derived()
 
+    def _replace_plan_nodes(
+        self,
+        replacements: list[NodeRecord],
+        layout: PlanLayout,
+    ) -> None:
+        replacement_by_uuid = {
+            node.uuid: node.clone() for node in replacements
+        }
+        replaced_uuids = set(replacement_by_uuid)
+        self.document.nodes = [
+            replacement_by_uuid.get(node.uuid, node)
+            for node in self.document.nodes
+        ]
+        current_view = self.document.plan_layout.view
+        self.document.plan_layout = layout.clone()
+        self.document.plan_layout.view = copy.copy(current_view)
+        reassign_function_ids(self.schema, self.document)
+        for node_uuid in replaced_uuids:
+            self.nodeRemoved.emit(node_uuid)
+            self.nodeAdded.emit(node_uuid)
+        self.connectionsChanged.emit()
+        self.planLayoutChanged.emit()
+        self.refresh_derived()
+
     def _insert_canvas_images(self, images: list[CanvasImageRecord]) -> None:
         existing = {image.uuid for image in self.document.canvas_images}
         self.document.canvas_images.extend(image for image in images if image.uuid not in existing)
@@ -2033,32 +2227,55 @@ class EditorController(QObject):
                 image.ui_size = {"width": validated[0], "height": validated[1]}
         self.canvasImagesChanged.emit()
 
-    def _insert_canvas_strokes(self, strokes: list[CanvasStrokeRecord]) -> None:
-        existing = {stroke.uuid for stroke in self.document.canvas_strokes}
-        self.document.canvas_strokes.extend(
+    def _emit_canvas_strokes_changed(self, layer: str) -> None:
+        if layer == "plan":
+            self.planCanvasStrokesChanged.emit()
+        else:
+            self.canvasStrokesChanged.emit()
+
+    def _insert_canvas_strokes(
+        self,
+        strokes: list[CanvasStrokeRecord],
+        layer: str = "formal",
+    ) -> None:
+        records = self._canvas_stroke_records(layer)
+        existing = {stroke.uuid for stroke in records}
+        records.extend(
             stroke for stroke in strokes if stroke.uuid not in existing
         )
-        self.canvasStrokesChanged.emit()
+        self._emit_canvas_strokes_changed(layer)
 
-    def _remove_canvas_strokes(self, stroke_uuids: list[str]) -> None:
+    def _remove_canvas_strokes(
+        self,
+        stroke_uuids: list[str],
+        layer: str = "formal",
+    ) -> None:
         selected = set(stroke_uuids)
-        self.document.canvas_strokes = [
-            stroke for stroke in self.document.canvas_strokes if stroke.uuid not in selected
+        records = [
+            stroke
+            for stroke in self._canvas_stroke_records(layer)
+            if stroke.uuid not in selected
         ]
-        self.canvasStrokesChanged.emit()
+        if layer == "plan":
+            self.document.plan_canvas_strokes = records
+        else:
+            self.document.canvas_strokes = records
+        self._emit_canvas_strokes_changed(layer)
 
     def _restore_canvas_strokes(
         self,
         indexed_strokes: list[tuple[int, CanvasStrokeRecord]],
+        layer: str = "formal",
     ) -> None:
-        existing = {stroke.uuid for stroke in self.document.canvas_strokes}
+        records = self._canvas_stroke_records(layer)
+        existing = {stroke.uuid for stroke in records}
         for index, stroke in sorted(indexed_strokes, key=lambda item: item[0]):
             if stroke.uuid in existing:
                 continue
-            resolved_index = min(max(0, int(index)), len(self.document.canvas_strokes))
-            self.document.canvas_strokes.insert(resolved_index, stroke)
+            resolved_index = min(max(0, int(index)), len(records))
+            records.insert(resolved_index, stroke)
             existing.add(stroke.uuid)
-        self.canvasStrokesChanged.emit()
+        self._emit_canvas_strokes_changed(layer)
 
     def _move_node(self, node_uuid: str, position: tuple[float, float]) -> None:
         node = self.get_node(node_uuid)

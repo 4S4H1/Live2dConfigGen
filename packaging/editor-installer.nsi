@@ -54,6 +54,8 @@ SetCompressor /SOLID lzma
 Name "L2D 交互图表编辑器"
 !define PRODUCT_GUID "{E12D3BB6-BC45-4CF0-88DE-3D1B7F228B48}"
 !define OWNER_MARKER_NAME ".l2d-install-owner"
+!define MANAGED_MANIFEST_NAME ".l2d-managed-files.txt"
+!define MANAGED_SCRIPT_NAME ".l2d-managed-files.ps1"
 !define EDITOR_OWNER_VALUE "L2DConfigEditor|${PRODUCT_GUID}"
 !define HOST_OWNER_VALUE "L2DUpdateHost|${PRODUCT_GUID}"
 OutFile "${OUTPUT_DIR}\L2DConfigEditor-Setup-${VERSION}-x64.exe"
@@ -91,9 +93,9 @@ Var LegacyHostDisplayName
 Var LegacyHostPublisher
 Var LegacyHostUninstallString
 Var LegacyHostExpectedUninstallString
-Var WorkScanFound
-Var WorkScanRoot
 Var OwnershipStatus
+Var ManagedSource
+Var ManagedTarget
 Var LegacyHostQuarantineDir
 Var LegacyHostWasQuarantined
 
@@ -201,56 +203,67 @@ FunctionEnd
 !insertmacro DefineHostOwnershipValidator ValidateHostRecoveryOwnership "$HostInstallDir.__old" "0"
 !insertmacro DefineHostOwnershipValidator ValidateHostStagingOwnership "$HostInstallDir.__new" "0"
 
-!macro DefineWorkFileScanner PREFIX
-Function ${PREFIX}ScanForUserWorkFiles
+; Installation manifests are written from the freshly staged payload. Upgrade
+; and uninstall delete only paths listed in that manifest. Everything else is
+; user-owned and is moved back into the live root (or simply left in place).
+!macro DefineManagedPayloadHelpers PREFIX SCRIPT
+Function ${PREFIX}WriteManagedManifest
   Exch $R0
-  Push $R1
-  Push $R2
-  Push $R3
-  FindFirst $R1 $R2 "$R0\*.*"
-work_scan_loop:
-  StrCmp $R2 "" work_scan_done
-  StrCmp $R2 "." work_scan_next
-  StrCmp $R2 ".." work_scan_next
-  IfFileExists "$R0\$R2\*.*" work_scan_directory work_scan_file
-work_scan_directory:
-  StrCmp $R2 "_internal" 0 work_scan_recurse
-  StrCmp $R0 $WorkScanRoot work_scan_next
-work_scan_recurse:
-  Push "$R0\$R2"
-  Call ${PREFIX}ScanForUserWorkFiles
-  Pop $R3
-  StrCmp $WorkScanFound "1" work_scan_done
-  Goto work_scan_next
-work_scan_file:
-  ${GetFileExt} "$R0\$R2" $R3
-  StrCmp $R3 "json" work_scan_found
-  StrCmp $R3 "csv" work_scan_found
-  StrCmp $R3 "png" work_scan_found
-  StrCmp $R3 "jpg" work_scan_found
-  StrCmp $R3 "jpeg" work_scan_found
-  StrCmp $R3 "gif" work_scan_found
-  StrCmp $R3 "bmp" work_scan_found
-  StrCmp $R3 "webp" work_scan_found
-  StrCmp $R3 "svg" work_scan_found
-  Goto work_scan_next
-work_scan_found:
-  StrCpy $WorkScanFound "1"
-  Goto work_scan_done
-work_scan_next:
-  FindNext $R1 $R2
-  Goto work_scan_loop
-work_scan_done:
-  FindClose $R1
-  Pop $R3
-  Pop $R2
+  System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_MANIFEST_ROOT", w "$R0") i.r1'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_MANIFEST_NAME", w "${MANAGED_MANIFEST_NAME}") i.r1'
+  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -File "${SCRIPT}" -Mode WriteManifest'
   Pop $R1
+  Pop $R2
+  System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_MANIFEST_ROOT", w "") i.r3'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_MANIFEST_NAME", w "") i.r3'
+  StrCmp $R1 "0" 0 managed_manifest_failed
+  ClearErrors
+  Goto managed_manifest_done
+managed_manifest_failed:
+  SetErrors
+managed_manifest_done:
+  Exch $R0
+FunctionEnd
+
+Function ${PREFIX}MergeUnknownFiles
+  System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_MERGE_SOURCE", w "$ManagedSource") i.r2'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_MERGE_TARGET", w "$ManagedTarget") i.r2'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_MANIFEST_NAME", w "${MANAGED_MANIFEST_NAME}") i.r2'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_KNOWN_FILES", w "${OWNER_MARKER_NAME}|Uninstall.exe|L2DConfigEditor.exe|L2DUpdateHost.exe") i.r2'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_PRESERVE_SUFFIX", w ".user-preserved") i.r2'
+  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -File "${SCRIPT}" -Mode MergeUnknown'
+  Pop $R2
+  Pop $R3
+  System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_MERGE_SOURCE", w "") i.r4'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_MERGE_TARGET", w "") i.r4'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_MANIFEST_NAME", w "") i.r4'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_KNOWN_FILES", w "") i.r4'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_PRESERVE_SUFFIX", w "") i.r4'
+  StrCmp $R2 "0" 0 merge_unknown_failed
+  ClearErrors
+  Goto merge_unknown_done
+merge_unknown_failed:
+  SetErrors
+merge_unknown_done:
+FunctionEnd
+
+Function ${PREFIX}DeleteManagedFiles
+  Exch $R0
+  System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_DELETE_ROOT", w "$R0") i.r1'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_MANIFEST_NAME", w "${MANAGED_MANIFEST_NAME}") i.r1'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_KNOWN_FILES", w "${OWNER_MARKER_NAME}|Uninstall.exe|L2DConfigEditor.exe|L2DUpdateHost.exe") i.r1'
+  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -File "${SCRIPT}" -Mode DeleteManaged'
+  Pop $R1
+  Pop $R2
+  System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_DELETE_ROOT", w "") i.r3'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_MANIFEST_NAME", w "") i.r3'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_KNOWN_FILES", w "") i.r3'
   Exch $R0
 FunctionEnd
 !macroend
 
-!insertmacro DefineWorkFileScanner ""
-!insertmacro DefineWorkFileScanner "un."
+!insertmacro DefineManagedPayloadHelpers "" "$PLUGINSDIR\l2d-managed-files.ps1"
+!insertmacro DefineManagedPayloadHelpers "un." "$INSTDIR\${MANAGED_SCRIPT_NAME}"
 
 Function ValidateInstallRootRelationship
   ; Pass paths through inherited environment variables so even apostrophes and
@@ -388,13 +401,17 @@ legacy_host_invalid_host_file:
 legacy_host_invalid_uninstaller:
   Goto legacy_host_invalid
 legacy_host_invalid:
-  StrCpy $LegacyHostPreflightStatus "invalid"
+  ; Incomplete or mismatched legacy metadata is not authority to delete an old
+  ; root. Leave it untouched, warn in interactive mode, and continue installing.
+  StrCpy $LegacyHostDetected "0"
+  StrCpy $LegacyHostPreflightStatus "skipped"
 FunctionEnd
 
 Function MigrateLegacyHost
   StrCpy $LegacyHostMigrationStatus "ok"
   StrCpy $LegacyHostWasQuarantined "0"
   StrCpy $LegacyHostQuarantineDir ""
+  StrCmp $LegacyHostPreflightStatus "skipped" legacy_host_migration_skipped
   StrCmp $LegacyHostDetected "1" 0 legacy_host_cleanup_integration
 
   ; A validated custom legacy root is first moved aside as one reversible
@@ -430,6 +447,9 @@ legacy_host_cleanup_integration:
   RMDir "$SMPROGRAMS\4S4H1"
 !endif
 !endif
+  Return
+
+legacy_host_migration_skipped:
   Return
 
 !ifdef FORCE_LEGACY_MIGRATION_FAILURE
@@ -476,7 +496,7 @@ Function PreflightFinalInstallDirectory
   Call PreflightLegacyHost
 !endif
 !endif
-  StrCmp $LegacyHostPreflightStatus "invalid" legacy_host_init_invalid
+  StrCmp $LegacyHostPreflightStatus "skipped" legacy_host_init_skipped
   StrCmp $LegacyHostPreflightStatus "running" legacy_host_init_running
   Call ValidateHostOwnership
   StrCmp $OwnershipStatus "unknown" host_ownership_unknown
@@ -502,11 +522,17 @@ host_ownership_unknown:
   MessageBox MB_ICONSTOP|MB_OK "Host 安装或恢复目录包含不属于本产品的内容。安装已中止，未删除任何文件。"
   Goto legacy_host_init_abort
 
-legacy_host_init_invalid:
-  SetErrorLevel 62
-  IfSilent legacy_host_init_abort
-  MessageBox MB_ICONSTOP|MB_OK "检测到旧版 L2D 更新主机，但无法安全验证其卸载信息。安装已中止；不会删除注册表所指向的目录。"
-  Goto legacy_host_init_abort
+legacy_host_init_skipped:
+  IfSilent legacy_host_init_skipped_silent
+  MessageBox MB_ICONEXCLAMATION|MB_OK "检测到旧版 L2D 更新主机元数据不完整或不匹配。安装将继续，但不会清理旧 Host 目录或集成信息。"
+legacy_host_init_skipped_silent:
+  Call ValidateHostOwnership
+  StrCmp $OwnershipStatus "unknown" host_ownership_unknown
+  Call ValidateHostRecoveryOwnership
+  StrCmp $OwnershipStatus "unknown" host_ownership_unknown
+  Call ValidateHostStagingOwnership
+  StrCmp $OwnershipStatus "unknown" host_ownership_unknown
+  Goto legacy_host_init_done
 legacy_host_init_running:
   SetErrorLevel 63
   IfSilent legacy_host_init_abort
@@ -545,32 +571,13 @@ editor_restore_stale_recovery:
   IfErrors editor_stale_restore_failed
   Goto editor_scan_current_install
 editor_stale_recovery_conflict:
-  StrCpy $WorkScanFound "0"
-  StrCpy $WorkScanRoot "$INSTDIR.__old"
-  Push "$INSTDIR.__old"
-  Call ScanForUserWorkFiles
-  Pop $0
-  StrCmp $WorkScanFound "1" editor_stale_conflict_blocked
+  SetErrorLevel 68
+  IfSilent editor_preflight_abort
+  MessageBox MB_ICONSTOP|MB_OK "当前安装与恢复目录同时存在。为避免破坏上次回滚状态，安装已中止，请先人工整理：$INSTDIR.__old"
+  Goto editor_preflight_abort
 
 editor_scan_current_install:
-  IfFileExists "$INSTDIR\*.*" 0 editor_scan_staging_install
-  StrCpy $WorkScanFound "0"
-  StrCpy $WorkScanRoot "$INSTDIR"
-  Push "$INSTDIR"
-  Call ScanForUserWorkFiles
-  Pop $0
-  StrCmp $WorkScanFound "1" editor_work_files_blocked
-
-editor_scan_staging_install:
-  ; A stale staging directory is deleted at the start of the Core section, so
-  ; it receives the same work-file protection as the live/recovery directories.
-  IfFileExists "$INSTDIR.__new\*.*" 0 editor_validate_ownership
-  StrCpy $WorkScanFound "0"
-  StrCpy $WorkScanRoot "$INSTDIR.__new"
-  Push "$INSTDIR.__new"
-  Call ScanForUserWorkFiles
-  Pop $0
-  StrCmp $WorkScanFound "1" editor_work_files_blocked editor_validate_ownership
+  Goto editor_validate_ownership
 
 editor_validate_ownership:
   Call ValidateEditorOwnership
@@ -585,16 +592,6 @@ editor_stale_restore_failed:
   SetErrorLevel 67
   IfSilent editor_preflight_abort
   MessageBox MB_ICONSTOP|MB_OK "检测到上次安装留下的恢复目录，但无法恢复：$INSTDIR.__old。安装已中止，文件保持不变。"
-  Goto editor_preflight_abort
-editor_stale_conflict_blocked:
-  SetErrorLevel 68
-  IfSilent editor_preflight_abort
-  MessageBox MB_ICONSTOP|MB_OK "当前安装与恢复目录同时存在，且恢复目录包含 JSON、CSV 或图片工作文件。安装已中止，请先人工整理：$INSTDIR.__old"
-  Goto editor_preflight_abort
-editor_work_files_blocked:
-  SetErrorLevel 65
-  IfSilent editor_preflight_abort
-  MessageBox MB_ICONSTOP|MB_OK "安装目录内检测到 JSON、CSV 或图片工作文件。为避免覆盖用户数据，安装已中止；请先把工作文件移出程序目录。"
   Goto editor_preflight_abort
 editor_ownership_unknown:
   SetErrorLevel 72
@@ -613,12 +610,25 @@ Section "L2D 交互图表编辑器（必选）" Core
   StrCpy $INSTDIR "${TEST_DIRECTORY_SELECTED_INSTALL_DIR}"
 !endif
   Call PreflightFinalInstallDirectory
+  InitPluginsDir
+  SetOutPath "$PLUGINSDIR"
+  File /oname=l2d-managed-files.ps1 "managed-files.ps1"
 
-  ; Stage both complete onedir trees before changing either live root.
-  RMDir /r "$INSTDIR.__new"
+  ; Preserve unknown files from an interrupted staging root, then remove only
+  ; the files listed by its installer manifest.
+  IfFileExists "$INSTDIR.__new\*.*" 0 editor_staging_root_ready
+  StrCpy $ManagedSource "$INSTDIR.__new"
+  StrCpy $ManagedTarget "$INSTDIR"
+  Call MergeUnknownFiles
+  ; MergeUnknown removes the staging root after preserving its unknown files.
+  ; Avoid launching a second helper process for a root that no longer exists.
+  RMDir "$INSTDIR.__new"
+editor_staging_root_ready:
   SetOutPath "$INSTDIR.__new"
   ClearErrors
   File /r "${SOURCE_DIR}\*.*"
+  IfErrors editor_stage_failed
+  File /oname=${MANAGED_SCRIPT_NAME} "managed-files.ps1"
   IfErrors editor_stage_failed
   ClearErrors
   FileOpen $0 "$INSTDIR.__new\${OWNER_MARKER_NAME}" w
@@ -628,7 +638,16 @@ Section "L2D 交互图表编辑器（必选）" Core
   IfErrors editor_stage_failed
   WriteUninstaller "$INSTDIR.__new\Uninstall.exe"
   IfErrors editor_stage_failed
-  RMDir /r "$HostInstallDir.__new"
+  Push "$INSTDIR.__new"
+  Call WriteManagedManifest
+  Pop $0
+  IfErrors editor_stage_failed
+  IfFileExists "$HostInstallDir.__new\*.*" 0 host_staging_root_ready
+  StrCpy $ManagedSource "$HostInstallDir.__new"
+  StrCpy $ManagedTarget "$HostInstallDir"
+  Call MergeUnknownFiles
+  RMDir "$HostInstallDir.__new"
+host_staging_root_ready:
   SetOutPath "$HostInstallDir.__new"
   ClearErrors
   File /r "${HOST_SOURCE_DIR}\*.*"
@@ -638,6 +657,10 @@ Section "L2D 交互图表编辑器（必选）" Core
   IfErrors host_stage_failed
   FileWrite $0 "${HOST_OWNER_VALUE}"
   FileClose $0
+  IfErrors host_stage_failed
+  Push "$HostInstallDir.__new"
+  Call WriteManagedManifest
+  Pop $0
   IfErrors host_stage_failed
 
   ; SetOutPath also changes the process working directory. Windows refuses
@@ -683,8 +706,15 @@ editor_activate:
   ; are live. The historical default root was replaced in place above.
   Call MigrateLegacyHost
   StrCmp $LegacyHostMigrationStatus "failed" editor_legacy_migration_failed
-  RMDir /r "$INSTDIR.__old"
-  RMDir /r "$HostInstallDir.__old"
+  StrCpy $ManagedSource "$INSTDIR.__old"
+  StrCpy $ManagedTarget "$INSTDIR"
+  Call MergeUnknownFiles
+  StrCpy $ManagedSource "$HostInstallDir.__old"
+  StrCpy $ManagedTarget "$HostInstallDir"
+  Call MergeUnknownFiles
+  ; Successful MergeUnknown calls already removed both old managed roots.
+  RMDir "$INSTDIR.__old"
+  RMDir "$HostInstallDir.__old"
   SetOutPath "$TEMP"
   Goto editor_files_ready
 
@@ -911,36 +941,13 @@ host_uninstall_not_running:
   FileClose $0
   StrCmp $1 "${HOST_OWNER_VALUE}" 0 editor_uninstall_owner_invalid
 editor_uninstall_owner_valid:
-  StrCpy $WorkScanFound "0"
-  StrCpy $WorkScanRoot "$INSTDIR"
-  Push "$INSTDIR"
-  Call un.ScanForUserWorkFiles
-  Pop $0
-  StrCmp $WorkScanFound "1" editor_uninstall_work_files_found
-  IfFileExists "$INSTDIR.__old\*.*" 0 editor_uninstall_scan_staging
-  StrCpy $WorkScanRoot "$INSTDIR.__old"
-  Push "$INSTDIR.__old"
-  Call un.ScanForUserWorkFiles
-  Pop $0
-  StrCmp $WorkScanFound "1" editor_uninstall_work_files_found
-editor_uninstall_scan_staging:
-  IfFileExists "$INSTDIR.__new\*.*" 0 editor_uninstall_preflight_done
-  StrCpy $WorkScanRoot "$INSTDIR.__new"
-  Push "$INSTDIR.__new"
-  Call un.ScanForUserWorkFiles
-  Pop $0
-  StrCmp $WorkScanFound "1" 0 editor_uninstall_preflight_done
-editor_uninstall_work_files_found:
-  SetErrorLevel 66
-  IfSilent editor_uninstall_preflight_abort
-  MessageBox MB_ICONSTOP|MB_OK "程序目录内包含 JSON、CSV 或图片工作文件。为避免删除用户数据，卸载已中止；请先把工作文件移出程序目录。"
-editor_uninstall_preflight_abort:
-  Abort
+  Goto editor_uninstall_preflight_done
 editor_uninstall_owner_invalid:
   SetErrorLevel 75
-  IfSilent editor_uninstall_preflight_abort
+  IfSilent editor_uninstall_owner_abort
   MessageBox MB_ICONSTOP|MB_OK "程序目录所有权标记无效。卸载已中止，未删除任何文件。"
-  Goto editor_uninstall_preflight_abort
+editor_uninstall_owner_abort:
+  Abort
 editor_uninstall_preflight_done:
 FunctionEnd
 
@@ -950,12 +957,30 @@ Section "Uninstall"
   !insertmacro MUI_STARTMENU_GETFOLDER Application $StartMenuFolder
   RMDir /r "$SMPROGRAMS\$StartMenuFolder"
 !endif
-  RMDir /r "$INSTDIR"
-  RMDir /r "$INSTDIR.__new"
-  RMDir /r "$INSTDIR.__old"
-  RMDir /r "$HostInstallDir"
-  RMDir /r "$HostInstallDir.__new"
-  RMDir /r "$HostInstallDir.__old"
+  Push "$HostInstallDir"
+  Call un.DeleteManagedFiles
+  Pop $0
+  Push "$HostInstallDir.__new"
+  Call un.DeleteManagedFiles
+  Pop $0
+  Push "$HostInstallDir.__old"
+  Call un.DeleteManagedFiles
+  Pop $0
+  RMDir "$HostInstallDir"
+  RMDir "$HostInstallDir.__new"
+  RMDir "$HostInstallDir.__old"
+  Push "$INSTDIR.__new"
+  Call un.DeleteManagedFiles
+  Pop $0
+  Push "$INSTDIR.__old"
+  Call un.DeleteManagedFiles
+  Pop $0
+  Push "$INSTDIR"
+  Call un.DeleteManagedFiles
+  Pop $0
+  RMDir "$INSTDIR.__new"
+  RMDir "$INSTDIR.__old"
+  RMDir "$INSTDIR"
 !ifndef INSTALLER_TEST_MODE
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "L2DUpdateHost"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\L2DConfigEditor"

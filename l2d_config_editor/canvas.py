@@ -8,7 +8,7 @@ from collections import defaultdict, deque
 from typing import Any
 
 from PySide6.QtCore import QEvent, QEasingCurve, QPointF, QRectF, Qt, QLineF, QTimer, QVariantAnimation, Signal
-from PySide6.QtGui import QColor, QContextMenuEvent, QFont, QFontMetrics, QFontMetricsF, QImage, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import QColor, QContextMenuEvent, QFont, QFontMetrics, QFontMetricsF, QImage, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPainterPathStroker, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
     QGraphicsItem,
@@ -433,7 +433,7 @@ class CanvasStrokeItem(QGraphicsPathItem):
     # still lets those interactive affordances remain unobstructed.
     BASE_Z = 80.0
 
-    def __init__(self, view: "NodeCanvasView", record) -> None:
+    def __init__(self, view: Any, record) -> None:
         super().__init__()
         self.view = view
         self.record = record
@@ -466,6 +466,13 @@ class CanvasStrokeItem(QGraphicsPathItem):
     def boundingRect(self) -> QRectF:
         width = max(1.0, float(getattr(self.record, "width", 4.0)))
         return super().boundingRect().adjusted(-width, -width, width, width)
+
+    def shape(self) -> QPainterPath:
+        stroker = QPainterPathStroker()
+        stroker.setWidth(max(1.0, float(getattr(self.record, "width", 4.0))))
+        stroker.setCapStyle(Qt.PenCapStyle.RoundCap)
+        stroker.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        return stroker.createStroke(self.path())
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
         del option, widget
@@ -865,7 +872,7 @@ class NodeItem(QGraphicsObject):
         concise_root = bool(
             view
             and view.concise_enabled
-            and self.node.type not in {"Initial", "Comment", "DrawFrame"}
+            and self.node.type not in {"Initial", "Comment", "DrawFrame", "PlanPlaceholder"}
         )
         return (self._is_function_node() or concise_root) and self._display_mode == "card"
 
@@ -873,7 +880,7 @@ class NodeItem(QGraphicsObject):
         return self.node.type == "DrawFrame"
 
     def _supports_connections(self) -> bool:
-        return self.node.type not in {"Comment", "DrawFrame"}
+        return self.node.type != "DrawFrame"
 
     def _supports_input_connection(self) -> bool:
         definition = self.schema.nodes.get(self.node.type)
@@ -1553,7 +1560,11 @@ class NodeItem(QGraphicsObject):
         vertical_padding: float = 0.0,
         shrink_to_fit: bool = True,
     ) -> tuple[QRectF, QFont, str, Qt.AlignmentFlag]:
-        preserve_suffix = field_key in {"draw_able_name", "action_trigger"}
+        preserve_suffix = field_key in {
+            "draw_able_name",
+            "action_trigger",
+            "parameter",
+        }
         draw_rect, fitted_font, display_text = self._compact_text_layout(
             text,
             rect,
@@ -1831,6 +1842,7 @@ class NodeItem(QGraphicsObject):
                 min_point_size=self.CARD_PARAMETER_MIN_POINT_SIZE,
                 horizontal_padding=12.0,
                 vertical_padding=4.0,
+                field_key="parameter",
             )
 
             self._paint_connection_pins(painter, accent, border)
@@ -1875,6 +1887,7 @@ class NodeItem(QGraphicsObject):
                 painter.setBrush(QColor("#ffcf25"))
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.drawRect(self.resize_handle_rect())
+            self._paint_connection_pins(painter, accent, border)
             return
 
         if self._is_draw_frame():
@@ -3469,6 +3482,9 @@ class NodeCanvasView(QGraphicsView):
         self._ctrl_stroke_start_scene = QPointF()
         self._ctrl_stroke_node_uuid: str | None = None
         self._ctrl_stroke_threshold_px = 4.0
+        self._erasing_strokes = False
+        self._erased_stroke_uuids: set[str] = set()
+        self._eraser_last_scene = QPointF()
         self._temporary_stroke = QGraphicsPathItem()
         self._temporary_stroke.setZValue(92.0)
         self._temporary_stroke.hide()
@@ -3554,6 +3570,7 @@ class NodeCanvasView(QGraphicsView):
         self.viewport().update()
 
     def rebuild_scene(self) -> None:
+        self.cancel_pen_gestures()
         with performance_recorder.measure(
             "canvas.rebuild_scene",
             "canvas",
@@ -3601,6 +3618,7 @@ class NodeCanvasView(QGraphicsView):
         self.pen_mode_enabled = bool(enabled)
         if not self.pen_mode_enabled:
             self.cancel_stroke_preview()
+            self.cancel_erase_gesture()
             self._pending_ctrl_stroke = False
             self._ctrl_stroke_node_uuid = None
         self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
@@ -4116,6 +4134,12 @@ class NodeCanvasView(QGraphicsView):
         self._temporary_stroke.hide()
         self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
 
+    def cancel_pen_gestures(self) -> None:
+        self.cancel_stroke_preview()
+        self.cancel_erase_gesture()
+        self._pending_ctrl_stroke = False
+        self._ctrl_stroke_node_uuid = None
+
     def _finish_stroke_preview(self, scene_point: QPointF) -> None:
         if not self._drawing_stroke:
             return
@@ -4128,23 +4152,82 @@ class NodeCanvasView(QGraphicsView):
         if callable(add_stroke):
             add_stroke(points, self.pen_color, self.pen_width)
 
-    def _stroke_uuid_near_view_point(self, view_point: QPointF) -> str | None:
-        for record in reversed(list(getattr(self.controller.document, "canvas_strokes", ()))):
-            points = [
-                QPointF(self.mapFromScene(CanvasStrokeItem.point_from_record(point)))
-                for point in getattr(record, "points", ())
-            ]
-            if not points:
+    def _stroke_uuids_in_eraser_segment(
+        self,
+        start_scene: QPointF,
+        end_scene: QPointF,
+    ) -> list[str]:
+        scale = max(0.001, abs(float(self.transform().m11())))
+        radius = 12.0 / scale
+        segment = QPainterPath(QPointF(start_scene))
+        if QLineF(start_scene, end_scene).length() <= 0.001:
+            end_scene = QPointF(start_scene.x() + 0.01, start_scene.y() + 0.01)
+        segment.lineTo(end_scene)
+        stroker = QPainterPathStroker()
+        stroker.setWidth(radius * 2.0)
+        stroker.setCapStyle(Qt.PenCapStyle.RoundCap)
+        stroker.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        corridor = stroker.createStroke(segment)
+        matches: list[str] = []
+        for candidate in self.scene_ref.items(corridor.boundingRect()):
+            if not isinstance(candidate, CanvasStrokeItem) or not candidate.isVisible():
                 continue
-            tolerance = 12.0 + max(0.0, float(getattr(record, "width", 4.0))) * 0.5
-            if len(points) == 1 and math.hypot(view_point.x() - points[0].x(), view_point.y() - points[0].y()) <= tolerance:
-                return str(record.uuid)
-            if any(
-                self._point_segment_distance(view_point, start, end) <= tolerance
-                for start, end in zip(points, points[1:])
-            ):
-                return str(record.uuid)
-        return None
+            if corridor.intersects(candidate.mapToScene(candidate.shape())):
+                matches.append(str(candidate.record.uuid))
+        return matches
+
+    def _stroke_uuid_near_view_point(self, view_point: QPointF) -> str | None:
+        scene_point = self.mapToScene(view_point.toPoint())
+        matches = self._stroke_uuids_in_eraser_segment(scene_point, scene_point)
+        return matches[0] if matches else None
+
+    def _erase_stroke_segment(
+        self,
+        start_scene: QPointF,
+        end_scene: QPointF,
+    ) -> None:
+        for stroke_uuid in self._stroke_uuids_in_eraser_segment(
+            start_scene, end_scene
+        ):
+            if stroke_uuid in self._erased_stroke_uuids:
+                continue
+            item = self.stroke_items.get(stroke_uuid)
+            if item is None:
+                continue
+            item.hide()
+            self._erased_stroke_uuids.add(stroke_uuid)
+
+    def _start_erase_gesture(self, scene_point: QPointF) -> None:
+        self.cancel_erase_gesture()
+        self._erasing_strokes = True
+        self._erased_stroke_uuids.clear()
+        self._eraser_last_scene = QPointF(scene_point)
+        self._set_interaction_busy("erase", True)
+        self.viewport().setCursor(Qt.CursorShape.CrossCursor)
+        self._erase_stroke_segment(scene_point, scene_point)
+
+    def cancel_erase_gesture(self) -> None:
+        if self._erasing_strokes:
+            self._set_interaction_busy("erase", False)
+        for stroke_uuid in self._erased_stroke_uuids:
+            item = self.stroke_items.get(stroke_uuid)
+            if item is not None:
+                item.setVisible(self._concise_element_visible("strokes"))
+        self._erasing_strokes = False
+        self._erased_stroke_uuids.clear()
+        self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+
+    def _finish_erase_gesture(self, scene_point: QPointF) -> None:
+        if not self._erasing_strokes:
+            return
+        self._erase_stroke_segment(self._eraser_last_scene, scene_point)
+        erased = list(self._erased_stroke_uuids)
+        self._erasing_strokes = False
+        self._erased_stroke_uuids.clear()
+        self._set_interaction_busy("erase", False)
+        self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+        if erased:
+            self.controller.remove_canvas_strokes(erased, "formal")
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if self.pen_mode_enabled and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -4167,10 +4250,9 @@ class NodeCanvasView(QGraphicsView):
                 event.accept()
                 return
             if event.button() == Qt.MouseButton.RightButton:
-                stroke_uuid = self._stroke_uuid_near_view_point(event.position())
-                remove_stroke = getattr(self.controller, "remove_canvas_stroke", None)
-                if stroke_uuid and callable(remove_stroke):
-                    remove_stroke(stroke_uuid)
+                self._start_erase_gesture(
+                    self.mapToScene(event.position().toPoint())
+                )
                 event.accept()
                 return
         if event.button() == Qt.MouseButton.MiddleButton:
@@ -4249,6 +4331,12 @@ class NodeCanvasView(QGraphicsView):
         super().mouseDoubleClickEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._erasing_strokes:
+            current = self.mapToScene(event.position().toPoint())
+            self._erase_stroke_segment(self._eraser_last_scene, current)
+            self._eraser_last_scene = QPointF(current)
+            event.accept()
+            return
         if self._pending_ctrl_stroke:
             delta = event.position() - self._ctrl_stroke_start_view
             if math.hypot(delta.x(), delta.y()) > self._ctrl_stroke_threshold_px:
@@ -4281,6 +4369,12 @@ class NodeCanvasView(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.RightButton and self._erasing_strokes:
+            self._finish_erase_gesture(
+                self.mapToScene(event.position().toPoint())
+            )
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton and self._pending_ctrl_stroke:
             node_uuid = self._ctrl_stroke_node_uuid
             self._pending_ctrl_stroke = False
@@ -4391,6 +4485,10 @@ class NodeCanvasView(QGraphicsView):
                 break
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Escape and self._erasing_strokes:
+            self.cancel_erase_gesture()
+            event.accept()
+            return
         if event.key() == Qt.Key.Key_Escape and self._pending_ctrl_stroke:
             self._pending_ctrl_stroke = False
             self._ctrl_stroke_node_uuid = None
@@ -4534,14 +4632,27 @@ class NodeCanvasView(QGraphicsView):
                 item.setSelected(True)
 
     def _rebuild_canvas_strokes(self) -> None:
-        for item in list(self.stroke_items.values()):
+        records = {
+            str(record.uuid): record
+            for record in getattr(self.controller.document, "canvas_strokes", ())
+        }
+        for stroke_uuid in list(self.stroke_items):
+            if stroke_uuid in records:
+                continue
+            item = self.stroke_items.pop(stroke_uuid)
             self.scene_ref.removeItem(item)
-        self.stroke_items.clear()
-        for record in getattr(self.controller.document, "canvas_strokes", ()):
-            item = CanvasStrokeItem(self, record)
+        for stroke_uuid, record in records.items():
+            item = self.stroke_items.get(stroke_uuid)
+            if item is None:
+                item = CanvasStrokeItem(self, record)
+                self.scene_ref.addItem(item)
+                self.stroke_items[stroke_uuid] = item
+            elif item.record != record:
+                item.prepareGeometryChange()
+                item.record = record
+                item.setPath(CanvasStrokeItem.path_for_points(record.points))
+                item.update()
             item.setVisible(self._concise_element_visible("strokes"))
-            self.scene_ref.addItem(item)
-            self.stroke_items[str(record.uuid)] = item
 
     def _rebuild_parameter_tables(self) -> None:
         if self.should_render_parameter_rows_as_nodes():

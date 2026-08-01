@@ -299,9 +299,10 @@ class InstallerRuntimeTests(unittest.TestCase):
                 if pass_index == 0:
                     (target / "stale.txt").write_text("old", encoding="utf-8")
 
-            self.assertFalse(
-                (target / "stale.txt").exists(),
-                "an upgrade must replace rather than merge the old directory",
+            self.assertEqual(
+                "old",
+                (target / "stale.txt").read_text(encoding="utf-8"),
+                "unknown files must survive an upgrade outside the managed manifest",
             )
 
     def test_editor_installer_activates_staged_directory(self) -> None:
@@ -699,7 +700,7 @@ class InstallerRuntimeTests(unittest.TestCase):
                 timeout=60,
             )
 
-            self.assertEqual(65, blocked.returncode)
+            self.assertEqual(72, blocked.returncode)
             self.assertEqual(b'{"must": "survive"}', selected_work_file.read_bytes())
             self.assertEqual(b"must also survive", staging_work_file.read_bytes())
             self.assertFalse(initial_directory.exists())
@@ -778,40 +779,23 @@ class InstallerRuntimeTests(unittest.TestCase):
             for path, payload in work_files.items():
                 path.write_bytes(payload)
 
-            blocked_upgrade = subprocess.run(
+            upgraded = subprocess.run(
                 [str(installer), "/S", f"/D={target}"],
                 cwd=root,
                 capture_output=True,
                 check=False,
                 timeout=60,
             )
-            self.assertEqual(65, blocked_upgrade.returncode)
+            self.assertEqual(0, upgraded.returncode)
             for path, payload in work_files.items():
                 self.assertEqual(payload, path.read_bytes())
-
-            blocked_uninstall = subprocess.run(
-                [
-                    str(target / "Uninstall.exe"),
-                    "/S",
-                    f"_?={target}",
-                ],
-                cwd=root,
-                capture_output=True,
-                check=False,
-                timeout=60,
-            )
-            self.assertEqual(66, blocked_uninstall.returncode)
-            self.assertTrue((target / "payload.txt").is_file())
-            for path, payload in work_files.items():
-                self.assertEqual(payload, path.read_bytes())
-                path.unlink()
-            project.rmdir()
 
             recovery_directory = Path(f"{target}.__old")
             recovery_directory.mkdir()
             recovery_work_file = recovery_directory / "recover.json"
             recovery_work_file.write_text('{"keep": true}', encoding="utf-8")
-            sibling_blocked_uninstall = subprocess.run(
+
+            uninstalled = subprocess.run(
                 [
                     str(target / "Uninstall.exe"),
                     "/S",
@@ -822,7 +806,10 @@ class InstallerRuntimeTests(unittest.TestCase):
                 check=False,
                 timeout=60,
             )
-            self.assertEqual(66, sibling_blocked_uninstall.returncode)
+            self.assertEqual(0, uninstalled.returncode)
+            self.assertFalse((target / "payload.txt").is_file())
+            for path, payload in work_files.items():
+                self.assertEqual(payload, path.read_bytes())
             self.assertEqual(
                 '{"keep": true}',
                 recovery_work_file.read_text("utf-8"),
@@ -863,14 +850,14 @@ class InstallerRuntimeTests(unittest.TestCase):
             nested_internal.mkdir(parents=True)
             protected = nested_internal / "user.json"
             protected.write_text('{"user": true}', encoding="utf-8")
-            blocked = subprocess.run(
+            allowed_nested = subprocess.run(
                 [str(installer), "/S", f"/D={target}"],
                 cwd=root,
                 capture_output=True,
                 check=False,
                 timeout=60,
             )
-            self.assertEqual(65, blocked.returncode)
+            self.assertEqual(0, allowed_nested.returncode)
             self.assertEqual('{"user": true}', protected.read_text("utf-8"))
 
     def test_editor_installer_restores_stale_recovery_before_work_file_guard(
@@ -911,13 +898,16 @@ class InstallerRuntimeTests(unittest.TestCase):
                 check=False,
                 timeout=60,
             )
-            self.assertEqual(65, retried.returncode)
+            self.assertEqual(0, retried.returncode)
             self.assertFalse(recovery_directory.exists())
             self.assertEqual(
                 '{"recover": true}',
                 (target / "user.json").read_text("utf-8"),
             )
-            self.assertEqual("old", (target / "payload.txt").read_text("utf-8"))
+            self.assertEqual(
+                "integrated editor",
+                (target / "payload.txt").read_text("utf-8"),
+            )
 
     def test_editor_installer_preserves_ambiguous_stale_recovery(self) -> None:
         with tempfile.TemporaryDirectory(
@@ -1286,7 +1276,7 @@ class InstallerRuntimeTests(unittest.TestCase):
                 timeout=60,
             )
 
-            self.assertEqual(62, blocked.returncode)
+            self.assertEqual(72, blocked.returncode)
             self.assertEqual(
                 original_host,
                 (legacy_directory / "L2DUpdateHost.exe").read_bytes(),
@@ -1486,7 +1476,7 @@ class InstallerRuntimeTests(unittest.TestCase):
                 check=False,
                 timeout=60,
             )
-            self.assertNotEqual(0, attempted.returncode)
+            self.assertEqual(0, attempted.returncode)
             self.assertEqual("do not delete", sentinel.read_text("utf-8"))
 
 if __name__ == "__main__":

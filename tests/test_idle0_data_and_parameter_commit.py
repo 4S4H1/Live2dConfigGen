@@ -78,7 +78,7 @@ class Idle0DocumentTests(unittest.TestCase):
     def test_new_document_exports_format_version_four_with_idle0_root(self) -> None:
         payload = export_document_dict(self.schema, create_document(self.schema))
 
-        self.assertEqual(4, payload["format_version"])
+        self.assertEqual(5, payload["format_version"])
         self.assertEqual("idle0", payload["meta"]["default_state"])
         self.assertEqual(["Idle0"], [node["type"] for node in payload["nodes"]])
 

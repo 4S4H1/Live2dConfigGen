@@ -47,6 +47,7 @@ from .logic import (
     validate_document,
 )
 from .models import ConnectionRecord, DocumentModel, GroupRecord, NodeRecord
+from .plan import placeholder_fields_for_title
 
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
@@ -69,7 +70,6 @@ _CONFIRMATION_TOOLS = frozenset(
     }
 )
 _SUPPORTED_VIEWS = frozenset({"formal", "plan"})
-_MAX_TOOL_RESULT_BYTES = 2 * 1024 * 1024
 _OPERATION_FIELDS: dict[str, frozenset[str]] = {
     "set_metadata": frozenset({"op", "action", "values", "metadata"}),
     "add_node": frozenset(
@@ -365,6 +365,7 @@ class EditorToolService(QObject):
             "groupsChanged",
             "canvasImagesChanged",
             "canvasStrokesChanged",
+            "planCanvasStrokesChanged",
             "planLayoutChanged",
         )
         for name in signal_names:
@@ -712,16 +713,6 @@ class EditorToolService(QObject):
                 "revision": self._revision,
                 "result": result,
             }
-            encoded = json.dumps(
-                envelope,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ).encode("utf-8")
-            if len(encoded) > _MAX_TOOL_RESULT_BYTES:
-                raise ToolServiceError(
-                    "RESULT_TOO_LARGE",
-                    "The tool result is too large for a model conversation",
-                )
             return _json_copy(envelope)
         except ToolServiceError as exc:
             return self._error_response(exc)
@@ -853,7 +844,7 @@ class EditorToolService(QObject):
                     },
                     "note": (
                         "plan.parent_uuid creates the matching formal primary edge; "
-                        "use add_plan_topic for a new Comment plan topic."
+                        "use add_plan_topic for a new plan draft placeholder."
                     ),
                 },
                 "update_node": {
@@ -948,30 +939,36 @@ class EditorToolService(QObject):
             }
             for image in snapshot.canvas_images
         ]
-        stroke_summaries: list[dict[str, Any]] = []
-        for stroke in snapshot.canvas_strokes:
-            xs = [float(point[0]) for point in stroke.points]
-            ys = [float(point[1]) for point in stroke.points]
-            bounds = (
-                {
-                    "left": min(xs),
-                    "top": min(ys),
-                    "right": max(xs),
-                    "bottom": max(ys),
-                }
-                if xs and ys
-                else None
-            )
-            stroke_summaries.append(
-                {
-                    "id": stroke.uuid,
-                    "point_count": len(stroke.points),
-                    "color": stroke.color,
-                    "width": float(stroke.width),
-                    "bounds": bounds,
-                }
-            )
-        payload["canvas_strokes"] = stroke_summaries
+        def summarize_strokes(strokes) -> list[dict[str, Any]]:
+            summaries: list[dict[str, Any]] = []
+            for stroke in strokes:
+                xs = [float(point[0]) for point in stroke.points]
+                ys = [float(point[1]) for point in stroke.points]
+                bounds = (
+                    {
+                        "left": min(xs),
+                        "top": min(ys),
+                        "right": max(xs),
+                        "bottom": max(ys),
+                    }
+                    if xs and ys
+                    else None
+                )
+                summaries.append(
+                    {
+                        "id": stroke.uuid,
+                        "point_count": len(stroke.points),
+                        "color": stroke.color,
+                        "width": float(stroke.width),
+                        "bounds": bounds,
+                    }
+                )
+            return summaries
+
+        payload["canvas_strokes"] = summarize_strokes(snapshot.canvas_strokes)
+        payload["plan_canvas_strokes"] = summarize_strokes(
+            snapshot.plan_canvas_strokes
+        )
         return {
             "revision": self._revision,
             "current_view": self._current_view,
@@ -1854,6 +1851,9 @@ class EditorToolService(QObject):
             plan_title=str(values.get("plan_title", values.get("title", "")) or ""),
             collapsed=bool(values.get("collapsed", False)),
             branch_color=str(values.get("branch_color") or ""),
+            formalization_state=str(
+                values.get("formalization_state", "formal") or "formal"
+            ),
         )
         topics.append(topic)
         self._normalize_plan_orders(topics)
@@ -1893,7 +1893,12 @@ class EditorToolService(QObject):
             },
         )
         x, y = _position(raw_position)
-        node = create_node(self.controller.schema, document, "Comment", (x, y))
+        node = create_node(
+            self.controller.schema,
+            document,
+            "PlanPlaceholder",
+            (x, y),
+        )
         requested_uuid = str(operation.get("uuid") or "").strip()
         if requested_uuid:
             if not _SAFE_ID.fullmatch(requested_uuid):
@@ -1904,7 +1909,7 @@ class EditorToolService(QObject):
                 "DUPLICATE_NODE_UUID",
                 f"Node UUID already exists: {node.uuid}",
             )
-        node.fields["content"] = title
+        node.fields.update(placeholder_fields_for_title(title))
         apply_node_appearance_defaults(self.controller.schema, node)
         document.nodes.append(node)
         self._append_plan_topic(
@@ -1916,6 +1921,7 @@ class EditorToolService(QObject):
                 "plan_title": title,
                 "collapsed": operation.get("collapsed", False),
                 "branch_color": operation.get("branch_color", ""),
+                "formalization_state": "draft",
             },
             client_ids,
         )
@@ -1968,6 +1974,13 @@ class EditorToolService(QObject):
             topic.plan_title = str(
                 values.get("plan_title", values.get("title", "")) or ""
             )
+            if topic.formalization_state in {"virtual", "materialized"}:
+                topic.formalization_state = "draft"
+            node = self._node(document, node_uuid)
+            if node is not None and node.type == "PlanPlaceholder":
+                node.fields.update(
+                    placeholder_fields_for_title(topic.plan_title)
+                )
             changed.append("plan_title")
         if "collapsed" in values:
             topic.collapsed = bool(values["collapsed"])
@@ -2281,6 +2294,7 @@ class EditorToolService(QObject):
                 grouped_nodes.add(node_uuid)
         try:
             validate_canvas_strokes(document.canvas_strokes)
+            validate_canvas_strokes(document.plan_canvas_strokes)
         except ValueError:
             errors.append({"code": "INVALID_CANVAS_STROKES"})
         if hasattr(document, "plan_layout"):

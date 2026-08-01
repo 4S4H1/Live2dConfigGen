@@ -21,7 +21,7 @@
 ## 构建
 
 ```powershell
-.\scripts\Build-Release.ps1 -Notes "1.2.0：独立托盘 Host、计划模式、Tool/LLM 与当前图表 CSV"
+.\scripts\Build-Release.ps1 -Notes "1.3.0：滑动整线擦除、计划图正式化、独立画笔层、SVN 图表 Diff 与批量 AI 编辑"
 ```
 
 脚本先以锁定环境运行全部测试，再生成图标、PE 版本信息、编辑器与 Host 两个
@@ -33,15 +33,16 @@
 默认 `minimum_supported_version` 为 `1.0.0`。提高最低支持版本会让更旧
 客户端拒绝自动更新；这些用户需要从更新主机首页手动安装完整版本。
 
-`L2DConfigEditor-Setup-1.2.0-x64.exe` 用于首次安装及覆盖升级；同一个安装器
+`L2DConfigEditor-Setup-1.3.0-x64.exe` 用于首次安装及覆盖升级；同一个安装器
 把编辑器和独立托盘 Host 安装到各自的程序根，并只注册一个卸载入口。
 Windows 会因未做 Authenticode 签名显示“未知发布者”。
 
 覆盖安装会把默认目录中的旧版独立 Host 原地迁移为伴随组件，并兼容自定义目录
-及缺少注册项的遗留安装；只清理旧卸载入口、注册项和精确快捷方式，
-不会删除 `%LOCALAPPDATA%\4S4H1\L2DUpdateHost` 发布缓存。安装目录或
-`.__old`/`.__new` 恢复目录中检测到 JSON、CSV 或图片工作文件时，安装和
-卸载必须中止，待用户把工作文件移出后再继续。
+及缺少注册项的遗留安装；只清理旧卸载入口、注册项、精确快捷方式和受管文件，
+不会删除 `%LOCALAPPDATA%\4S4H1\L2DUpdateHost` 发布缓存。安装目录及恢复目录中的
+未知 JSON、CSV、图片和其他用户文件原地保留，不阻断安装或卸载。旧 Host 元数据
+不完整或不匹配时记录警告并跳过清理；路径所有权、进程/文件锁、分阶段替换、
+签名、SHA-256 和失败回滚保护仍然生效。
 
 ## 发布到更新主机
 
@@ -50,7 +51,7 @@ Windows 会因未做 Authenticode 签名显示“未知发布者”。
 选择 `.l2dupdate`。也可运行：
 
 ```powershell
-.\scripts\Publish-Release.ps1 -Bundle .\dist\release\L2DConfigEditor-1.2.0.l2dupdate
+.\scripts\Publish-Release.ps1 -Bundle .\dist\release\L2DConfigEditor-1.3.0.l2dupdate
 ```
 
 导入流程先验证 Ed25519 原始清单签名、产品/平台/SemVer、文件大小和

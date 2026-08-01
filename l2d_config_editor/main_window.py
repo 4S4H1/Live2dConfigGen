@@ -67,7 +67,8 @@ from .plan_canvas import PlanCanvasView
 from .reference_images import read_reference_image
 from .schema import load_editor_schema
 from .styles import ThemeMode, normalize_theme_mode, stylesheet_for_theme
-from .svn_tools import SvnCommitRunner, discover_svn_executable
+from .svn_diff_dialog import SvnGraphDiffDialog
+from .svn_tools import SvnCommitRunner, SvnHistoryRunner, discover_svn_executable
 from .template_batch import BatchTemplateDialog, create_base_template_files
 from .tool_service import EditorToolService
 from .update_client import UpdateClient, bundled_public_key_pem
@@ -500,6 +501,7 @@ class MainWindow(QMainWindow):
         self._connected_undo_stack: QUndoStack | None = None
         self._refresh_file_list_after_save = False
         self.svn_commit_dialog: SvnCommitDialog | None = None
+        self.svn_diff_dialog: SvnGraphDiffDialog | None = None
         self._update_client: UpdateClient | None = None
         self._update_progress: QProgressDialog | None = None
         self._update_check_is_manual = False
@@ -509,6 +511,7 @@ class MainWindow(QMainWindow):
 
         self.controller.pathChanged.connect(self._update_window_title)
         self.controller.pathChanged.connect(self._remember_last_opened_document)
+        self.controller.pathChanged.connect(self._close_stale_svn_diff_dialog)
         self.controller.selectionChanged.connect(self._update_inspector)
         self.controller.csvPreviewChanged.connect(self._update_csv_preview)
         self.controller.statusMessage.connect(self._show_status)
@@ -671,7 +674,7 @@ class MainWindow(QMainWindow):
             self,
             "工作区位置不安全",
             "不能把 JSON 工作区放在程序安装目录内；"
-            "为保护其中的数据，安装器会拒绝更新或卸载。"
+            "程序目录仅用于应用文件，混放工作区会增加维护和迁移成本。"
             "\n请选择“文档”等安装目录以外的位置。",
         )
 
@@ -680,7 +683,7 @@ class MainWindow(QMainWindow):
             self,
             "文件位置不安全",
             "不能直接打开程序安装目录内的 JSON 文件；"
-            "为保护其中的数据，安装器会拒绝更新或卸载。"
+            "程序目录仅用于应用文件，混放业务数据不利于维护。"
             "\n请先把文件移到“文档”等安装目录以外的位置。",
         )
 
@@ -852,6 +855,11 @@ class MainWindow(QMainWindow):
         self.svn_commit_button.clicked.connect(self._commit_current_json_to_svn)
         toolbar.addWidget(self.svn_commit_button)
 
+        self.svn_diff_button = QPushButton("SVN 图表 Diff…")
+        self.svn_diff_button.setToolTip("比较 SVN 文件版本与打开窗口时的当前编辑内容，不保存本地 Diff 记录")
+        self.svn_diff_button.clicked.connect(self._show_svn_graph_diff)
+        toolbar.addWidget(self.svn_diff_button)
+
         return toolbar
 
     def _create_card(self, object_name: str = "filePanelCard") -> tuple[QFrame, QVBoxLayout]:
@@ -951,6 +959,17 @@ class MainWindow(QMainWindow):
             if hasattr(self, "canvas")
             else []
         )
+        for canvas in (
+            getattr(self, "canvas", None),
+            getattr(self, "plan_canvas", None),
+        ):
+            if canvas is None:
+                continue
+            cancel_pen = getattr(canvas, "cancel_pen_gestures", None)
+            if callable(cancel_pen):
+                cancel_pen()
+        if previous == "plan" and normalized == "formal":
+            self.controller.materialize_plan_topics()
         self._graph_view_mode = normalized
         if hasattr(self, "graph_view_stack"):
             target = self.plan_canvas if normalized == "plan" else self.canvas
@@ -978,8 +997,6 @@ class MainWindow(QMainWindow):
             getattr(self, "top_optimize_layout_button", None),
             getattr(self, "optimize_layout_button", None),
             getattr(self, "group_selected_button", None),
-            getattr(self, "pen_color_button", None),
-            getattr(self, "pen_width_combo", None),
             getattr(self, "concise_mode_checkbox", None),
             getattr(self, "concise_settings_button", None),
         ):
@@ -1561,6 +1578,7 @@ class MainWindow(QMainWindow):
         self.pen_width_combo.setCurrentIndex(width_index if width_index >= 0 else 1)
         self._set_pen_color_button(pen_color)
         self.canvas.set_pen_style(pen_color, pen_width)
+        self.plan_canvas.set_pen_style(pen_color, pen_width)
         concise_enabled = self._settings_bool(self.SETTINGS_CONCISE_ENABLED, False)
         fields = self._saved_concise_fields()
         elements = {
@@ -1610,6 +1628,7 @@ class MainWindow(QMainWindow):
         color = str(self.pen_color_button.property("penColor") or "#2F80ED")
         width = float(self.pen_width_combo.currentData() or 4.0)
         self.canvas.set_pen_style(color, width)
+        self.plan_canvas.set_pen_style(color, width)
         self.settings.setValue(self.SETTINGS_PEN_COLOR, color)
         self.settings.setValue(self.SETTINGS_PEN_WIDTH, width)
         self.settings.sync()
@@ -2694,7 +2713,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "未找到 SVN CLI",
-                "请安装带命令行工具的 SVN 客户端，或选择 svn.exe 后再提交。",
+                "请安装带命令行工具的 SVN 客户端，或选择 svn.exe 后再使用 SVN 功能。",
             )
             return None
         executable = Path(chosen).resolve()
@@ -2728,6 +2747,47 @@ class MainWindow(QMainWindow):
         dialog.raise_()
         dialog.activateWindow()
         QTimer.singleShot(0, lambda: runner.start(file_path, message, self.workdir))
+
+    def _show_svn_graph_diff(self) -> None:
+        self._commit_pending_editor_changes()
+        current_path = self.controller.document.path
+        if not current_path or Path(current_path).suffix.lower() != ".json":
+            QMessageBox.information(self, "无法查询 SVN Diff", "请先打开一个已存在的 JSON 文件。")
+            return
+        file_path = Path(current_path).resolve()
+        if not file_path.is_file():
+            QMessageBox.information(self, "无法查询 SVN Diff", "当前 JSON 尚未写入工作副本，因此没有 SVN 历史。")
+            return
+        executable = self._select_svn_executable()
+        if executable is None:
+            return
+        if self.svn_diff_dialog is not None:
+            self.svn_diff_dialog.reject()
+        runner = SvnHistoryRunner(executable, self)
+        dialog = SvnGraphDiffDialog(
+            runner,
+            self.controller.schema,
+            file_path,
+            self.controller.document,
+            self,
+        )
+        self.svn_diff_dialog = dialog
+        dialog.finished.connect(lambda _result: self._clear_svn_diff_dialog(dialog))
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _clear_svn_diff_dialog(self, dialog: SvnGraphDiffDialog) -> None:
+        if self.svn_diff_dialog is dialog:
+            self.svn_diff_dialog = None
+
+    def _close_stale_svn_diff_dialog(self, path: str | None) -> None:
+        dialog = self.svn_diff_dialog
+        if dialog is None:
+            return
+        resolved = Path(path).resolve() if path else None
+        if resolved != dialog.file_path:
+            dialog.reject()
 
     def _show_batch_template_dialog(self) -> None:
         if not self._ensure_safe_to_leave_document(self.workdir / "__new__"):

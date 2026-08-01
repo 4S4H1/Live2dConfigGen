@@ -289,6 +289,27 @@ class EditorToolServiceTests(unittest.TestCase):
         graph["nodes"][0]["type"] = "Comment"
         self.assertEqual("Idle0", self.controller.document.nodes[0].type)
 
+    def test_tool_results_above_the_old_two_mib_limit_are_returned(self) -> None:
+        large_value = "x" * (2 * 1024 * 1024 + 1)
+        with patch.object(
+            self.service,
+            "_get_current_graph",
+            return_value={"payload": large_value},
+        ):
+            result = self.invoke("get_current_graph")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(len(large_value), len(result["result"]["payload"]))
+
+    def test_plan_stroke_mutation_advances_graph_revision(self) -> None:
+        revision = self.service.revision
+        self.controller.add_canvas_stroke(
+            [(0.0, 0.0), (10.0, 10.0)],
+            "#123456",
+            4.0,
+            "plan",
+        )
+        self.assertGreater(self.service.revision, revision)
+
     def test_get_graph_summarizes_binary_images_and_stroke_points(self) -> None:
         self.controller.document.canvas_images.append(
             CanvasImageRecord(
@@ -305,6 +326,14 @@ class EditorToolServiceTests(unittest.TestCase):
                 width=3.0,
             )
         )
+        self.controller.document.plan_canvas_strokes.append(
+            CanvasStrokeRecord(
+                uuid="plan-stroke-1",
+                points=[(-3.0, 4.0), (8.0, 12.0)],
+                color="#654321",
+                width=5.0,
+            )
+        )
         result = self.invoke("get_current_graph")
         self.assertTrue(result["ok"], result)
         graph = result["result"]["graph"]
@@ -315,6 +344,12 @@ class EditorToolServiceTests(unittest.TestCase):
         self.assertEqual(
             {"left": 1.0, "top": 2.0, "right": 5.0, "bottom": 9.0},
             graph["canvas_strokes"][0]["bounds"],
+        )
+        self.assertEqual(2, graph["plan_canvas_strokes"][0]["point_count"])
+        self.assertNotIn("points", graph["plan_canvas_strokes"][0])
+        self.assertEqual(
+            {"left": -3.0, "top": 4.0, "right": 8.0, "bottom": 12.0},
+            graph["plan_canvas_strokes"][0]["bounds"],
         )
 
     def test_unsaved_graph_identities_are_isolated_by_root_uuid(self) -> None:
@@ -395,6 +430,115 @@ class EditorToolServiceTests(unittest.TestCase):
         self.assertEqual("", self.controller.document.meta.CharName)
         self.controller.undo_stack.redo()
         self.assertIsNotNone(self.controller.get_node(note_uuid))
+
+    def test_bulk_node_and_connection_operations_are_confirmed_atomic_batches(self) -> None:
+        def confirm(operations: list[dict]) -> dict:
+            before_index = self.controller.undo_stack.index()
+            preview = self.service.preview_tool(
+                "apply_graph_edits",
+                {
+                    "expected_revision": self.service.revision,
+                    "operations": operations,
+                },
+            )
+            self.assertTrue(preview["ok"], preview)
+            committed = self.service.invoke_prepared_preview(
+                preview["result"]["preview_token"]
+            )
+            self.assertTrue(committed["ok"], committed)
+            self.assertEqual(before_index + 1, self.controller.undo_stack.index())
+            return committed
+
+        created = confirm(
+            [
+                {
+                    "op": "add_node",
+                    "node_type": "Comment",
+                    "client_id": f"note-{index}",
+                    "fields": {"content": f"created-{index}"},
+                }
+                for index in range(3)
+            ]
+        )
+        node_uuids = [
+            created["result"]["client_ids"][f"note-{index}"]
+            for index in range(3)
+        ]
+        self.assertEqual(3, sum(self.controller.get_node(value) is not None for value in node_uuids))
+        self.controller.undo_stack.undo()
+        self.assertTrue(all(self.controller.get_node(value) is None for value in node_uuids))
+        self.controller.undo_stack.redo()
+
+        confirm(
+            [
+                {
+                    "op": "update_node",
+                    "node_uuid": node_uuid,
+                    "fields": {"content": f"updated-{index}"},
+                }
+                for index, node_uuid in enumerate(node_uuids)
+            ]
+        )
+        self.assertEqual(
+            [f"updated-{index}" for index in range(3)],
+            [self.controller.get_node(value).fields["content"] for value in node_uuids],
+        )
+        self.controller.undo_stack.undo()
+        self.assertEqual(
+            [f"created-{index}" for index in range(3)],
+            [self.controller.get_node(value).fields["content"] for value in node_uuids],
+        )
+        self.controller.undo_stack.redo()
+
+        connection_operations = [
+            {
+                "op": "add_connection",
+                "from_uuid": self.root_uuid,
+                "to_uuid": node_uuid,
+            }
+            for node_uuid in node_uuids
+        ]
+        confirm(connection_operations)
+        self.assertEqual(
+            set(node_uuids),
+            {
+                edge.to_uuid
+                for edge in self.controller.document.connections
+                if edge.from_uuid == self.root_uuid and edge.to_uuid in node_uuids
+            },
+        )
+        self.controller.undo_stack.undo()
+        self.assertFalse(
+            any(edge.to_uuid in node_uuids for edge in self.controller.document.connections)
+        )
+        self.controller.undo_stack.redo()
+
+        confirm(
+            [
+                {**operation, "op": "delete_connection"}
+                for operation in connection_operations
+            ]
+        )
+        self.assertFalse(
+            any(edge.to_uuid in node_uuids for edge in self.controller.document.connections)
+        )
+        self.controller.undo_stack.undo()
+        self.assertEqual(
+            set(node_uuids),
+            {
+                edge.to_uuid
+                for edge in self.controller.document.connections
+                if edge.from_uuid == self.root_uuid and edge.to_uuid in node_uuids
+            },
+        )
+        self.controller.undo_stack.redo()
+
+        confirm(
+            [{"op": "delete_node", "node_uuid": node_uuid} for node_uuid in node_uuids]
+        )
+        self.assertTrue(all(self.controller.get_node(value) is None for value in node_uuids))
+        self.controller.undo_stack.undo()
+        self.assertTrue(all(self.controller.get_node(value) is not None for value in node_uuids))
 
     def test_invalid_late_operation_rolls_back_entire_clone(self) -> None:
         before = self.controller.export_current_document()
@@ -637,6 +781,66 @@ class ChatComponentTests(unittest.TestCase):
             + b"\n\n"
         )
         self.assertEqual("TOO_MANY_TOOL_CALLS", stream.error["code"])
+
+    def test_stream_accepts_content_and_tool_arguments_above_old_byte_limits(self) -> None:
+        content = "响" * (4 * 1024 * 1024 + 1)
+        stream = ChatStreamAccumulator()
+        stream.feed(
+            b"data: "
+            + json.dumps(
+                {"choices": [{"delta": {"content": content}}]},
+                ensure_ascii=False,
+            ).encode("utf-8")
+            + b"\n\ndata: [DONE]\n\n"
+        )
+        self.assertIsNone(stream.error)
+        self.assertEqual(len(content), len(stream.assistant_message()["content"]))
+
+        arguments = json.dumps({"payload": "x" * (2 * 1024 * 1024 + 1)})
+        tool_stream = ChatStreamAccumulator()
+        tool_stream.feed(
+            b"data: "
+            + json.dumps(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "large-call",
+                                        "function": {
+                                            "name": "get_current_graph",
+                                            "arguments": arguments,
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+            + b"\n\n"
+        )
+        self.assertIsNone(tool_stream.error)
+        self.assertEqual(
+            len(arguments),
+            len(tool_stream.assistant_message()["tool_calls"][0]["function"]["arguments"]),
+        )
+
+    def test_history_quota_evicts_old_turns_but_keeps_current_large_response(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ChatHistoryStore(directory, max_bytes=4096)
+            messages = [
+                {"role": "user", "content": "old"},
+                {"role": "assistant", "content": "y" * 3500},
+                {"role": "user", "content": "current"},
+                {"role": "assistant", "content": "z" * 12000},
+            ]
+            bounded = store.bounded_messages(messages)
+            self.assertEqual(["current", "z" * 12000], [item["content"] for item in bounded])
+            store.save("document", bounded)
+            self.assertLessEqual(store.path_for("document").stat().st_size, 4096)
 
     def test_endpoint_validation_rejects_credentials_and_insecure_remote_key(self) -> None:
         with self.assertRaises(ValueError):

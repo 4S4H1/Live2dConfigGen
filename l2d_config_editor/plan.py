@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import re
 from collections import defaultdict, deque
+from dataclasses import dataclass
 from typing import Any, Iterable
 
 from .models import (
@@ -37,7 +38,52 @@ PLAN_BRANCH_COLORS = (
 )
 PLAN_ROOT_COLOR = "#2F80ED"
 PLAN_TITLE_MAX_LENGTH = 4096
+PLAN_FORMALIZATION_STATES = frozenset(
+    {"formal", "draft", "virtual", "materialized"}
+)
 _COLOR_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
+_TOUCHIDLE_PLAN_TITLE_PATTERN = re.compile(
+    r"^\s*(?P<draw>touchidle(?P<draw_index>[0-9]+))"
+    r"(?P<separator>\s*-\s*)"
+    r"(?P<action>touch_idle(?P<action_index>[0-9]+))\s*$",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class TouchIdlePlanTitle:
+    """A parsed plan title while preserving the user's visible spelling."""
+
+    draw_text: str
+    separator_text: str
+    action_text: str
+    draw_index: int
+    action_index: int
+
+
+def parse_touchidle_plan_title(title: str) -> TouchIdlePlanTitle | None:
+    match = _TOUCHIDLE_PLAN_TITLE_PATTERN.fullmatch(str(title or ""))
+    if match is None:
+        return None
+    return TouchIdlePlanTitle(
+        draw_text=match.group("draw"),
+        separator_text=match.group("separator"),
+        action_text=match.group("action"),
+        draw_index=int(match.group("draw_index")),
+        action_index=int(match.group("action_index")),
+    )
+
+
+def placeholder_fields_for_title(title: str) -> dict[str, str]:
+    """Return editor-only hints for an unmaterialized plan topic."""
+
+    resolved = str(title or "").strip()
+    left, separator, right = resolved.partition("-")
+    return {
+        "plan_source_title": resolved,
+        "planned_draw_name": left.strip() if separator else "",
+        "planned_action_name": right.strip() if separator else "",
+    }
 
 
 def _node_index(document: DocumentModel) -> dict[str, int]:
@@ -277,6 +323,11 @@ def normalize_plan_layout(document: DocumentModel) -> PlanLayout:
                 plan_title=(str(old.plan_title)[:PLAN_TITLE_MAX_LENGTH] if old else ""),
                 collapsed=bool(old.collapsed) if old else False,
                 branch_color=colors.get(node.uuid, PLAN_ROOT_COLOR),
+                formalization_state=(
+                    old.formalization_state
+                    if old and old.formalization_state in PLAN_FORMALIZATION_STATES
+                    else "formal"
+                ),
             )
         )
     topics.sort(
@@ -392,6 +443,7 @@ def serialize_plan_layout(document: DocumentModel) -> dict[str, Any]:
                 "plan_title": topic.plan_title,
                 "collapsed": bool(topic.collapsed),
                 "branch_color": topic.branch_color,
+                "formalization_state": topic.formalization_state,
             }
             for topic in layout.topics
         ],
@@ -403,7 +455,12 @@ def serialize_plan_layout(document: DocumentModel) -> dict[str, Any]:
     }
 
 
-def load_plan_layout(payload: Any, *, required: bool = False) -> PlanLayout:
+def load_plan_layout(
+    payload: Any,
+    *,
+    required: bool = False,
+    required_formalization_state: bool = False,
+) -> PlanLayout:
     if payload is None and not required:
         return PlanLayout()
     if not isinstance(payload, dict):
@@ -422,6 +479,7 @@ def load_plan_layout(payload: Any, *, required: bool = False) -> PlanLayout:
         plan_title = raw.get("plan_title", "")
         collapsed = raw.get("collapsed", False)
         branch_color = raw.get("branch_color", "")
+        formalization_state = raw.get("formalization_state", "formal")
         if not isinstance(node_uuid, str) or not node_uuid or node_uuid in seen:
             raise ValueError("Plan topic node_uuid is invalid or duplicated")
         if parent_uuid is not None and (not isinstance(parent_uuid, str) or not parent_uuid):
@@ -434,6 +492,10 @@ def load_plan_layout(payload: Any, *, required: bool = False) -> PlanLayout:
             raise ValueError("Plan topic collapsed flag is invalid")
         if branch_color and not _COLOR_PATTERN.fullmatch(str(branch_color)):
             raise ValueError("Plan topic branch color is invalid")
+        if required_formalization_state and "formalization_state" not in raw:
+            raise ValueError("Plan topic formalization state is missing")
+        if formalization_state not in PLAN_FORMALIZATION_STATES:
+            raise ValueError("Plan topic formalization state is invalid")
         seen.add(node_uuid)
         topics.append(
             PlanTopicRecord(
@@ -443,6 +505,7 @@ def load_plan_layout(payload: Any, *, required: bool = False) -> PlanLayout:
                 plan_title=plan_title,
                 collapsed=collapsed,
                 branch_color=_valid_color(branch_color),
+                formalization_state=formalization_state,
             )
         )
     raw_view = payload.get("view", {})

@@ -49,9 +49,6 @@ MAX_HISTORY_MESSAGES = 200
 MAX_HISTORY_BYTES = 2 * 1024 * 1024
 MAX_HISTORY_TOTAL_BYTES = 32 * 1024 * 1024
 MAX_HISTORY_FILES = 256
-MAX_RESPONSE_BYTES = 4 * 1024 * 1024
-MAX_STREAM_CONTENT_CHARS = 1 * 1024 * 1024
-MAX_TOOL_ARGUMENT_CHARS = 512 * 1024
 
 _SYSTEM_PROMPT = """You are the L2D Config Editor assistant.
 Use only the supplied editor tools for graph facts and graph changes.
@@ -156,7 +153,7 @@ class ChatHistoryStore:
         self,
         messages: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Bound both in-memory requests and persisted history."""
+        """Evict old turns while retaining the complete newest turn in memory."""
 
         bounded = [
             dict(message)
@@ -174,6 +171,19 @@ class ChatHistoryStore:
                 + "\n"
             ).encode("utf-8")
             if len(encoded) <= self.max_bytes:
+                break
+            # Quotas evict old turns only. Keep the newest user turn and its
+            # assistant/tool response in memory even when that response is
+            # larger than the persistence budget.
+            newest_turn_start = max(
+                (
+                    index
+                    for index, message in enumerate(bounded)
+                    if message.get("role") == "user"
+                ),
+                default=-1,
+            )
+            if newest_turn_start <= 0:
                 break
             bounded.pop(0)
         # A retained tool response without its assistant tool_call is invalid.
@@ -291,37 +301,20 @@ class ChatStreamAccumulator:
     def __init__(
         self,
         *,
-        max_response_bytes: int = MAX_RESPONSE_BYTES,
-        max_content_chars: int = MAX_STREAM_CONTENT_CHARS,
-        max_tool_argument_chars: int = MAX_TOOL_ARGUMENT_CHARS,
         max_tool_calls: int = MAX_TOOL_CALLS_PER_ROUND,
     ) -> None:
         self._buffer = bytearray()
         self.raw = bytearray()
         self.content_parts: list[str] = []
-        self._content_chars = 0
         self.tool_calls: dict[int, dict[str, Any]] = {}
         self.done = False
         self.error: dict[str, Any] | None = None
         self.saw_sse_data = False
-        self.max_response_bytes = max(1024, int(max_response_bytes))
-        self.max_content_chars = max(1024, int(max_content_chars))
-        self.max_tool_argument_chars = max(
-            1024,
-            int(max_tool_argument_chars),
-        )
         self.max_tool_calls = max(1, int(max_tool_calls))
 
     def feed(self, data: bytes | QByteArray) -> list[str]:
         chunk = bytes(data)
         if self.error is not None:
-            return []
-        if len(self.raw) + len(chunk) > self.max_response_bytes:
-            self.error = {
-                "code": "RESPONSE_TOO_LARGE",
-                "message": "LLM 响应超过安全大小限制",
-            }
-            self._buffer.clear()
             return []
         self.raw.extend(chunk)
         self._buffer.extend(chunk)
@@ -369,14 +362,7 @@ class ChatStreamAccumulator:
         content = delta.get("content")
         visible: list[str] = []
         if isinstance(content, str) and content:
-            if self._content_chars + len(content) > self.max_content_chars:
-                self.error = {
-                    "code": "RESPONSE_TOO_LARGE",
-                    "message": "LLM 文本响应超过安全大小限制",
-                }
-                return []
             self.content_parts.append(content)
-            self._content_chars += len(content)
             visible.append(content)
         raw_calls = delta.get("tool_calls")
         if isinstance(raw_calls, list):
@@ -413,15 +399,6 @@ class ChatStreamAccumulator:
                         call["function"]["name"] += str(function["name"])
                     if function.get("arguments"):
                         fragment = str(function["arguments"])
-                        if (
-                            len(call["function"]["arguments"]) + len(fragment)
-                            > self.max_tool_argument_chars
-                        ):
-                            self.error = {
-                                "code": "RESPONSE_TOO_LARGE",
-                                "message": "LLM 工具参数超过安全大小限制",
-                            }
-                            return []
                         call["function"]["arguments"] += fragment
         return visible
 
@@ -818,8 +795,6 @@ class LLMChatPanel(QWidget):
         if isinstance(raw_arguments, dict):
             arguments = dict(raw_arguments)
         else:
-            if len(str(raw_arguments or "{}")) > MAX_TOOL_ARGUMENT_CHARS:
-                raise ValueError("工具参数超过安全大小限制")
             try:
                 arguments = json.loads(str(raw_arguments or "{}"))
             except json.JSONDecodeError as exc:
