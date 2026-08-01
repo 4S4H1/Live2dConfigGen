@@ -13,11 +13,13 @@ from PySide6.QtCore import QCoreApplication, QObject, QProcess, Signal
 from l2d_config_editor.controller import EditorController
 from l2d_config_editor.graph_diff import canonical_graph_snapshot, diff_documents
 from l2d_config_editor.logic import (
+    display_value_for_field,
     document_to_csv_rows,
     export_document_dict,
     get_default_schema,
     load_document,
     load_document_payload,
+    node_title,
     save_document,
 )
 from l2d_config_editor.models import CanvasStrokeRecord, GroupRecord
@@ -83,6 +85,17 @@ class PlanFormalizationV5Tests(unittest.TestCase):
         for title in ("touchidle-touch_idle1", "touchidle1_touch_idle1", "x-y"):
             self.assertIsNone(parse_touchidle_plan_title(title))
 
+    def test_title_parser_accepts_an_optional_note_after_the_formal_pair(self) -> None:
+        parsed = parse_touchidle_plan_title(
+            "  ToUcHiDlE7  -  TOUCH_idle19 - 进场淡入 "
+        )
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual((7, 19), (parsed.draw_index, parsed.action_index))
+        self.assertEqual("ToUcHiDlE7", parsed.draw_text)
+        self.assertEqual("TOUCH_idle19", parsed.action_text)
+        self.assertEqual("进场淡入", parsed.note_text)
+
     def test_materialization_is_atomic_preserves_edges_and_uses_placeholders(self) -> None:
         controller = ready_controller()
         root_uuid = controller.document.nodes[0].uuid
@@ -137,6 +150,89 @@ class PlanFormalizationV5Tests(unittest.TestCase):
             connection_pairs,
             {(item.from_uuid, item.to_uuid) for item in controller.document.connections},
         )
+
+    def test_materialization_uses_the_optional_plan_note_as_touchidle_title(self) -> None:
+        controller = ready_controller()
+        root_uuid = controller.document.nodes[0].uuid
+        formal_uuid = controller.create_plan_topic(
+            root_uuid,
+            "TouchIdle7-touch_idle19-进场淡入",
+        )
+        virtual_uuid = controller.create_plan_topic(root_uuid, "纯备注条目")
+
+        self.assertTrue(controller.materialize_plan_topics())
+
+        formal = controller.get_node(formal_uuid)
+        virtual = controller.get_node(virtual_uuid)
+        self.assertEqual("TouchIdle", formal.type)
+        self.assertEqual("TouchIdle7", formal.fields["draw_able_name"])
+        self.assertEqual("进场淡入", formal.fields["tips"])
+        self.assertEqual("TouchIdle7-进场淡入", node_title(controller.schema, formal))
+        self.assertEqual("PlanPlaceholder", virtual.type)
+
+    def test_virtual_placeholder_expected_names_are_writable(self) -> None:
+        controller = ready_controller()
+        root_uuid = controller.document.nodes[0].uuid
+        node_uuid = controller.create_plan_topic(root_uuid, "纯备注条目")
+        controller.materialize_plan_topics()
+
+        fields = {
+            field.key: field
+            for field in controller.schema.nodes["PlanPlaceholder"].fields
+        }
+        self.assertTrue(fields["plan_source_title"].read_only)
+        self.assertFalse(fields["planned_draw_name"].read_only)
+        self.assertFalse(fields["planned_action_name"].read_only)
+
+        self.assertEqual("PlanPlaceholder", controller.get_node(node_uuid).type)
+
+    def test_virtual_placeholder_auto_materializes_when_a_planned_name_is_entered(self) -> None:
+        """Either expected field promotes a virtual topic in one undo step."""
+
+        for values, expected_draw, expected_action in (
+            (
+                {"planned_draw_name": "TouchIdle22"},
+                "TouchIdle22",
+                None,
+            ),
+            (
+                {"planned_action_name": "touch_idle31"},
+                None,
+                "touch_idle31",
+            ),
+        ):
+            with self.subTest(values=values):
+                controller = ready_controller()
+                root_uuid = controller.document.nodes[0].uuid
+                node_uuid = controller.create_plan_topic(root_uuid, "纯备注条目")
+                controller.materialize_plan_topics()
+                before_index = controller.undo_stack.index()
+
+                controller.update_fields(node_uuid, values, "advanced")
+
+                converted = controller.get_node(node_uuid)
+                self.assertEqual(before_index + 1, controller.undo_stack.index())
+                self.assertEqual("TouchIdle", converted.type)
+                self.assertEqual("materialized", controller.plan_topic(node_uuid).formalization_state)
+                self.assertEqual("纯备注条目", converted.fields["tips"])
+                if expected_draw is not None:
+                    self.assertEqual(expected_draw, converted.fields["draw_able_name"])
+                if expected_action is not None:
+                    self.assertEqual(
+                        expected_action,
+                        display_value_for_field(
+                            controller.schema,
+                            converted,
+                            "action_trigger",
+                        ),
+                    )
+
+                controller.undo_stack.undo()
+                reverted = controller.get_node(node_uuid)
+                self.assertEqual("PlanPlaceholder", reverted.type)
+                self.assertEqual("virtual", controller.plan_topic(node_uuid).formalization_state)
+                for key in values:
+                    self.assertEqual("", reverted.fields[key])
 
     def test_editing_materialized_or_virtual_title_returns_to_draft(self) -> None:
         controller = ready_controller()

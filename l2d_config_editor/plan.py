@@ -45,7 +45,9 @@ _COLOR_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
 _TOUCHIDLE_PLAN_TITLE_PATTERN = re.compile(
     r"^\s*(?P<draw>touchidle(?P<draw_index>[0-9]+))"
     r"(?P<separator>\s*-\s*)"
-    r"(?P<action>touch_idle(?P<action_index>[0-9]+))\s*$",
+    r"(?P<action>touch_idle(?P<action_index>[0-9]+))"
+    r"(?:(?P<note_separator>\s*-\s*|\s+)"
+    r"(?P<note>\S(?:.*\S)?))?\s*$",
     re.IGNORECASE,
 )
 
@@ -59,6 +61,8 @@ class TouchIdlePlanTitle:
     action_text: str
     draw_index: int
     action_index: int
+    note_text: str = ""
+    note_separator_text: str = ""
 
 
 def parse_touchidle_plan_title(title: str) -> TouchIdlePlanTitle | None:
@@ -71,6 +75,8 @@ def parse_touchidle_plan_title(title: str) -> TouchIdlePlanTitle | None:
         action_text=match.group("action"),
         draw_index=int(match.group("draw_index")),
         action_index=int(match.group("action_index")),
+        note_text=str(match.group("note") or "").strip(),
+        note_separator_text=str(match.group("note_separator") or ""),
     )
 
 
@@ -78,6 +84,13 @@ def placeholder_fields_for_title(title: str) -> dict[str, str]:
     """Return editor-only hints for an unmaterialized plan topic."""
 
     resolved = str(title or "").strip()
+    parsed = parse_touchidle_plan_title(resolved)
+    if parsed is not None:
+        return {
+            "plan_source_title": resolved,
+            "planned_draw_name": parsed.draw_text,
+            "planned_action_name": parsed.action_text,
+        }
     left, separator, right = resolved.partition("-")
     return {
         "plan_source_title": resolved,

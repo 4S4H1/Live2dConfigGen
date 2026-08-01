@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Any
 
 from PySide6.QtCore import QLineF, QPointF, QRectF, Qt, QTimer, Signal
@@ -59,13 +60,40 @@ def _restore_item_opacity(item: QGraphicsItem, opacity: float) -> None:
         return
 
 
-class PlanTopicItem(QGraphicsObject):
-    """One underlined mind-map topic backed by a real node (or virtual branch)."""
+@dataclass(frozen=True)
+class _PlanTopicCardSpec:
+    """Measured, zoom-independent geometry for one plan topic card."""
 
-    WIDTH = 248.0
-    ROOT_WIDTH = 276.0
-    HEIGHT = 46.0
-    BASELINE_Y = 36.0
+    bounds: QRectF
+    text_lines: tuple[str, ...] = ()
+    semantic_draw_text: str = ""
+    semantic_separator_text: str = ""
+    semantic_action_text: str = ""
+    note_lines: tuple[str, ...] = ()
+
+    @property
+    def semantic(self) -> bool:
+        return bool(self.semantic_draw_text or self.semantic_action_text)
+
+
+class PlanTopicItem(QGraphicsObject):
+    """A measured plan card which becomes a text-free outline in overview."""
+
+    MIN_CARD_WIDTH = 156.0
+    MAX_CARD_WIDTH = 360.0
+    MIN_SEMANTIC_CARD_WIDTH = 238.0
+    MIN_CARD_HEIGHT = 52.0
+    CARD_PADDING_X = 16.0
+    CARD_PADDING_Y = 12.0
+    CARD_LINE_GAP = 4.0
+    CARD_CORNER_RADIUS = 8.0
+    TITLE_POINT_SIZE = 13.5
+    ROOT_TITLE_POINT_SIZE = 15.0
+    # Text remains visible through ordinary manual zoom.  Overview is reserved
+    # for a genuinely remote view, while focus restores a comfortably readable
+    # scale rather than merely crossing the overview boundary.
+    OVERVIEW_SCALE = 0.45
+    READABLE_SCALE = 0.85
 
     def __init__(
         self,
@@ -78,6 +106,7 @@ class PlanTopicItem(QGraphicsObject):
         virtual: bool = False,
         root: bool = False,
         semantic_title=None,
+        card_spec: _PlanTopicCardSpec | None = None,
     ) -> None:
         super().__init__()
         self.view = view
@@ -88,6 +117,12 @@ class PlanTopicItem(QGraphicsObject):
         self.virtual = bool(virtual)
         self.root = bool(root)
         self.semantic_title = semantic_title
+        self._card_spec = card_spec or self.measure_card(
+            title,
+            root=self.root,
+            semantic_title=self.semantic_title,
+            font=self._topic_font(),
+        )
         self._drag_start = QPointF()
         flags = QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
         if not self.root and not self.virtual:
@@ -105,16 +140,166 @@ class PlanTopicItem(QGraphicsObject):
         self.setZValue(10.0)
         self.setToolTip(title)
 
-    @property
-    def width(self) -> float:
-        return self.ROOT_WIDTH if self.root else self.WIDTH
-
     def boundingRect(self) -> QRectF:
-        return QRectF(0.0, 0.0, self.width, self.HEIGHT)
+        return QRectF(self._card_spec.bounds)
 
     def connection_point(self, side: str) -> QPointF:
-        x = 8.0 if side == "left" else self.width - 8.0
-        return self.mapToScene(QPointF(x, self.BASELINE_Y))
+        bounds = self.boundingRect()
+        x = bounds.left() if side == "left" else bounds.right()
+        return self.mapToScene(QPointF(x, bounds.center().y()))
+
+    @staticmethod
+    def _elide_semantic_segment(
+        metrics: QFontMetricsF,
+        text: str,
+        available_width: float,
+    ) -> str:
+        """Keep the numeric suffix visible for planned frame/action names."""
+
+        return metrics.elidedText(
+            str(text or ""),
+            Qt.TextElideMode.ElideLeft,
+            max(1, int(available_width)),
+        )
+
+    def _topic_font(self) -> QFont:
+        """Return the stable scene font; semantic zoom controls readability."""
+
+        font = QFont(self.view.font())
+        font.setPointSizeF(
+            self.ROOT_TITLE_POINT_SIZE if self.root else self.TITLE_POINT_SIZE
+        )
+        font.setBold(self.root)
+        return font
+
+    @staticmethod
+    def _wrap_text_lines(
+        metrics: QFontMetricsF,
+        text: str,
+        available_width: float,
+        *,
+        max_lines: int = 2,
+    ) -> tuple[str, ...]:
+        """Wrap CJK and Latin titles, eliding only a genuinely overlong tail."""
+
+        remaining = str(text or "").strip() or "（无标题）"
+        width = max(1, int(available_width))
+        lines: list[str] = []
+        while remaining and len(lines) < max_lines:
+            if metrics.horizontalAdvance(remaining) <= width:
+                lines.append(remaining)
+                remaining = ""
+                break
+            cut = 1
+            while (
+                cut < len(remaining)
+                and metrics.horizontalAdvance(remaining[: cut + 1]) <= width
+            ):
+                cut += 1
+            whitespace = max(
+                remaining.rfind(" ", 0, cut),
+                remaining.rfind("\t", 0, cut),
+            )
+            if whitespace > 0:
+                cut = whitespace + 1
+            lines.append(remaining[:cut].rstrip())
+            remaining = remaining[cut:].lstrip()
+        if remaining:
+            prefix = lines.pop() if lines else ""
+            lines.append(
+                metrics.elidedText(
+                    f"{prefix}{remaining}",
+                    Qt.TextElideMode.ElideRight,
+                    width,
+                )
+            )
+        return tuple(lines or ("（无标题）",))
+
+    @classmethod
+    def measure_card(
+        cls,
+        title: str,
+        *,
+        root: bool,
+        semantic_title,
+        font: QFont,
+    ) -> _PlanTopicCardSpec:
+        """Measure card content once per title/theme/font instead of per paint."""
+
+        metrics = QFontMetricsF(font)
+        line_height = max(1.0, float(metrics.lineSpacing()))
+        if semantic_title is None:
+            natural_width = metrics.horizontalAdvance(str(title or ""))
+            width = min(
+                cls.MAX_CARD_WIDTH,
+                max(cls.MIN_CARD_WIDTH, natural_width + cls.CARD_PADDING_X * 2.0),
+            )
+            lines = cls._wrap_text_lines(
+                metrics,
+                title,
+                width - cls.CARD_PADDING_X * 2.0,
+            )
+            height = max(
+                cls.MIN_CARD_HEIGHT,
+                cls.CARD_PADDING_Y * 2.0
+                + line_height * len(lines)
+                + cls.CARD_LINE_GAP * max(0, len(lines) - 1),
+            )
+            return _PlanTopicCardSpec(
+                bounds=QRectF(0.0, 0.0, width, height),
+                text_lines=lines,
+            )
+
+        separator_width = max(
+            14.0,
+            float(metrics.horizontalAdvance(semantic_title.separator_text)),
+        )
+        natural_width = (
+            metrics.horizontalAdvance(semantic_title.draw_text)
+            + metrics.horizontalAdvance(semantic_title.action_text)
+            + separator_width
+            + cls.CARD_PADDING_X * 2.0
+            + 12.0
+        )
+        width = min(
+            cls.MAX_CARD_WIDTH,
+            max(cls.MIN_SEMANTIC_CARD_WIDTH, natural_width),
+        )
+        available = width - cls.CARD_PADDING_X * 2.0 - separator_width - 8.0
+        part_width = max(24.0, available * 0.5)
+        draw_text = cls._elide_semantic_segment(
+            metrics, semantic_title.draw_text, part_width
+        )
+        action_text = cls._elide_semantic_segment(
+            metrics, semantic_title.action_text, part_width
+        )
+        note_lines = (
+            cls._wrap_text_lines(
+                metrics,
+                semantic_title.note_text,
+                width - cls.CARD_PADDING_X * 2.0,
+            )
+            if semantic_title.note_text
+            else ()
+        )
+        height = (
+            cls.CARD_PADDING_Y * 2.0
+            + line_height
+            + (
+                cls.CARD_LINE_GAP
+                + len(note_lines) * line_height
+                + cls.CARD_LINE_GAP * max(0, len(note_lines) - 1)
+                if note_lines
+                else 0.0
+            )
+        )
+        return _PlanTopicCardSpec(
+            bounds=QRectF(0.0, 0.0, width, max(cls.MIN_CARD_HEIGHT, height)),
+            semantic_draw_text=draw_text,
+            semantic_separator_text=semantic_title.separator_text,
+            semantic_action_text=action_text,
+            note_lines=note_lines,
+        )
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
         del option, widget
@@ -122,65 +307,34 @@ class PlanTopicItem(QGraphicsObject):
         palette = self.view.theme_palette
         text_color = QColor(palette.editor_text)
         branch_color = QColor("#8B95A5") if self.virtual else QColor(self.color)
-        if self.isSelected():
-            selection = QColor(branch_color)
-            selection.setAlpha(42)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(selection)
-            painter.drawRoundedRect(
-                self.boundingRect().adjusted(0.0, 1.0, 0.0, -1.0),
-                7.0,
-                7.0,
-            )
-
-        line_pen = QPen(branch_color, 2.0 if self.root else 1.6)
+        bounds = self.boundingRect().adjusted(0.75, 0.75, -0.75, -0.75)
+        fill = QColor(branch_color)
+        fill.setAlpha(56 if self.isSelected() else 22)
+        line_pen = QPen(branch_color, 2.0 if self.root else 1.35)
         line_pen.setCosmetic(True)
         painter.setPen(line_pen)
-        painter.setBrush(QColor(palette.canvas_background))
-        painter.drawEllipse(QPointF(8.0, self.BASELINE_Y), 5.2, 5.2)
-        painter.drawLine(
-            QPointF(13.0, self.BASELINE_Y),
-            QPointF(self.width - 7.0, self.BASELINE_Y),
-        )
+        painter.setBrush(fill)
+        painter.drawRoundedRect(bounds, self.CARD_CORNER_RADIUS, self.CARD_CORNER_RADIUS)
+        if self.view.is_overview_mode():
+            return
 
-        font = QFont(self.view.font())
-        font.setPointSizeF(13.0 if self.root else 11.5)
-        font.setBold(self.root)
+        font = self._topic_font()
         metrics = QFontMetricsF(font)
-        available = max(20.0, self.width - 36.0)
         painter.setFont(font)
-        text_rect = QRectF(18.0, 3.0, available, 29.0)
-        if self.semantic_title is None:
-            display = metrics.elidedText(
-                self.title,
-                Qt.TextElideMode.ElideRight,
-                int(available),
-            )
+        line_height = max(1.0, float(metrics.lineSpacing()))
+        x = self.CARD_PADDING_X
+        y = self.CARD_PADDING_Y
+        available = self.boundingRect().width() - self.CARD_PADDING_X * 2.0
+        if not self._card_spec.semantic:
             painter.setPen(text_color)
-            painter.drawText(
-                text_rect,
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                display,
-            )
+            for line in self._card_spec.text_lines:
+                painter.drawText(
+                    QRectF(x, y, available, line_height),
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                    line,
+                )
+                y += line_height + self.CARD_LINE_GAP
         else:
-            spec = self.semantic_title
-            separator_width = min(
-                available * 0.18,
-                metrics.horizontalAdvance(spec.separator_text),
-            )
-            remaining = max(20.0, available - separator_width)
-            draw_width = remaining * 0.5
-            action_width = remaining - draw_width
-            draw_text = metrics.elidedText(
-                spec.draw_text,
-                Qt.TextElideMode.ElideRight,
-                max(1, int(draw_width)),
-            )
-            action_text = metrics.elidedText(
-                spec.action_text,
-                Qt.TextElideMode.ElideRight,
-                max(1, int(action_width)),
-            )
             blue = QColor(
                 "#78B1FF"
                 if self.view.theme_mode is ThemeMode.DARK
@@ -191,23 +345,64 @@ class PlanTopicItem(QGraphicsObject):
                 if self.view.theme_mode is ThemeMode.DARK
                 else "#9A3412"
             )
-            x = text_rect.left()
-            for segment, width, color in (
-                (draw_text, draw_width, blue),
-                (spec.separator_text, separator_width, text_color),
-                (action_text, action_width, orange),
-            ):
+            separator_width = max(
+                14.0,
+                float(metrics.horizontalAdvance(self._card_spec.semantic_separator_text)),
+            )
+            part_width = max(24.0, (available - separator_width - 8.0) * 0.5)
+            segments = [
+                (
+                    self._card_spec.semantic_draw_text,
+                    part_width,
+                    blue,
+                    Qt.AlignmentFlag.AlignRight,
+                ),
+                (
+                    self._card_spec.semantic_separator_text,
+                    separator_width + 8.0,
+                    text_color,
+                    Qt.AlignmentFlag.AlignCenter,
+                ),
+                (
+                    self._card_spec.semantic_action_text,
+                    part_width,
+                    orange,
+                    Qt.AlignmentFlag.AlignRight,
+                ),
+            ]
+            for segment, width, color, alignment in segments:
                 painter.setPen(color)
                 painter.drawText(
-                    QRectF(x, text_rect.top(), width, text_rect.height()),
-                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                    QRectF(x, y, width, line_height),
+                    alignment | Qt.AlignmentFlag.AlignVCenter,
                     segment,
                 )
                 x += width
+            y += line_height
+            if self._card_spec.note_lines:
+                y += self.CARD_LINE_GAP
+                painter.setPen(text_color)
+                for line in self._card_spec.note_lines:
+                    painter.drawText(
+                        QRectF(
+                            self.CARD_PADDING_X,
+                            y,
+                            available,
+                            line_height,
+                        ),
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                        line,
+                    )
+                    y += line_height + self.CARD_LINE_GAP
         if self.collapsed:
             painter.setPen(branch_color)
             painter.drawText(
-                QRectF(self.width - 24.0, 3.0, 18.0, 28.0),
+                QRectF(
+                    self.boundingRect().right() - 22.0,
+                    self.CARD_PADDING_Y,
+                    18.0,
+                    line_height,
+                ),
                 Qt.AlignmentFlag.AlignCenter,
                 "›",
             )
@@ -234,6 +429,14 @@ class PlanTopicItem(QGraphicsObject):
                     QPointF(self.pos()),
                     QPointF(self._drag_start),
                 )
+            elif self.view.is_overview_mode() and not event.modifiers():
+                QTimer.singleShot(
+                    0,
+                    lambda node_uuid=self.node_uuid: self.view.focus_on_node(
+                        node_uuid,
+                        target_scale=self.READABLE_SCALE,
+                    ),
+                )
 
     def mouseDoubleClickEvent(self, event: QGraphicsSceneMouseEvent) -> None:
         if not self.virtual:
@@ -248,8 +451,10 @@ class PlanCanvasView(QGraphicsView):
 
     selectionSummaryChanged = Signal(object, object)
     interactionBusyChanged = Signal(bool)
-    HORIZONTAL_GAP = 292.0
-    VERTICAL_GAP = 64.0
+    COLUMN_GAP = 96.0
+    SIBLING_GAP = 28.0
+    REORDER_HORIZONTAL_SLOP = 72.0
+    REPARENT_DISTANCE = 360.0
 
     def __init__(self, schema: EditorSchema, controller, parent=None) -> None:
         super().__init__(parent)
@@ -300,6 +505,7 @@ class PlanCanvasView(QGraphicsView):
         self._rebuild_queued = False
         self._restore_view_on_rebuild = True
         self._temporarily_expanded: set[str] = set()
+        self._card_spec_cache: dict[tuple[Any, ...], _PlanTopicCardSpec] = {}
         self.zoom_wheel_modifier = "ctrl"
         self.horizontal_wheel_modifier = "alt_shift"
         self.scene_ref.selectionChanged.connect(self._on_scene_selection_changed)
@@ -342,10 +548,9 @@ class PlanCanvasView(QGraphicsView):
     def set_ui_theme(self, mode: ThemeMode | str) -> None:
         self.theme_mode = normalize_theme_mode(mode)
         self.theme_palette = palette_for_theme(self.theme_mode)
+        self._card_spec_cache.clear()
         self.scene_ref.setBackgroundBrush(QColor(self.theme_palette.canvas_background))
-        for item in self.scene_ref.items():
-            item.update()
-        self.viewport().update()
+        self._schedule_rebuild()
 
     def _set_busy(self, flag: str, busy: bool) -> None:
         before = bool(self._busy_flags)
@@ -359,6 +564,16 @@ class PlanCanvasView(QGraphicsView):
 
     def is_busy(self) -> bool:
         return bool(self._busy_flags)
+
+    def is_overview_mode(self) -> bool:
+        """Overview deliberately omits labels instead of rendering tiny ellipses."""
+
+        return float(self.transform().m11()) < PlanTopicItem.OVERVIEW_SCALE
+
+    def shows_topic_text(self) -> bool:
+        """A small testable seam for the overview rendering contract."""
+
+        return not self.is_overview_mode()
 
     def set_pen_style(self, color: str, width: float) -> None:
         resolved = QColor(str(color))
@@ -377,11 +592,60 @@ class PlanCanvasView(QGraphicsView):
                 )
             )
 
+    def _card_spec_for(
+        self,
+        title: str,
+        *,
+        root: bool,
+        virtual: bool,
+        semantic_title,
+    ) -> _PlanTopicCardSpec:
+        """Cache content measurements; scrolling and zooming never remeasure."""
+
+        semantic_key = (
+            (
+                semantic_title.draw_text,
+                semantic_title.separator_text,
+                semantic_title.action_text,
+                semantic_title.note_text,
+                semantic_title.note_separator_text,
+            )
+            if semantic_title is not None
+            else None
+        )
+        base_font = QFont(self.font())
+        base_font.setPointSizeF(
+            PlanTopicItem.ROOT_TITLE_POINT_SIZE
+            if root
+            else PlanTopicItem.TITLE_POINT_SIZE
+        )
+        base_font.setBold(root)
+        key = (
+            str(title),
+            bool(root),
+            bool(virtual),
+            semantic_key,
+            self.theme_mode.value,
+            base_font.family(),
+            base_font.pointSizeF(),
+        )
+        spec = self._card_spec_cache.get(key)
+        if spec is None:
+            spec = PlanTopicItem.measure_card(
+                title,
+                root=root,
+                semantic_title=semantic_title,
+                font=base_font,
+            )
+            self._card_spec_cache[key] = spec
+        return spec
+
     def _visible_layout(
         self,
         topics: dict[str, Any],
         children: dict[str | None, list[str]],
         root_uuid: str | None,
+        card_specs: dict[str, _PlanTopicCardSpec],
     ) -> tuple[dict[str, QPointF], list[tuple[str, str]]]:
         if root_uuid is None:
             return {}, []
@@ -402,33 +666,65 @@ class PlanCanvasView(QGraphicsView):
                 result.append(PLAN_UNCONNECTED_UUID)
             return result
 
+        depth_by_uuid: dict[str, int] = {}
+        visible_by_parent: dict[str, list[str]] = {}
         positions: dict[str, QPointF] = {}
         edges: list[tuple[str, str]] = []
         next_leaf_y = 0.0
-        visible_by_parent: dict[str, list[str]] = {}
-        # Explicit pre/post stack avoids Python recursion limits for imported
-        # graphs with thousands of levels.
+        # Explicit pre/post traversal keeps imported deep plans stack-safe and
+        # centers a parent between the first and last visible child card.
         stack: list[tuple[str, int, bool]] = [(root_uuid, 0, False)]
+        entered: set[str] = set()
         while stack:
             node_uuid, depth, postorder = stack.pop()
             if not postorder:
-                child_ids = visible_children(node_uuid)
+                if node_uuid in entered:
+                    continue
+                entered.add(node_uuid)
+                child_ids = [
+                    child_uuid
+                    for child_uuid in visible_children(node_uuid)
+                    if child_uuid in card_specs
+                ]
                 visible_by_parent[node_uuid] = child_ids
-                stack.append((node_uuid, depth, True))
+                depth_by_uuid[node_uuid] = depth
                 edges.extend((node_uuid, child_uuid) for child_uuid in child_ids)
+                stack.append((node_uuid, depth, True))
                 for child_uuid in reversed(child_ids):
                     stack.append((child_uuid, depth + 1, False))
                 continue
-            child_ids = visible_by_parent.get(node_uuid, ())
+
+            spec = card_specs.get(node_uuid)
+            if spec is None:
+                continue
+            child_ids = [
+                child_uuid
+                for child_uuid in visible_by_parent.get(node_uuid, ())
+                if child_uuid in positions
+            ]
             if child_ids:
-                y = (
-                    positions[child_ids[0]].y()
-                    + positions[child_ids[-1]].y()
-                ) * 0.5
+                first = card_specs[child_ids[0]].bounds
+                last = card_specs[child_ids[-1]].bounds
+                first_center = positions[child_ids[0]].y() + first.height() * 0.5
+                last_center = positions[child_ids[-1]].y() + last.height() * 0.5
+                y = (first_center + last_center) * 0.5 - spec.bounds.height() * 0.5
             else:
                 y = next_leaf_y
-                next_leaf_y += self.VERTICAL_GAP
-            positions[node_uuid] = QPointF(depth * self.HORIZONTAL_GAP, y)
+                next_leaf_y += spec.bounds.height() + self.SIBLING_GAP
+            positions[node_uuid] = QPointF(0.0, y)
+
+        width_by_depth: dict[int, float] = defaultdict(float)
+        for node_uuid, depth in depth_by_uuid.items():
+            spec = card_specs.get(node_uuid)
+            if spec is not None:
+                width_by_depth[depth] = max(width_by_depth[depth], spec.bounds.width())
+        x_by_depth: dict[int, float] = {}
+        next_x = 0.0
+        for depth in sorted(width_by_depth):
+            x_by_depth[depth] = next_x
+            next_x += width_by_depth[depth] + self.COLUMN_GAP
+        for node_uuid, position in positions.items():
+            position.setX(x_by_depth.get(depth_by_uuid.get(node_uuid, 0), 0.0))
         return positions, edges
 
     def rebuild_scene(self, *, restore_view: bool = False) -> None:
@@ -463,12 +759,45 @@ class PlanCanvasView(QGraphicsView):
             node_by_uuid = {
                 node.uuid: node for node in self.controller.document.nodes
             }
+            title_by_uuid: dict[str, str] = {}
+            card_specs: dict[str, _PlanTopicCardSpec] = {}
+            for node_uuid, topic in topics.items():
+                node = node_by_uuid.get(node_uuid)
+                if node is None:
+                    continue
+                topic_title = plan_topic_title(
+                    self.schema,
+                    self.controller.document,
+                    node,
+                    topic,
+                )
+                semantic_title = (
+                    parse_touchidle_plan_title(topic_title)
+                    if topic.formalization_state != "formal"
+                    else None
+                )
+                title_by_uuid[node_uuid] = topic_title
+                card_specs[node_uuid] = self._card_spec_for(
+                    topic_title,
+                    root=node_uuid == root_uuid,
+                    virtual=False,
+                    semantic_title=semantic_title,
+                )
+            orphan_roots = list(children.get(None, ()))
+            if orphan_roots:
+                title_by_uuid[PLAN_UNCONNECTED_UUID] = PLAN_UNCONNECTED_TITLE
+                card_specs[PLAN_UNCONNECTED_UUID] = self._card_spec_for(
+                    PLAN_UNCONNECTED_TITLE,
+                    root=False,
+                    virtual=True,
+                    semantic_title=None,
+                )
             positions, primary_edges = self._visible_layout(
                 topics,
                 children,
                 root_uuid,
+                card_specs,
             )
-            title_by_uuid: dict[str, str] = {}
             for node_uuid, position in positions.items():
                 if node_uuid == PLAN_UNCONNECTED_UUID:
                     item = PlanTopicItem(
@@ -477,19 +806,19 @@ class PlanCanvasView(QGraphicsView):
                         PLAN_UNCONNECTED_TITLE,
                         "#8B95A5",
                         virtual=True,
+                        card_spec=card_specs[node_uuid],
                     )
                 else:
                     node = node_by_uuid.get(node_uuid)
                     topic = topics.get(node_uuid)
                     if node is None or topic is None:
                         continue
-                    topic_title = plan_topic_title(
-                        self.schema,
-                        self.controller.document,
-                        node,
-                        topic,
+                    topic_title = title_by_uuid[node_uuid]
+                    semantic_title = (
+                        parse_touchidle_plan_title(topic_title)
+                        if topic.formalization_state != "formal"
+                        else None
                     )
-                    title_by_uuid[node_uuid] = topic_title
                     item = PlanTopicItem(
                         self,
                         node_uuid,
@@ -498,10 +827,9 @@ class PlanCanvasView(QGraphicsView):
                         collapsed=topic.collapsed,
                         root=node_uuid == root_uuid,
                         semantic_title=(
-                            parse_touchidle_plan_title(topic_title)
-                            if topic.formalization_state != "formal"
-                            else None
+                            semantic_title
                         ),
+                        card_spec=card_specs[node_uuid],
                     )
                 item.setPos(position)
                 self.scene_ref.addItem(item)
@@ -638,6 +966,10 @@ class PlanCanvasView(QGraphicsView):
             )
         finally:
             self._selection_guard = False
+        if len(requested) == 1 and self.is_overview_mode():
+            self.focus_on_node(
+                requested[0], target_scale=PlanTopicItem.READABLE_SCALE
+            )
 
     def _on_scene_selection_changed(self) -> None:
         if self._selection_guard:
@@ -687,9 +1019,15 @@ class PlanCanvasView(QGraphicsView):
             item = self.topic_items.get(node_uuid)
         if item is None:
             return
-        if target_scale is not None and self.transform().m11() < float(target_scale):
+        readable_target = max(
+            PlanTopicItem.READABLE_SCALE,
+            float(target_scale)
+            if target_scale is not None
+            else PlanTopicItem.READABLE_SCALE,
+        )
+        if self.transform().m11() < readable_target:
             current = max(0.001, self.transform().m11())
-            factor = min(8.0, float(target_scale)) / current
+            factor = min(8.0, readable_target) / current
             self.scale(factor, factor)
         self.centerOn(item.sceneBoundingRect().center())
         self._selection_guard = True
@@ -777,6 +1115,13 @@ class PlanCanvasView(QGraphicsView):
             target = current * factor
             if 0.03 <= target <= 8.0:
                 self.scale(factor, factor)
+                if (current < PlanTopicItem.OVERVIEW_SCALE) != (
+                    target < PlanTopicItem.OVERVIEW_SCALE
+                ):
+                    # Geometry is independent of zoom.  A repaint is enough
+                    # to exchange full card content for clean overview cards.
+                    for item in self.topic_items.values():
+                        item.update()
         else:
             step = 60 if delta > 0 else -60
             if self._matches_wheel_modifier(
@@ -1068,8 +1413,10 @@ class PlanCanvasView(QGraphicsView):
         if topic is None:
             self.rebuild_scene()
             return
+        # A plan drag has structural meaning only.  Formal positions belong to
+        # the formal canvas, so never call controller.move_node() here.
         horizontal_delta = dropped_position.x() - original_position.x()
-        if abs(horizontal_delta) < self.HORIZONTAL_GAP * 0.32:
+        if abs(horizontal_delta) < self.REORDER_HORIZONTAL_SLOP:
             siblings = self.controller.plan_children(topic.parent_uuid)
             ordered = [
                 sibling_uuid
@@ -1082,16 +1429,17 @@ class PlanCanvasView(QGraphicsView):
                 for sibling_uuid in ordered
                 if (
                     self.topic_items.get(sibling_uuid) is not None
-                    and self.topic_items[sibling_uuid].pos().y() < drop_y
+                    and self.topic_items[sibling_uuid].sceneBoundingRect().center().y()
+                    < drop_y
                 )
             )
             if not self.controller.reorder_plan_topic(node_uuid, index):
                 self.rebuild_scene()
             return
 
-        drop_center = dropped_position + QPointF(
-            PlanTopicItem.WIDTH * 0.5,
-            PlanTopicItem.HEIGHT * 0.5,
+        source = self.topic_items.get(node_uuid)
+        drop_center = dropped_position + (
+            source.boundingRect().center() if source is not None else QPointF()
         )
         candidates: list[tuple[float, PlanTopicItem]] = []
         for candidate in self.topic_items.values():
@@ -1100,16 +1448,15 @@ class PlanCanvasView(QGraphicsView):
             center = candidate.sceneBoundingRect().center()
             if center.x() > drop_center.x() + 30.0:
                 continue
-            distance = math.hypot(center.x() - drop_center.x(), center.y() - drop_center.y())
+            distance = math.hypot(
+                center.x() - drop_center.x(), center.y() - drop_center.y()
+            )
             candidates.append((distance, candidate))
         candidates.sort(key=lambda item: item[0])
-        if candidates and candidates[0][0] <= self.HORIZONTAL_GAP * 0.75:
+        if candidates and candidates[0][0] <= self.REPARENT_DISTANCE:
             target = candidates[0][1]
             new_parent = None if target.virtual else target.node_uuid
-            if not self.controller.reparent_plan_topic(
-                node_uuid,
-                new_parent,
-            ):
+            if not self.controller.reparent_plan_topic(node_uuid, new_parent):
                 self.rebuild_scene()
             return
         self.rebuild_scene()

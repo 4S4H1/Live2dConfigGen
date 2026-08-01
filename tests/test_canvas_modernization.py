@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("L2D_CONFIG_EDITOR_TEST_CLOSE_EVENT_POLICY", "discard")
 
 from PySide6.QtCore import QPoint, QPointF, QSettings, Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QFontMetricsF
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -18,6 +18,8 @@ from l2d_config_editor.canvas import CanvasStrokeItem
 from l2d_config_editor.logic import load_document
 from l2d_config_editor.main_window import MainWindow
 from l2d_config_editor.models import CanvasStrokeRecord
+from l2d_config_editor.plan import parse_touchidle_plan_title
+from l2d_config_editor.plan_canvas import PlanTopicItem
 from l2d_config_editor.styles import ThemeMode
 
 
@@ -41,6 +43,200 @@ class CanvasModernizationTests(unittest.TestCase):
         window._mark_saved_checkpoint(saved=True)
         window.close()
         self.app.processEvents()
+
+    def test_virtual_placeholder_uses_the_touchidle_card_title_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            window = self._window(root)
+            root_uuid = window.controller.document.nodes[0].uuid
+            placeholder_uuid = window.controller.create_plan_topic(root_uuid, "纯备注")
+            window.controller.materialize_plan_topics()
+            touch_uuid = window.controller.create_node("TouchIdle", (760.0, 160.0))
+            self.app.processEvents()
+
+            placeholder_item = window.canvas.node_items[placeholder_uuid]
+            touch_item = window.canvas.node_items[touch_uuid]
+            self.assertEqual("card", placeholder_item._display_mode)
+            self.assertTrue(placeholder_item._uses_compact_card())
+            self.assertEqual("card", touch_item._display_mode)
+            self.assertEqual(
+                touch_item._compact_title_font().pointSizeF(),
+                placeholder_item._compact_title_font().pointSizeF(),
+            )
+            self.assertTrue(placeholder_item._card_layout["draw"].isValid())
+            self.assertTrue(placeholder_item._card_layout["action"].isValid())
+            self.assertTrue(
+                placeholder_item._begin_card_field_edit("planned_draw_name")
+            )
+            editor = placeholder_item._card_editor_proxy.widget()
+            editor.setText("TouchIdle24")
+            QTest.keyClick(editor, Qt.Key.Key_Return)
+            self.app.processEvents()
+            self.assertEqual(
+                "TouchIdle",
+                window.controller.get_node(placeholder_uuid).type,
+            )
+            self.assertEqual(
+                "TouchIdle24",
+                window.controller.get_node(placeholder_uuid).fields[
+                    "draw_able_name"
+                ],
+            )
+            self._close(window)
+
+    def test_plan_title_keeps_frame_and_animation_suffixes_when_note_is_present(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            window = self._window(root)
+            parsed = parse_touchidle_plan_title(
+                "TouchIdle123456789-touch_idle987654321-备注"
+            )
+            self.assertIsNotNone(parsed)
+            metrics = QFontMetricsF(window.font())
+
+            draw = PlanTopicItem._elide_semantic_segment(
+                metrics,
+                parsed.draw_text,
+                92.0,
+            )
+            action = PlanTopicItem._elide_semantic_segment(
+                metrics,
+                parsed.action_text,
+                92.0,
+            )
+
+            self.assertTrue(draw.endswith("456789"))
+            self.assertTrue(action.endswith("654321"))
+            self._close(window)
+
+    def test_plan_view_uses_an_independent_hierarchy_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            window = self._window(root)
+            controller = window.controller
+            root_node = controller.document.nodes[0]
+            root_node.ui_position = {"x": 120.0, "y": 180.0}
+            child_uuid = controller.create_plan_topic(root_node.uuid, "纯备注")
+            child = controller.get_node(child_uuid)
+            child.ui_position = {"x": 610.0, "y": 370.0}
+
+            window._switch_graph_view("plan")
+            self.app.processEvents()
+
+            root_item = window.plan_canvas.topic_items[root_node.uuid]
+            child_item = window.plan_canvas.topic_items[child_uuid]
+            self.assertNotEqual((120.0, 180.0), (root_item.pos().x(), root_item.pos().y()))
+            self.assertNotEqual((610.0, 370.0), (child_item.pos().x(), child_item.pos().y()))
+            self.assertGreater(child_item.pos().x(), root_item.pos().x())
+            self.assertEqual(
+                root_item.sceneBoundingRect().center().y(),
+                child_item.sceneBoundingRect().center().y(),
+            )
+            self._close(window)
+
+    def test_plan_topic_uses_semantic_zoom_instead_of_inverse_font_scaling(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            window = self._window(root)
+            controller = window.controller
+            child_uuid = controller.create_plan_topic(
+                controller.document.nodes[0].uuid,
+                "纯备注",
+            )
+            window._switch_graph_view("plan")
+            self.app.processEvents()
+            topic = window.plan_canvas.topic_items[child_uuid]
+
+            font_size = topic._topic_font().pointSizeF()
+            window.plan_canvas.resetTransform()
+            window.plan_canvas.scale(0.35, 0.35)
+            self.assertTrue(window.plan_canvas.is_overview_mode())
+            self.assertFalse(window.plan_canvas.shows_topic_text())
+            self.assertEqual(font_size, topic._topic_font().pointSizeF())
+
+            window.plan_canvas.resetTransform()
+            window.plan_canvas.scale(0.55, 0.55)
+            self.assertFalse(window.plan_canvas.is_overview_mode())
+            self.assertTrue(window.plan_canvas.shows_topic_text())
+
+            window.plan_canvas.resetTransform()
+            window.plan_canvas.scale(0.8, 0.8)
+            self.assertFalse(window.plan_canvas.is_overview_mode())
+            self.assertTrue(window.plan_canvas.shows_topic_text())
+            self.assertEqual(font_size, topic._topic_font().pointSizeF())
+            self.assertGreaterEqual(topic.boundingRect().width(), PlanTopicItem.MIN_CARD_WIDTH)
+            self.assertGreaterEqual(topic.boundingRect().height(), PlanTopicItem.MIN_CARD_HEIGHT)
+
+            window.plan_canvas.resetTransform()
+            window.plan_canvas.scale(0.35, 0.35)
+            window.plan_canvas.focus_on_node(child_uuid)
+            self.assertGreaterEqual(
+                window.plan_canvas.transform().m11(),
+                PlanTopicItem.READABLE_SCALE,
+            )
+            self._close(window)
+
+    def test_plan_topic_drag_only_changes_plan_structure_not_formal_position(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            window = self._window(root)
+            controller = window.controller
+            root_uuid = controller.document.nodes[0].uuid
+            child_uuid = controller.create_plan_topic(root_uuid, "纯备注")
+            child = controller.get_node(child_uuid)
+            child.ui_position = {"x": 420.0, "y": 80.0}
+
+            window._switch_graph_view("plan")
+            self.app.processEvents()
+            original = QPointF(window.plan_canvas.topic_items[child_uuid].pos())
+            dropped = QPointF(420.0, 310.0)
+            window.plan_canvas._handle_topic_drop(child_uuid, dropped, original)
+            self.app.processEvents()
+
+            self.assertEqual({"x": 420.0, "y": 80.0}, child.ui_position)
+            self._close(window)
+
+    def test_plan_cards_size_to_content_and_keep_connection_anchors_on_edges(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            window = self._window(root)
+            controller = window.controller
+            root_uuid = controller.document.nodes[0].uuid
+            short_uuid = controller.create_plan_topic(root_uuid, "短标题")
+            long_uuid = controller.create_plan_topic(
+                root_uuid,
+                "这是一个用于验证计划图自适应卡片换行和完整可读性的很长中文标题",
+            )
+            semantic_uuid = controller.create_plan_topic(
+                root_uuid,
+                "TouchIdle123456-touch_idle987654-这是独立备注内容",
+            )
+            window._switch_graph_view("plan")
+            self.app.processEvents()
+
+            short_item = window.plan_canvas.topic_items[short_uuid]
+            long_item = window.plan_canvas.topic_items[long_uuid]
+            semantic_item = window.plan_canvas.topic_items[semantic_uuid]
+            self.assertGreater(long_item.boundingRect().height(), short_item.boundingRect().height())
+            self.assertGreater(semantic_item.boundingRect().height(), short_item.boundingRect().height())
+            self.assertTrue(semantic_item._card_spec.note_lines)
+            self.assertEqual(
+                semantic_item.sceneBoundingRect().left(),
+                semantic_item.connection_point("left").x(),
+            )
+            self.assertEqual(
+                semantic_item.sceneBoundingRect().right(),
+                semantic_item.connection_point("right").x(),
+            )
+            self.assertFalse(
+                short_item.sceneBoundingRect().intersects(
+                    long_item.sceneBoundingRect()
+                )
+            )
+            self.assertFalse(
+                long_item.sceneBoundingRect().intersects(
+                    semantic_item.sceneBoundingRect()
+                )
+            )
+            self.assertEqual(
+                "TouchIdle123456-touch_idle987654-这是独立备注内容",
+                semantic_item.toolTip(),
+            )
+            self._close(window)
 
     def test_pen_gesture_creates_and_deletes_complete_stroke(self) -> None:
         with tempfile.TemporaryDirectory() as root, patch.dict(

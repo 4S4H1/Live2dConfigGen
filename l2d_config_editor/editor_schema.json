@@ -1949,7 +1949,6 @@
           "label": "预期框名",
           "editor": "text",
           "default": "",
-          "read_only": true,
           "show_in_modes": [
             "simple",
             "advanced"
@@ -1960,7 +1959,6 @@
           "label": "预期动画名",
           "editor": "text",
           "default": "",
-          "read_only": true,
           "show_in_modes": [
             "simple",
             "advanced"

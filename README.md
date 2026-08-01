@@ -1,15 +1,15 @@
 # L2D 交互图表编辑器
 
-面向 Live2D 交互配置的 Windows 节点式编辑器。1.3.0 使用 Python
+面向 Live2D 交互配置的 Windows 节点式编辑器。1.3.1 使用 Python
 3.13.14、PySide6 6.11.1 和动态 Qt 共享库，支持 Windows 10/11 x64。
 本版本的升级要点和兼容提示见
-[`docs/RELEASE_NOTES_1.3.0.md`](docs/RELEASE_NOTES_1.3.0.md)。
+[`docs/RELEASE_NOTES_1.3.1.md`](docs/RELEASE_NOTES_1.3.1.md)。
 
 ## 安装与启动
 
 普通用户安装：
 
-- `L2DConfigEditor-Setup-1.3.0-x64.exe`：一个安装包同时安装两个独立
+- `L2DConfigEditor-Setup-1.3.1-x64.exe`：一个安装包同时安装两个独立
   `onedir` 程序。编辑器位于 `%LOCALAPPDATA%\Programs\L2DConfigEditor`，
   托盘更新主机位于 `%LOCALAPPDATA%\Programs\L2DUpdateHost`。二者只有一个
   卸载入口，关闭编辑器不会停止 Host。
@@ -43,11 +43,16 @@ uv run python -m l2d_config_editor.main
   按整条删除，一次滑动只产生一次撤销；在节点上
   Ctrl 单击仍用于追加/反选，拖动超过 4 个视口像素才转为绘制。颜色、粗细及
   每条线的点集随 JSON 保存。正式图与计划图各有独立画笔层，互不转换。
-- “正式图 / 计划图”一键切换。计划图使用同一份节点和正式连线，以左根右展
-  脑图快速整理标题、层级、顺序与折叠状态；多父、环和额外边显示为虚线引用，
-  正式图坐标与业务字段不受影响。计划标题符合
-  `touchidle<编号>-touch_idle<编号>` 时会正式化为同 UUID 的 `TouchIdle`；
-  其他标题先成为可连线但不导出 CSV 的虚节点，修改标题后可再次识别。
+- “正式图 / 计划图”一键切换。计划图使用同一份节点和正式连线，但有独立的自适应
+  树形布局；它通过 UUID、上下级和同级顺序对应正式图，而不会复用或改写正式图坐标。
+  多父、环和额外边显示为虚线引用。计划主题是可读性优先的卡片：标题自动扩展到两行，
+  超长内容才在末尾省略并可悬停查看全文；缩放低于 45% 时进入不显示文字的概览模式，
+  选中、搜索或按 `F` 定位会自动回到可读缩放。计划条目支持三种格式：
+  `touchidle<编号>-touch_idle<编号>` 转为默认标题的同 UUID `TouchIdle`；
+  `touchidle<编号>-touch_idle<编号>-备注` 转为 `TouchIdle` 并把备注写入节点标题；
+  纯备注转为可连线但不导出 CSV 的虚节点。虚节点使用 TouchIdle 同款自适应卡片，
+  可填写预期框名和预期动画名；填写任一项便自动转为同 UUID 的 TouchIdle，纯备注
+  会继承为节点备注。修改计划标题后仍可再次识别。
 - 右侧“AI 对话”面板支持 OpenAI-compatible
   `/v1/chat/completions`、流式回复和工具调用。查询自动执行，增改删及文件写入
   会先显示结构化预览并等待确认。
@@ -119,7 +124,7 @@ v1-v4 文件会在内存中安全迁移；旧计划主题统一标为 `formal`�
    下载验证成功后才由用户确认安装。
 
 发布电脑若保留了构建生成的完整安装器，直接运行
-`L2DConfigEditor-Setup-1.3.0-x64.exe` 覆盖安装最简单，不必先启动 Host。
+`L2DConfigEditor-Setup-1.3.1-x64.exe` 覆盖安装最简单，不必先启动 Host。
 若当前已是 1.1.0 或更高版本，手上只有 `.l2dupdate` 时也可在 Host
 中导入并发布更高版本、保持服务运行，再在同一个编辑器中选择“检查更新…”；
 客户端会显式探测本机回环地址。1.0.0 尚不包含 UDP 自动发现，因此从 1.0.0

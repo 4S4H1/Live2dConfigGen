@@ -851,7 +851,7 @@ class NodeItem(QGraphicsObject):
         return QRectF(self._rect.width() - 34.0, 10.0, 18.0, 18.0)
 
     def detail_toggle_rect(self) -> QRectF:
-        if not self._is_function_node():
+        if not self._uses_touchidle_card_style():
             return QRectF()
         lock_rect = self.lock_rect()
         return QRectF(lock_rect.left() - 24.0, lock_rect.top(), lock_rect.width(), lock_rect.height())
@@ -867,14 +867,34 @@ class NodeItem(QGraphicsObject):
     def _is_function_node(self) -> bool:
         return self.node.type in function_node_types(self.schema)
 
+    def _uses_touchidle_card_style(self) -> bool:
+        """Return whether this node uses the TouchIdle card presentation.
+
+        Plan placeholders remain non-business nodes, but they expose the same
+        planned frame/action affordances.  Sharing the card shell keeps their
+        title font, adaptive elision and direct field editing consistent with
+        TouchIdle without making them CSV-exportable function nodes.
+        """
+
+        return self._is_function_node() or self.node.type == "PlanPlaceholder"
+
     def _uses_compact_card(self) -> bool:
-        view = self._canvas_view()
-        concise_root = bool(
-            view
-            and view.concise_enabled
-            and self.node.type not in {"Initial", "Comment", "DrawFrame", "PlanPlaceholder"}
-        )
-        return (self._is_function_node() or concise_root) and self._display_mode == "card"
+        return self._uses_touchidle_card_style() and self._display_mode == "card"
+
+    def _compact_card_field_key(self, layout_key: str) -> str | None:
+        if self.node.type == "PlanPlaceholder":
+            return {
+                "note": "plan_source_title",
+                "draw": "planned_draw_name",
+                "action": "planned_action_name",
+            }.get(layout_key)
+        return {
+            "note": "tips",
+            "draw": "draw_able_name",
+            "action": "action_trigger",
+            "target_idle": "action_trigger_active",
+            "parameter": "parameter",
+        }.get(layout_key)
 
     def _is_draw_frame(self) -> bool:
         return self.node.type == "DrawFrame"
@@ -903,28 +923,25 @@ class NodeItem(QGraphicsObject):
     def _card_field_key_at(self, local_pos: QPointF) -> str | None:
         if not self._uses_compact_card():
             return None
-        hit_targets = [
-            ("note", "tips"),
-            ("draw", "draw_able_name"),
-            ("action", "action_trigger"),
-            ("parameter", "parameter"),
-        ]
-        if self.node.type != "TouchDrag":
-            hit_targets.insert(3, ("target_idle", "action_trigger_active"))
-        for layout_key, field_key in hit_targets:
+        layout_keys = ["note", "draw", "action"]
+        if self.node.type != "PlanPlaceholder":
+            if self.node.type != "TouchDrag":
+                layout_keys.append("target_idle")
+            layout_keys.append("parameter")
+        for layout_key in layout_keys:
+            field_key = self._compact_card_field_key(layout_key)
+            if field_key is None:
+                continue
             rect = self._card_layout.get(layout_key)
             if rect and rect.contains(local_pos):
                 return field_key
         return None
 
     def _card_rect_for_field(self, field_key: str) -> QRectF | None:
-        return {
-            "tips": self._card_layout.get("note"),
-            "draw_able_name": self._card_layout.get("draw"),
-            "action_trigger": self._card_layout.get("action"),
-            "action_trigger_active": self._card_layout.get("target_idle"),
-            "parameter": self._card_layout.get("parameter"),
-        }.get(field_key)
+        for layout_key in ("note", "draw", "action", "target_idle", "parameter"):
+            if self._compact_card_field_key(layout_key) == field_key:
+                return self._card_layout.get(layout_key)
+        return None
 
     def _schema_field(self, key: str):
         definition = self.schema.nodes.get(self.node.type)
@@ -952,7 +969,7 @@ class NodeItem(QGraphicsObject):
         self.node = node
         definition = self.schema.nodes[node.type]
         view = self._canvas_view()
-        self._display_mode = view.node_display_mode(node.uuid) if view else ("card" if self._is_function_node() else "detail")
+        self._display_mode = view.node_display_mode(node.uuid) if view else ("card" if self._uses_touchidle_card_style() else "detail")
         if previous_display_mode != self._display_mode:
             self._recreate_form_proxy()
         if not self._uses_compact_card() and self._card_editor_proxy:
@@ -1232,7 +1249,8 @@ class NodeItem(QGraphicsObject):
 
     def _recompute_compact_card_layout(self, width: float, *, note_text: str | None = None) -> float:
         outer_margin = 18.0
-        resolved_note_text = self._card_field_text("tips") if note_text is None else note_text
+        note_field_key = self._compact_card_field_key("note") or "tips"
+        resolved_note_text = self._card_field_text(note_field_key) if note_text is None else note_text
         view = self._canvas_view()
         if view is not None and view.concise_enabled:
             inner_width = width - outer_margin * 2.0
@@ -1244,10 +1262,15 @@ class NodeItem(QGraphicsObject):
             cursor_y = frame_top + identity_height + 14.0
             available_width = inner_width - 36.0
             row_specs = (
-                ("draw", "draw_able_name", 54.0),
-                ("action", "action_trigger", 66.0),
-                ("target_idle", "action_trigger_active", 66.0),
-                ("parameter", "parameter", 50.0),
+                (("draw", self._compact_card_field_key("draw"), 54.0),
+                 ("action", self._compact_card_field_key("action"), 66.0))
+                if self.node.type == "PlanPlaceholder"
+                else (
+                    ("draw", "draw_able_name", 54.0),
+                    ("action", "action_trigger", 66.0),
+                    ("target_idle", "action_trigger_active", 66.0),
+                    ("parameter", "parameter", 50.0),
+                )
             )
             rows: dict[str, QRectF] = {}
             for layout_key, field_key, row_height in row_specs:
@@ -1283,6 +1306,9 @@ class NodeItem(QGraphicsObject):
         if self.node.type == "TouchDrag":
             left_arrow = QRectF(frame_rect.center().x() - 150.0, frame_rect.top() + 116.0, 300.0, 118.0)
             right_capsule = QRectF(frame_rect.right() - 10.0, frame_rect.top() + 96.0, 0.0, 0.0)
+        elif self.node.type == "PlanPlaceholder":
+            right_capsule = QRectF()
+            bottom_capsule = QRectF()
         self._card_layout = {
             "note": QRectF(frame_rect.left(), 8.0, note_width, title_height),
             "identity": QRectF(),
@@ -1564,6 +1590,8 @@ class NodeItem(QGraphicsObject):
             "draw_able_name",
             "action_trigger",
             "parameter",
+            "planned_draw_name",
+            "planned_action_name",
         }
         draw_rect, fitted_font, display_text = self._compact_text_layout(
             text,
@@ -1645,7 +1673,13 @@ class NodeItem(QGraphicsObject):
         painter.setPen(color)
         painter.drawText(draw_rect, alignment, display_text)
 
-    def _paint_compact_action(self, painter: QPainter, action_rect: QRectF, palette: dict[str, QColor]) -> None:
+    def _paint_compact_action(
+        self,
+        painter: QPainter,
+        action_rect: QRectF,
+        palette: dict[str, QColor],
+        field_key: str,
+    ) -> None:
         if action_rect.width() <= 1.0 or action_rect.height() <= 1.0:
             return
         arrow_path = QPainterPath()
@@ -1663,14 +1697,14 @@ class NodeItem(QGraphicsObject):
         self._paint_compact_text(
             painter,
             action_rect.adjusted(18, 0, -40, 0),
-            self._card_field_text("action_trigger") or "empty",
+            self._card_field_text(field_key) or "empty",
             self._compact_action_font(),
             palette["action_text"],
             Qt.AlignmentFlag.AlignCenter,
             min_point_size=self.CARD_ACTION_MIN_POINT_SIZE,
             horizontal_padding=2.0,
             vertical_padding=10.0,
-            field_key="action_trigger",
+            field_key=field_key,
         )
 
     def _paint_tool_badge_shell(self, painter: QPainter, rect: QRectF, *, active: bool = False) -> None:
@@ -1768,6 +1802,9 @@ class NodeItem(QGraphicsObject):
             painter.setBrush(palette["frame_inner_fill"])
             painter.drawRoundedRect(frame_rect.adjusted(8, 8, -8, -8), 4, 4)
             identity_rect = self._card_layout.get("identity", QRectF())
+            note_field_key = self._compact_card_field_key("note") or "tips"
+            draw_field_key = self._compact_card_field_key("draw") or "draw_able_name"
+            action_field_key = self._compact_card_field_key("action") or "action_trigger"
             self._paint_compact_text(
                 painter,
                 identity_rect,
@@ -1785,8 +1822,8 @@ class NodeItem(QGraphicsObject):
             self._paint_compact_text(
                 painter,
                 note_rect,
-                self._card_field_text("tips") or "empty",
-                self._compact_note_font_for_text(self._card_field_text("tips") or "empty", note_rect.width()),
+                self._card_field_text(note_field_key) or "empty",
+                self._compact_note_font_for_text(self._card_field_text(note_field_key) or "empty", note_rect.width()),
                 palette["note_text"],
                 Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                 min_point_size=self.CARD_NOTE_MIN_POINT_SIZE,
@@ -1801,17 +1838,17 @@ class NodeItem(QGraphicsObject):
             self._paint_compact_text(
                 painter,
                 draw_rect,
-                self._card_field_text("draw_able_name") or "empty",
+                self._card_field_text(draw_field_key) or "empty",
                 block_font,
                 palette["draw_text"],
                 Qt.AlignmentFlag.AlignCenter,
                 min_point_size=self.CARD_TITLE_MIN_POINT_SIZE,
                 horizontal_padding=12.0,
                 vertical_padding=4.0,
-                field_key="draw_able_name",
+                field_key=draw_field_key,
             )
 
-            self._paint_compact_action(painter, action_rect, palette)
+            self._paint_compact_action(painter, action_rect, palette, action_field_key)
 
             if target_rect.width() > 1.0 and target_rect.height() > 1.0:
                 painter.setPen(QPen(palette["target_border"], 2.6))
@@ -1829,21 +1866,22 @@ class NodeItem(QGraphicsObject):
                     vertical_padding=8.0,
                 )
 
-            painter.setPen(QPen(palette["parameter_border"], 2.6))
-            painter.setBrush(palette["parameter_fill"])
-            painter.drawRoundedRect(parameter_rect, parameter_rect.height() / 2.0, parameter_rect.height() / 2.0)
-            self._paint_compact_text(
-                painter,
-                parameter_rect,
-                self._card_field_text("parameter") or "empty",
-                self._compact_parameter_font(),
-                palette["parameter_text"],
-                Qt.AlignmentFlag.AlignCenter,
-                min_point_size=self.CARD_PARAMETER_MIN_POINT_SIZE,
-                horizontal_padding=12.0,
-                vertical_padding=4.0,
-                field_key="parameter",
-            )
+            if parameter_rect.width() > 1.0 and parameter_rect.height() > 1.0:
+                painter.setPen(QPen(palette["parameter_border"], 2.6))
+                painter.setBrush(palette["parameter_fill"])
+                painter.drawRoundedRect(parameter_rect, parameter_rect.height() / 2.0, parameter_rect.height() / 2.0)
+                self._paint_compact_text(
+                    painter,
+                    parameter_rect,
+                    self._card_field_text("parameter") or "empty",
+                    self._compact_parameter_font(),
+                    palette["parameter_text"],
+                    Qt.AlignmentFlag.AlignCenter,
+                    min_point_size=self.CARD_PARAMETER_MIN_POINT_SIZE,
+                    horizontal_padding=12.0,
+                    vertical_padding=4.0,
+                    field_key="parameter",
+                )
 
             self._paint_connection_pins(painter, accent, border)
             self._paint_detail_toggle_badge(painter)
@@ -2441,6 +2479,9 @@ class NodeItem(QGraphicsObject):
     def _begin_card_field_edit(self, field_key: str) -> bool:
         if self.node.locked or not self._uses_compact_card():
             return False
+        schema_field = self._schema_field(field_key)
+        if schema_field is None or schema_field.read_only:
+            return False
         field_rect = self._card_rect_for_field(field_key)
         if field_rect is None:
             return False
@@ -2457,7 +2498,6 @@ class NodeItem(QGraphicsObject):
         editor = NumericLineEdit("nullable_int") if field_key == "action_trigger_active" else CommitLineEdit()
         editor_font = self._card_editor_font(field_key)
         editor.setFont(editor_font)
-        schema_field = self._schema_field(field_key)
         if schema_field and schema_field.placeholder:
             editor.setPlaceholderText(schema_field.placeholder)
         editor.setText(self._card_field_text(field_key))
@@ -2574,9 +2614,9 @@ class NodeItem(QGraphicsObject):
     def _card_editor_font(self, field_key: str) -> QFont:
         if field_key == "tips":
             return self._scaled_card_editor_font(self._compact_note_font())
-        if field_key == "draw_able_name":
+        if field_key in {"draw_able_name", "planned_draw_name"}:
             return self._scaled_card_editor_font(self._compact_title_font())
-        if field_key == "action_trigger":
+        if field_key in {"action_trigger", "planned_action_name"}:
             return self._scaled_card_editor_font(self._compact_action_font())
         if field_key == "action_trigger_active":
             return self._scaled_card_editor_font(self._compact_target_font())
@@ -2658,6 +2698,8 @@ class NodeItem(QGraphicsObject):
         return node_title(self.schema, self.node)
 
     def _compact_identity_text(self) -> str:
+        if self.node.type == "PlanPlaceholder":
+            return self.schema.nodes[self.node.type].title
         if self._is_function_node() or self.node.type == "ParameterTrigger":
             definition = self.schema.nodes[self.node.type]
             slot = self.node.type_slot or self.node.sequence_no or 1
@@ -3780,7 +3822,7 @@ class NodeCanvasView(QGraphicsView):
             return "detail"
         if self.concise_enabled and node.type not in {"Initial", "Comment", "DrawFrame"}:
             return "detail" if node_uuid in self.expanded_node_uuids else "card"
-        if node.type in function_node_types(self.schema):
+        if node.type in function_node_types(self.schema) or node.type == "PlanPlaceholder":
             return "detail" if node_uuid in self.expanded_node_uuids else "card"
         return "detail"
 
@@ -3867,7 +3909,10 @@ class NodeCanvasView(QGraphicsView):
 
     def toggle_node_display_mode(self, node_uuid: str) -> None:
         node = self.controller.get_node(node_uuid)
-        if not node or node.type not in function_node_types(self.schema):
+        if not node or (
+            node.type not in function_node_types(self.schema)
+            and node.type != "PlanPlaceholder"
+        ):
             return
         if node_uuid in self.expanded_node_uuids:
             self.expanded_node_uuids.discard(node_uuid)
@@ -4321,7 +4366,7 @@ class NodeCanvasView(QGraphicsView):
                         return
                 if node_item.has_card_field_editor():
                     node_item._discard_card_field_editor()
-                if node_item.node.type in function_node_types(self.schema):
+                if node_item._uses_touchidle_card_style():
                     self._queue_display_toggle(node_item.node.uuid)
                     event.accept()
                     return
@@ -5104,23 +5149,28 @@ class NodeCanvasView(QGraphicsView):
         return True
 
     def optimize_connection_layout(self) -> bool:
-        movable_nodes = {
+        layout_nodes = {
             node.uuid: node
             for node in self.controller.document.nodes
-            if node.type in function_node_types(self.schema) and not node.locked
+            if self.schema.nodes[node.type].category in {"root", "function", "placeholder"}
         }
         edge_pairs = [
             (connection.from_uuid, connection.to_uuid)
             for connection in self.controller.document.connections
-            if connection.from_uuid in movable_nodes and connection.to_uuid in movable_nodes
+            if connection.from_uuid in layout_nodes and connection.to_uuid in layout_nodes
         ]
         connected_ids = {node_uuid for pair in edge_pairs for node_uuid in pair}
-        movable_nodes = {
+        layout_nodes = {
             node_uuid: node
-            for node_uuid, node in movable_nodes.items()
+            for node_uuid, node in layout_nodes.items()
             if node_uuid in connected_ids
         }
-        if not movable_nodes:
+        movable_node_ids = {
+            node_uuid
+            for node_uuid, node in layout_nodes.items()
+            if not node.locked and self.schema.nodes[node.type].category != "root"
+        }
+        if not movable_node_ids:
             self.controller.statusMessage.emit("当前没有可优化的连线布局")
             return False
 
@@ -5128,29 +5178,29 @@ class NodeCanvasView(QGraphicsView):
         outgoing: dict[str, list[str]] = defaultdict(list)
         incoming: dict[str, list[str]] = defaultdict(list)
         for from_uuid, to_uuid in edge_pairs:
-            if from_uuid not in movable_nodes or to_uuid not in movable_nodes:
+            if from_uuid not in layout_nodes or to_uuid not in layout_nodes:
                 continue
             adjacency[from_uuid].add(to_uuid)
             adjacency[to_uuid].add(from_uuid)
             outgoing[from_uuid].append(to_uuid)
             incoming[to_uuid].append(from_uuid)
 
-        for node_uuid in movable_nodes:
+        for node_uuid in layout_nodes:
             adjacency.setdefault(node_uuid, set())
             outgoing.setdefault(node_uuid, [])
             incoming.setdefault(node_uuid, [])
 
         components: list[list[str]] = []
-        remaining = set(movable_nodes)
+        remaining = set(layout_nodes)
         while remaining:
-            start = min(remaining, key=lambda node_uuid: (movable_nodes[node_uuid].ui_position["x"], movable_nodes[node_uuid].ui_position["y"]))
+            start = min(remaining, key=lambda node_uuid: (layout_nodes[node_uuid].ui_position["x"], layout_nodes[node_uuid].ui_position["y"]))
             queue = deque([start])
             component: list[str] = []
             remaining.remove(start)
             while queue:
                 current = queue.popleft()
                 component.append(current)
-                for neighbor in sorted(adjacency[current], key=lambda node_uuid: (movable_nodes[node_uuid].ui_position["x"], movable_nodes[node_uuid].ui_position["y"])):
+                for neighbor in sorted(adjacency[current], key=lambda node_uuid: (layout_nodes[node_uuid].ui_position["x"], layout_nodes[node_uuid].ui_position["y"])):
                     if neighbor in remaining:
                         remaining.remove(neighbor)
                         queue.append(neighbor)
@@ -5158,17 +5208,23 @@ class NodeCanvasView(QGraphicsView):
 
         comment_attachments = self._build_comment_attachments(components)
         attached_comment_ids = set(comment_attachments)
-        occupied_rects = self._static_obstacle_rects(set(movable_nodes) | attached_comment_ids)
+        occupied_rects = self._static_obstacle_rects(movable_node_ids | attached_comment_ids)
         final_positions: dict[str, tuple[float, float]] = {}
         final_comment_positions: dict[str, tuple[float, float]] = {}
         for component in sorted(
             components,
             key=lambda comp: (
-                min(movable_nodes[node_uuid].ui_position["x"] for node_uuid in comp),
-                min(movable_nodes[node_uuid].ui_position["y"] for node_uuid in comp),
+                min(layout_nodes[node_uuid].ui_position["x"] for node_uuid in comp),
+                min(layout_nodes[node_uuid].ui_position["y"] for node_uuid in comp),
             ),
         ):
-            component_positions = self._layout_component(component, outgoing, incoming, occupied_rects)
+            component_positions = self._layout_component(
+                component,
+                outgoing,
+                incoming,
+                occupied_rects,
+                fixed_node_ids=set(component) - movable_node_ids,
+            )
             if not component_positions:
                 continue
             for node_uuid, position in component_positions.items():
@@ -5184,10 +5240,10 @@ class NodeCanvasView(QGraphicsView):
         changed_positions = {
             node_uuid: position
             for node_uuid, position in final_positions.items()
-            if node_uuid in movable_nodes
+            if node_uuid in movable_node_ids
             and (
-                abs(movable_nodes[node_uuid].ui_position["x"] - position[0]) > 0.5
-                or abs(movable_nodes[node_uuid].ui_position["y"] - position[1]) > 0.5
+                abs(layout_nodes[node_uuid].ui_position["x"] - position[0]) > 0.5
+                or abs(layout_nodes[node_uuid].ui_position["y"] - position[1]) > 0.5
             )
         }
         for node_uuid, position in final_comment_positions.items():
@@ -5226,6 +5282,8 @@ class NodeCanvasView(QGraphicsView):
         outgoing: dict[str, list[str]],
         incoming: dict[str, list[str]],
         occupied_rects: list[QRectF],
+        *,
+        fixed_node_ids: set[str],
     ) -> dict[str, tuple[float, float]]:
         if not component:
             return {}
@@ -5288,6 +5346,10 @@ class NodeCanvasView(QGraphicsView):
             ),
         ):
             row_index = row_indices.get(node_uuid, 0)
+            if node_uuid in fixed_node_ids:
+                positions[node_uuid] = (original_x[node_uuid], original_y[node_uuid])
+                row_y_positions.setdefault(row_index, original_y[node_uuid])
+                continue
             desired_y = row_y_positions.get(row_index)
             if desired_y is None:
                 previous_rows = [row for row in row_y_positions if row < row_index]

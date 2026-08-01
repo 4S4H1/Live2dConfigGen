@@ -3109,6 +3109,40 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
+    def test_optimize_layout_includes_idle0_first_level_placeholders_and_overlaps(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            _set_ready_controller_meta(window.controller)
+            root_uuid = window.controller.document.nodes[0].uuid
+            root = window.controller.get_node(root_uuid)
+            root.ui_position = {"x": 100.0, "y": 240.0}
+            virtual_uuid = window.controller.create_plan_topic(root_uuid, "纯备注")
+            touch_uuid = window.controller.create_node("TouchIdle", (280.0, 250.0))
+            window.controller.add_connection(root_uuid, touch_uuid)
+            window.controller.materialize_plan_topics()
+            virtual = window.controller.get_node(virtual_uuid)
+            virtual.ui_position = {"x": 250.0, "y": 250.0}
+            window.controller.nodeUpdated.emit(root_uuid)
+            window.controller.nodeUpdated.emit(virtual_uuid)
+            self.app.processEvents()
+            root_before = dict(root.ui_position)
+
+            changed = window.canvas.optimize_connection_layout()
+
+            self.assertTrue(changed)
+            self.assertEqual(root_before, window.controller.get_node(root_uuid).ui_position)
+            virtual_item = window.canvas.node_items[virtual_uuid]
+            touch_item = window.canvas.node_items[touch_uuid]
+            self.assertFalse(
+                virtual_item.sceneBoundingRect().intersects(
+                    touch_item.sceneBoundingRect()
+                )
+            )
+            self.assertGreater(window.controller.get_node(virtual_uuid).ui_position["x"], root_before["x"])
+            self.assertGreater(window.controller.get_node(touch_uuid).ui_position["x"], root_before["x"])
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
     def test_parameter_table_cells_edit_without_connection_pins(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)

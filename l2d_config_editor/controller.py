@@ -624,6 +624,9 @@ class EditorController(QObject):
                 replacement.manual_fields.update(
                     {"draw_able_name", "parameter", "action_trigger"}
                 )
+                if parsed.note_text:
+                    replacement.fields["tips"] = parsed.note_text
+                    replacement.manual_fields.add("tips")
                 apply_auto_rules(
                     self.schema,
                     staging,
@@ -639,6 +642,111 @@ class EditorController(QObject):
                 self,
                 old_nodes,
                 new_nodes,
+                old_layout,
+                new_layout,
+            )
+        )
+        return True
+
+    def _materialize_virtual_placeholder_from_expected_fields(
+        self,
+        node_uuid: str,
+        updated_values: dict[str, Any],
+        source_mode: str,
+    ) -> bool:
+        """Promote a virtual plan node as soon as either expected name is set.
+
+        The replacement command includes the just-entered field value.  This
+        makes direct-card and Inspector edits a single, reversible action
+        instead of briefly committing a placeholder update and then adding a
+        second conversion command.
+        """
+
+        if not ({"planned_draw_name", "planned_action_name"} & set(updated_values)):
+            return False
+        node = self.get_node(node_uuid)
+        if node is None or node.type != "PlanPlaceholder" or node.locked:
+            return False
+
+        expected_draw = str(
+            updated_values.get(
+                "planned_draw_name",
+                node.fields.get("planned_draw_name", ""),
+            )
+            or ""
+        ).strip()
+        expected_action = str(
+            updated_values.get(
+                "planned_action_name",
+                node.fields.get("planned_action_name", ""),
+            )
+            or ""
+        ).strip()
+        if not expected_draw and not expected_action:
+            return False
+
+        old_layout = self.ensure_plan_layout().clone()
+        new_layout = old_layout.clone()
+        topic = next(
+            (record for record in new_layout.topics if record.node_uuid == node_uuid),
+            None,
+        )
+        if topic is None:
+            return False
+
+        old_node = node.clone()
+        staging = copy.copy(self.document)
+        staging.nodes = [
+            current.clone()
+            for current in self.document.nodes
+            if current.uuid != node_uuid
+        ]
+        replacement = create_node(
+            self.schema,
+            staging,
+            "TouchIdle",
+            (
+                float(node.ui_position.get("x", 0.0)),
+                float(node.ui_position.get("y", 0.0)),
+            ),
+        )
+        replacement.uuid = node.uuid
+        replacement.locked = node.locked
+        replacement.ui_size = dict(node.ui_size) if node.ui_size else None
+        replacement.fields["transition_type"] = "animated"
+        replacement.fields["parameter"] = "empty"
+        replacement.manual_fields.add("parameter")
+        if expected_draw:
+            replacement.fields["draw_able_name"] = expected_draw
+            replacement.manual_fields.add("draw_able_name")
+        if expected_action:
+            replacement.fields["action_trigger"] = normalize_field_input(
+                self.schema,
+                replacement,
+                "action_trigger",
+                expected_action,
+            )
+            replacement.manual_fields.add("action_trigger")
+
+        source_title = str(node.fields.get("plan_source_title") or "").strip()
+        parsed_source = parse_touchidle_plan_title(source_title)
+        note = parsed_source.note_text if parsed_source is not None else source_title
+        if note:
+            replacement.fields["tips"] = note
+            replacement.manual_fields.add("tips")
+        apply_auto_rules(
+            self.schema,
+            staging,
+            replacement,
+            source_mode=source_mode,
+            force_generated=False,
+        )
+        topic.formalization_state = "materialized"
+        self.undo_stack.push(
+            MaterializePlanTopicsCommand(
+                self,
+                [old_node],
+                [replacement],
                 old_layout,
                 new_layout,
             )
@@ -1307,6 +1415,12 @@ class EditorController(QObject):
         old = node.fields.get(key)
         if old == normalized_value:
             return
+        if self._materialize_virtual_placeholder_from_expected_fields(
+            node_uuid,
+            {key: normalized_value},
+            source_mode or self.preferences.global_mode,
+        ):
+            return
         self.undo_stack.push(
             UpdateFieldCommand(self, node_uuid, key, old, normalized_value, source_mode or self.preferences.global_mode)
         )
@@ -1332,6 +1446,13 @@ class EditorController(QObject):
             if old_value != normalized_value:
                 updates.append((key, old_value, normalized_value))
         if not updates:
+            return
+        updated_values = {key: value for key, _old_value, value in updates}
+        if self._materialize_virtual_placeholder_from_expected_fields(
+            node_uuid,
+            updated_values,
+            source_mode or self.preferences.global_mode,
+        ):
             return
         self.undo_stack.push(UpdateFieldsCommand(self, node_uuid, updates, source_mode or self.preferences.global_mode, label))
 

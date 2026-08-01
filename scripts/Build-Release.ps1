@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
     [string]$KeyDirectory = "$env:LOCALAPPDATA\4S4H1\release-keys",
-    [string]$Notes = "1.3.0：滑动整线擦除、计划图正式化、独立画笔层、SVN 图表 Diff 与批量 AI 编辑。",
+    [string]$Notes = "1.3.1：计划图自适应卡片、独立树布局与可读性缩放优化。",
     [string]$MinimumSupportedVersion = "1.0.0"
 )
 
