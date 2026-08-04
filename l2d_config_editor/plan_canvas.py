@@ -37,6 +37,8 @@ from PySide6.QtWidgets import (
 from .canvas import CanvasStrokeItem
 from .plan import (
     PLAN_ROOT_COLOR,
+    PLAN_TOUCHDRAG_COLOR,
+    PLAN_TOUCHIDLE_COLOR,
     PLAN_UNCONNECTED_TITLE,
     PLAN_UNCONNECTED_UUID,
     plan_root_uuid,
@@ -105,6 +107,7 @@ class PlanTopicItem(QGraphicsObject):
         collapsed: bool = False,
         virtual: bool = False,
         root: bool = False,
+        sequence_locked: bool = False,
         semantic_title=None,
         card_spec: _PlanTopicCardSpec | None = None,
     ) -> None:
@@ -116,6 +119,7 @@ class PlanTopicItem(QGraphicsObject):
         self.collapsed = bool(collapsed)
         self.virtual = bool(virtual)
         self.root = bool(root)
+        self.sequence_locked = bool(sequence_locked)
         self.semantic_title = semantic_title
         self._card_spec = card_spec or self.measure_card(
             title,
@@ -138,7 +142,15 @@ class PlanTopicItem(QGraphicsObject):
             else Qt.CursorShape.OpenHandCursor
         )
         self.setZValue(10.0)
-        self.setToolTip(title)
+        semantic_hint = ""
+        resolved_color = self.color.name().upper()
+        if resolved_color == PLAN_TOUCHIDLE_COLOR:
+            semantic_hint = "\n绿色：转换为 TouchIdle"
+        elif resolved_color == PLAN_TOUCHDRAG_COLOR:
+            semantic_hint = "\n紫色：转换为 TouchDrag"
+        if self.sequence_locked:
+            semantic_hint += "\n金色边框：序号已固定"
+        self.setToolTip(f"{title}{semantic_hint}")
 
     def boundingRect(self) -> QRectF:
         return QRectF(self._card_spec.bounds)
@@ -315,6 +327,16 @@ class PlanTopicItem(QGraphicsObject):
         painter.setPen(line_pen)
         painter.setBrush(fill)
         painter.drawRoundedRect(bounds, self.CARD_CORNER_RADIUS, self.CARD_CORNER_RADIUS)
+        if self.sequence_locked:
+            fixed_pen = QPen(QColor("#F2C14E"), 3.4)
+            fixed_pen.setCosmetic(True)
+            painter.setPen(fixed_pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(
+                bounds.adjusted(2.5, 2.5, -2.5, -2.5),
+                self.CARD_CORNER_RADIUS - 1.0,
+                self.CARD_CORNER_RADIUS - 1.0,
+            )
         if self.view.is_overview_mode():
             return
 
@@ -826,6 +848,7 @@ class PlanCanvasView(QGraphicsView):
                         topic.branch_color or PLAN_ROOT_COLOR,
                         collapsed=topic.collapsed,
                         root=node_uuid == root_uuid,
+                        sequence_locked=node.sequence_locked,
                         semantic_title=(
                             semantic_title
                         ),
@@ -1556,16 +1579,21 @@ class PlanCanvasView(QGraphicsView):
         sibling_action = menu.addAction("新增同级主题")
         child_action = menu.addAction("新增子主题")
         edit_action = menu.addAction("编辑标题")
+        type_menu = menu.addMenu("设置转换类型")
+        touchidle_action = type_menu.addAction("绿色 · TouchIdle")
+        touchdrag_action = type_menu.addAction("紫色 · TouchDrag")
         collapse_action = menu.addAction("折叠/展开")
         promote_action = menu.addAction("提升层级")
         delete_action = menu.addAction("删除子树")
         if topic_item is None or topic_item.virtual:
             edit_action.setEnabled(False)
+            type_menu.setEnabled(False)
             collapse_action.setEnabled(False)
             promote_action.setEnabled(False)
             delete_action.setEnabled(False)
         elif topic_item.root:
             sibling_action.setEnabled(False)
+            type_menu.setEnabled(False)
             promote_action.setEnabled(False)
             delete_action.setEnabled(False)
         selected = menu.exec(event.globalPos())
@@ -1575,6 +1603,16 @@ class PlanCanvasView(QGraphicsView):
             self.create_child_topic()
         elif selected == edit_action and topic_item is not None:
             self.edit_topic_title(topic_item.node_uuid)
+        elif selected == touchidle_action and topic_item is not None:
+            self.controller.set_plan_topic_color(
+                topic_item.node_uuid,
+                PLAN_TOUCHIDLE_COLOR,
+            )
+        elif selected == touchdrag_action and topic_item is not None:
+            self.controller.set_plan_topic_color(
+                topic_item.node_uuid,
+                PLAN_TOUCHDRAG_COLOR,
+            )
         elif selected == collapse_action and topic_item is not None:
             self.controller.toggle_plan_collapsed(topic_item.node_uuid)
         elif selected == promote_action and topic_item is not None:

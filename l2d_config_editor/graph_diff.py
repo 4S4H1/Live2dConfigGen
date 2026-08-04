@@ -84,6 +84,7 @@ def canonical_graph_snapshot(document: DocumentModel) -> dict[str, dict[str, Any
             "position": _json_value(node.ui_position),
             "size": _json_value(node.ui_size),
             "locked": bool(node.locked),
+            "sequence_locked": bool(node.sequence_locked),
             "type_slot": node.type_slot,
             "export_slot": node.export_slot,
             "numeric_linkage_enabled": bool(node.numeric_linkage_enabled),

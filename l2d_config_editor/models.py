@@ -168,6 +168,7 @@ class NodeRecord:
     type_slot: int | None = None
     export_slot: int | None = None
     locked: bool = False
+    sequence_locked: bool = False
     numeric_linkage_enabled: bool = False
     manual_fields: set[str] = field(default_factory=set)
 
@@ -182,6 +183,7 @@ class NodeRecord:
             type_slot=self.type_slot,
             export_slot=self.export_slot,
             locked=self.locked,
+            sequence_locked=self.sequence_locked,
             numeric_linkage_enabled=self.numeric_linkage_enabled,
             manual_fields=set(self.manual_fields),
         )

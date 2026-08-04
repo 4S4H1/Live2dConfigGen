@@ -138,6 +138,34 @@ class UpdateNodeLockCommand(QUndoCommand):
         self.controller._set_node_locked(self.node_uuid, self.old_locked)
 
 
+class UpdateSequenceLocksCommand(QUndoCommand):
+    """Toggle persistent sequence-number locks for one or more nodes."""
+
+    def __init__(self, controller, changes) -> None:
+        super().__init__("固定节点序号")
+        self.controller = controller
+        self.changes = {
+            str(node_uuid): (bool(old_value), bool(new_value))
+            for node_uuid, (old_value, new_value) in changes.items()
+        }
+
+    def redo(self) -> None:
+        self.controller._set_node_sequence_locks(
+            {
+                node_uuid: new_value
+                for node_uuid, (_old_value, new_value) in self.changes.items()
+            }
+        )
+
+    def undo(self) -> None:
+        self.controller._set_node_sequence_locks(
+            {
+                node_uuid: old_value
+                for node_uuid, (old_value, _new_value) in self.changes.items()
+            }
+        )
+
+
 class UpdateEditorSettingsCommand(QUndoCommand):
     def __init__(self, controller, old_settings, new_settings, label: str = "修改文档设置") -> None:
         super().__init__(label)

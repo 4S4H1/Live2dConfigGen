@@ -63,6 +63,7 @@ from .logic import (
 )
 from .llm_chat import LLMChatPanel
 from .perf_tools import PerformanceToolDialog
+from .plan import PLAN_TOUCHDRAG_COLOR, PLAN_TOUCHIDLE_COLOR
 from .plan_canvas import PlanCanvasView
 from .reference_images import read_reference_image
 from .schema import load_editor_schema
@@ -810,6 +811,46 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.formal_view_button)
         toolbar.addWidget(self.plan_view_button)
 
+        self.plan_touchidle_button = QPushButton("Idle")
+        self.plan_touchidle_button.setFixedWidth(56)
+        self.plan_touchidle_button.setStyleSheet(
+            f"QPushButton {{ background: {PLAN_TOUCHIDLE_COLOR}; color: white; }}"
+        )
+        self.plan_touchidle_button.setToolTip(
+            "选中计划节点后点击：正式化为带触发框、过渡动画和待机动画的 TouchIdle"
+        )
+        self.plan_touchidle_button.setEnabled(False)
+        self.plan_touchidle_button.clicked.connect(
+            lambda: self._set_selected_plan_topic_color(PLAN_TOUCHIDLE_COLOR)
+        )
+        toolbar.addWidget(self.plan_touchidle_button)
+        self.plan_touchdrag_button = QPushButton("Drag")
+        self.plan_touchdrag_button.setFixedWidth(56)
+        self.plan_touchdrag_button.setStyleSheet(
+            f"QPushButton {{ background: {PLAN_TOUCHDRAG_COLOR}; color: white; }}"
+        )
+        self.plan_touchdrag_button.setToolTip(
+            "选中计划节点后点击：正式化为只有触发框和过渡动画的 TouchDrag"
+        )
+        self.plan_touchdrag_button.setEnabled(False)
+        self.plan_touchdrag_button.clicked.connect(
+            lambda: self._set_selected_plan_topic_color(PLAN_TOUCHDRAG_COLOR)
+        )
+        toolbar.addWidget(self.plan_touchdrag_button)
+        self.sequence_lock_button = QPushButton("固定")
+        self.sequence_lock_button.setFixedWidth(56)
+        self.sequence_lock_button.setStyleSheet(
+            "QPushButton { background: #C99A2E; color: #171104; font-weight: 600; }"
+        )
+        self.sequence_lock_button.setToolTip(
+            "正式图多选节点后点击：固定或取消固定序号；自动编号会跳过固定编号"
+        )
+        self.sequence_lock_button.setEnabled(False)
+        self.sequence_lock_button.clicked.connect(
+            self._toggle_selected_sequence_lock
+        )
+        toolbar.addWidget(self.sequence_lock_button)
+
         self.pen_color_button = QPushButton("颜色")
         self.pen_color_button.setToolTip("Ctrl+左键直接绘制；Ctrl+右键删除命中的整条笔迹")
         self.pen_color_button.clicked.connect(self._choose_pen_color)
@@ -1002,11 +1043,85 @@ class MainWindow(QMainWindow):
         ):
             if control is not None:
                 control.setEnabled(formal_only)
+        plan_has_selection = normalized == "plan" and bool(selected_node_uuids)
+        for control in (
+            getattr(self, "plan_touchidle_button", None),
+            getattr(self, "plan_touchdrag_button", None),
+        ):
+            if control is not None:
+                control.setEnabled(plan_has_selection)
+        if hasattr(self, "sequence_lock_button"):
+            self.sequence_lock_button.setEnabled(
+                normalized == "formal"
+                and self._has_sequence_lock_targets(selected_node_uuids)
+            )
         if formal_only and hasattr(self, "group_selected_button"):
             self.group_selected_button.setEnabled(
                 len(self.canvas.selected_node_uuids()) >= 2
             )
         self._show_status("已切换到计划图" if normalized == "plan" else "已切换到正式图")
+
+    def _set_selected_plan_topic_color(self, color: str) -> None:
+        if self._graph_view_mode != "plan":
+            self._show_status("请先切换到计划图")
+            return
+        node_uuids = self.plan_canvas.selected_node_uuids()
+        if not node_uuids:
+            self._show_status("请先选中一个或多个计划节点")
+            return
+        changed = False
+        self.controller.undo_stack.beginMacro("设置计划节点转换类型")
+        try:
+            for node_uuid in node_uuids:
+                changed = self.controller.set_plan_topic_color(node_uuid, color) or changed
+        finally:
+            self.controller.undo_stack.endMacro()
+        if changed:
+            node_type = "TouchIdle" if color == PLAN_TOUCHIDLE_COLOR else "TouchDrag"
+            self._show_status(f"已将所选计划节点标记为 {node_type}")
+
+    def _has_sequence_lock_targets(self, node_uuids: list[str]) -> bool:
+        for node_uuid in node_uuids:
+            node = self.controller.get_node(node_uuid)
+            definition = self.controller.schema.nodes.get(node.type) if node else None
+            if (
+                node is not None
+                and definition is not None
+                and definition.category == "function"
+                and isinstance(node.type_slot, int)
+                and node.type_slot > 0
+            ):
+                return True
+        return False
+
+    def _toggle_selected_sequence_lock(self) -> None:
+        if self._graph_view_mode != "formal":
+            self._show_status("请在正式图中选择要固定序号的节点")
+            return
+        selected = self.canvas.selected_node_uuids()
+        eligible = []
+        for node_uuid in selected:
+            node = self.controller.get_node(node_uuid)
+            definition = self.controller.schema.nodes.get(node.type) if node else None
+            if (
+                node is not None
+                and definition is not None
+                and definition.category == "function"
+                and isinstance(node.type_slot, int)
+                and node.type_slot > 0
+            ):
+                eligible.append(node)
+        if not eligible:
+            self._show_status("请选择至少一个带序号的正式节点")
+            return
+        target_locked = not all(node.sequence_locked for node in eligible)
+        if self.controller.set_nodes_sequence_locked(
+            [node.uuid for node in eligible],
+            target_locked,
+        ):
+            self._show_status(
+                f"已{'固定' if target_locked else '取消固定'} {len(eligible)} 个节点的序号"
+            )
 
     def _build_inspector_panel(self) -> QWidget:
         panel = QWidget()
@@ -2835,6 +2950,18 @@ class MainWindow(QMainWindow):
         if hasattr(self, "group_selected_button"):
             self.group_selected_button.setEnabled(
                 self._graph_view_mode == "formal" and len(node_uuids) >= 2
+            )
+        plan_selection = self._graph_view_mode == "plan" and bool(node_uuids)
+        for control in (
+            getattr(self, "plan_touchidle_button", None),
+            getattr(self, "plan_touchdrag_button", None),
+        ):
+            if control is not None:
+                control.setEnabled(plan_selection)
+        if hasattr(self, "sequence_lock_button"):
+            self.sequence_lock_button.setEnabled(
+                self._graph_view_mode == "formal"
+                and self._has_sequence_lock_targets(list(node_uuids))
             )
         if len(node_uuids) == 1:
             self.controller.set_selected_node(node_uuids[0])

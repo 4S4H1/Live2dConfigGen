@@ -1750,6 +1750,23 @@ class NodeItem(QGraphicsObject):
         if self._supports_output_connection():
             painter.drawEllipse(self.output_pin_rect())
 
+    def _paint_sequence_lock_outline(self, painter: QPainter) -> None:
+        if not self.node.sequence_locked or not self._is_function_node():
+            return
+        painter.save()
+        fixed_color = QColor("#9BE7B5")
+        fixed_color.setAlpha(235)
+        fixed_pen = QPen(fixed_color, 4.0)
+        fixed_pen.setCosmetic(True)
+        painter.setPen(fixed_pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(
+            self._rect.adjusted(3.0, 3.0, -3.0, -3.0),
+            11.0,
+            11.0,
+        )
+        painter.restore()
+
     def paint(self, painter: QPainter, option, widget=None) -> None:
         del option, widget
         fast_render = self._fast_rendering()
@@ -1896,6 +1913,7 @@ class NodeItem(QGraphicsObject):
                 painter.drawRoundedRect(QRectF(self._rect.width() - 44, 8, 30, 18), 6, 6)
                 painter.setPen(QColor("#ffffff"))
                 painter.drawText(QRectF(self._rect.width() - 44, 8, 30, 18), Qt.AlignmentFlag.AlignCenter, str(len(self._warnings)))
+            self._paint_sequence_lock_outline(painter)
             return
 
         if self.node.type == "Comment":
@@ -2035,6 +2053,7 @@ class NodeItem(QGraphicsObject):
             painter.setBrush(QColor("#ffcf25"))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawRect(self.resize_handle_rect())
+        self._paint_sequence_lock_outline(painter)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         local_pos = QPointF(event.pos())

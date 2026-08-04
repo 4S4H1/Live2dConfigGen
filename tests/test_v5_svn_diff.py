@@ -22,8 +22,14 @@ from l2d_config_editor.logic import (
     node_title,
     save_document,
 )
-from l2d_config_editor.models import CanvasStrokeRecord, GroupRecord
-from l2d_config_editor.plan import parse_touchidle_plan_title
+from l2d_config_editor.models import CanvasStrokeRecord, GroupRecord, PlanTopicRecord
+from l2d_config_editor.plan import (
+    PLAN_TOUCHDRAG_COLOR,
+    PLAN_TOUCHIDLE_COLOR,
+    plan_formal_positions,
+    plan_topic_type_from_color,
+    parse_touchidle_plan_title,
+)
 from l2d_config_editor.svn_tools import (
     SvnCommitRunner,
     SvnHistoryRunner,
@@ -74,7 +80,216 @@ def ready_controller() -> EditorController:
     return controller
 
 
+def mark_plan_topic_untyped(controller: EditorController, node_uuid: str) -> None:
+    """Simulate a legacy topic that has no green/purple semantic color."""
+
+    for topic in controller.document.plan_layout.topics:
+        if topic.node_uuid == node_uuid:
+            topic.branch_color = "#F57C00"
+            return
+    raise AssertionError(f"missing plan topic: {node_uuid}")
+
+
 class PlanFormalizationV5Tests(unittest.TestCase):
+    def test_plan_topic_colors_are_the_only_new_type_signal(self) -> None:
+        self.assertEqual(
+            "TouchIdle",
+            plan_topic_type_from_color(
+                PlanTopicRecord("green", branch_color=PLAN_TOUCHIDLE_COLOR)
+            ),
+        )
+        self.assertEqual(
+            "TouchDrag",
+            plan_topic_type_from_color(
+                PlanTopicRecord("purple", branch_color=PLAN_TOUCHDRAG_COLOR)
+            ),
+        )
+        self.assertIsNone(
+            plan_topic_type_from_color(
+                PlanTopicRecord("legacy", branch_color="#43A047")
+            )
+        )
+
+    def test_green_and_purple_topics_auto_number_their_formal_nodes(self) -> None:
+        controller = ready_controller()
+        root_uuid = controller.document.nodes[0].uuid
+        green_uuid = controller.create_plan_topic(root_uuid, "摸头")
+        purple_uuid = controller.create_plan_topic(green_uuid, "拉袖子")
+        self.assertTrue(
+            controller.set_plan_topic_color(purple_uuid, PLAN_TOUCHDRAG_COLOR)
+        )
+
+        self.assertTrue(controller.materialize_plan_topics())
+        green = controller.get_node(green_uuid)
+        purple = controller.get_node(purple_uuid)
+        self.assertEqual(("TouchIdle", "TouchDrag"), (green.type, purple.type))
+        self.assertEqual("摸头", green.fields["tips"])
+        self.assertTrue(green.fields["draw_able_name"].startswith("TouchIdle"))
+        self.assertIn("touch_idle", green.fields["action_trigger"])
+        self.assertIn("idle = 1", green.fields["action_trigger_active"])
+        self.assertEqual("拉袖子", purple.fields["tips"])
+        self.assertTrue(purple.fields["draw_able_name"].startswith("TouchDrag"))
+        self.assertIn("touch_drag", purple.fields["action_trigger"])
+        self.assertEqual("", purple.fields["action_trigger_active"])
+        self.assertLess(green.ui_position["x"], purple.ui_position["x"])
+
+    def test_every_colored_plan_title_is_resynchronized_to_formal_tips(self) -> None:
+        controller = ready_controller()
+        root_uuid = controller.document.nodes[0].uuid
+        first_uuid = controller.create_plan_topic(root_uuid, "摸头")
+        second_uuid = controller.create_plan_topic(first_uuid, "摸头")
+        controller.materialize_plan_topics()
+
+        # Reproduce an older converted graph whose visible formal titles were
+        # empty even though the plan titles were present.
+        controller.get_node(first_uuid).fields["tips"] = ""
+        controller.get_node(second_uuid).fields["tips"] = ""
+        self.assertTrue(controller.materialize_plan_topics())
+
+        self.assertEqual("摸头", controller.get_node(first_uuid).fields["tips"])
+        self.assertEqual("摸头", controller.get_node(second_uuid).fields["tips"])
+
+    def test_generated_numbers_follow_upper_path_before_lower_sibling(self) -> None:
+        controller = ready_controller()
+        root_uuid = controller.document.nodes[0].uuid
+        parent_uuid = controller.create_plan_topic(root_uuid, "趴下1")
+        next_branch_uuid = controller.create_plan_topic(root_uuid, "下一分支")
+        upper_uuid = controller.create_plan_topic(parent_uuid, "摸头1")
+        lower_uuid = controller.create_plan_topic(parent_uuid, "摸头2")
+        upper_right_uuid = controller.create_plan_topic(upper_uuid, "摸头3")
+
+        controller.materialize_plan_topics()
+
+        parent = controller.get_node(parent_uuid)
+        upper = controller.get_node(upper_uuid)
+        upper_right = controller.get_node(upper_right_uuid)
+        lower = controller.get_node(lower_uuid)
+        next_branch = controller.get_node(next_branch_uuid)
+        self.assertEqual(
+            (1, 2, 3, 4, 5),
+            (
+                parent.type_slot,
+                upper.type_slot,
+                upper_right.type_slot,
+                lower.type_slot,
+                next_branch.type_slot,
+            ),
+        )
+        self.assertEqual(
+            (
+                "TouchIdle1",
+                "TouchIdle2",
+                "TouchIdle3",
+                "TouchIdle4",
+                "TouchIdle5",
+            ),
+            (
+                parent.fields["draw_able_name"],
+                upper.fields["draw_able_name"],
+                upper_right.fields["draw_able_name"],
+                lower.fields["draw_able_name"],
+                next_branch.fields["draw_able_name"],
+            ),
+        )
+        self.assertLess(parent.ui_position["x"], upper.ui_position["x"])
+        self.assertLess(upper.ui_position["x"], upper_right.ui_position["x"])
+        self.assertLess(upper.ui_position["y"], lower.ui_position["y"])
+
+    def test_fixed_sequence_survives_reordering_and_other_nodes_skip_it(self) -> None:
+        controller = ready_controller()
+        root_uuid = controller.document.nodes[0].uuid
+        fixed_uuid = controller.create_plan_topic(root_uuid, "固定为1")
+        second_uuid = controller.create_plan_topic(root_uuid, "自动节点A")
+        third_uuid = controller.create_plan_topic(root_uuid, "自动节点B")
+        controller.materialize_plan_topics()
+        self.assertEqual(1, controller.get_node(fixed_uuid).type_slot)
+
+        self.assertTrue(
+            controller.set_nodes_sequence_locked([fixed_uuid], True)
+        )
+        self.assertTrue(controller.get_node(fixed_uuid).sequence_locked)
+        controller.reorder_plan_topic(fixed_uuid, 2)
+        controller.materialize_plan_topics()
+
+        fixed = controller.get_node(fixed_uuid)
+        second = controller.get_node(second_uuid)
+        third = controller.get_node(third_uuid)
+        self.assertEqual((2, 3, 1), (second.type_slot, third.type_slot, fixed.type_slot))
+        self.assertEqual("TouchIdle2", second.fields["draw_able_name"])
+        self.assertIn("touch_idle2", second.fields["action_trigger"])
+        self.assertIn("idle = 2", second.fields["action_trigger_active"])
+        self.assertEqual("TouchIdle3", third.fields["draw_able_name"])
+        self.assertIn("touch_idle3", third.fields["action_trigger"])
+        self.assertIn("idle = 3", third.fields["action_trigger_active"])
+        self.assertEqual("TouchIdle1", fixed.fields["draw_able_name"])
+        self.assertIn("touch_idle1", fixed.fields["action_trigger"])
+        self.assertIn("idle = 1", fixed.fields["action_trigger_active"])
+
+        payload = export_document_dict(controller.schema, controller.document)
+        loaded = load_document_payload(controller.schema, payload)
+        loaded_fixed = next(node for node in loaded.nodes if node.uuid == fixed_uuid)
+        self.assertTrue(loaded_fixed.sequence_locked)
+
+        self.assertTrue(
+            controller.set_nodes_sequence_locked([fixed_uuid], False)
+        )
+        controller.materialize_plan_topics()
+        self.assertEqual(
+            (1, 2, 3),
+            (
+                controller.get_node(second_uuid).type_slot,
+                controller.get_node(third_uuid).type_slot,
+                controller.get_node(fixed_uuid).type_slot,
+            ),
+        )
+
+    def test_purple_color_overrides_a_touchidle_looking_title(self) -> None:
+        controller = ready_controller()
+        root_uuid = controller.document.nodes[0].uuid
+        node_uuid = controller.create_plan_topic(
+            root_uuid,
+            "touchidle77-touch_idle88",
+        )
+        controller.set_plan_topic_color(node_uuid, PLAN_TOUCHDRAG_COLOR)
+
+        controller.materialize_plan_topics()
+
+        node = controller.get_node(node_uuid)
+        self.assertEqual("TouchDrag", node.type)
+        self.assertNotEqual("TouchIdle77", node.fields["draw_able_name"])
+
+    def test_recoloring_a_materialized_topic_changes_its_formal_type(self) -> None:
+        controller = ready_controller()
+        root_uuid = controller.document.nodes[0].uuid
+        node_uuid = controller.create_plan_topic(root_uuid, "互动")
+        controller.materialize_plan_topics()
+        self.assertEqual("TouchIdle", controller.get_node(node_uuid).type)
+
+        self.assertTrue(
+            controller.set_plan_topic_color(node_uuid, PLAN_TOUCHDRAG_COLOR)
+        )
+        self.assertEqual("draft", controller.plan_topic(node_uuid).formalization_state)
+        controller.materialize_plan_topics()
+        self.assertEqual("TouchDrag", controller.get_node(node_uuid).type)
+
+    def test_child_semantic_color_does_not_inherit_parent_recolor(self) -> None:
+        controller = ready_controller()
+        root_uuid = controller.document.nodes[0].uuid
+        parent_uuid = controller.create_plan_topic(root_uuid, "父节点")
+        child_uuid = controller.create_plan_topic(parent_uuid, "子节点")
+        controller.set_plan_topic_color(child_uuid, PLAN_TOUCHDRAG_COLOR)
+        controller.ensure_plan_layout()
+
+        self.assertEqual(
+            PLAN_TOUCHIDLE_COLOR,
+            controller.plan_topic(parent_uuid).branch_color.upper(),
+        )
+        self.assertEqual(
+            PLAN_TOUCHDRAG_COLOR,
+            controller.plan_topic(child_uuid).branch_color.upper(),
+        )
+        self.assertEqual(3, len(plan_formal_positions(controller.document)))
+
     def test_title_parser_is_case_insensitive_and_keeps_visible_segments(self) -> None:
         parsed = parse_touchidle_plan_title("  ToUcHiDlE7  -  TOUCH_idle19 ")
         self.assertIsNotNone(parsed)
@@ -101,6 +316,8 @@ class PlanFormalizationV5Tests(unittest.TestCase):
         root_uuid = controller.document.nodes[0].uuid
         valid_uuid = controller.create_plan_topic(root_uuid, "TouchIdle7-touch_idle19")
         invalid_uuid = controller.create_plan_topic(valid_uuid, "待设计")
+        mark_plan_topic_untyped(controller, valid_uuid)
+        mark_plan_topic_untyped(controller, invalid_uuid)
         controller.add_connection(root_uuid, invalid_uuid)
         valid = controller.get_node(valid_uuid)
         valid.locked = True
@@ -159,6 +376,8 @@ class PlanFormalizationV5Tests(unittest.TestCase):
             "TouchIdle7-touch_idle19-进场淡入",
         )
         virtual_uuid = controller.create_plan_topic(root_uuid, "纯备注条目")
+        mark_plan_topic_untyped(controller, formal_uuid)
+        mark_plan_topic_untyped(controller, virtual_uuid)
 
         self.assertTrue(controller.materialize_plan_topics())
 
@@ -174,6 +393,7 @@ class PlanFormalizationV5Tests(unittest.TestCase):
         controller = ready_controller()
         root_uuid = controller.document.nodes[0].uuid
         node_uuid = controller.create_plan_topic(root_uuid, "纯备注条目")
+        mark_plan_topic_untyped(controller, node_uuid)
         controller.materialize_plan_topics()
 
         fields = {
@@ -205,6 +425,7 @@ class PlanFormalizationV5Tests(unittest.TestCase):
                 controller = ready_controller()
                 root_uuid = controller.document.nodes[0].uuid
                 node_uuid = controller.create_plan_topic(root_uuid, "纯备注条目")
+                mark_plan_topic_untyped(controller, node_uuid)
                 controller.materialize_plan_topics()
                 before_index = controller.undo_stack.index()
 
@@ -234,7 +455,7 @@ class PlanFormalizationV5Tests(unittest.TestCase):
                 for key in values:
                     self.assertEqual("", reverted.fields[key])
 
-    def test_editing_materialized_or_virtual_title_returns_to_draft(self) -> None:
+    def test_editing_a_colored_topic_keeps_its_color_semantics(self) -> None:
         controller = ready_controller()
         root_uuid = controller.document.nodes[0].uuid
         node_uuid = controller.create_plan_topic(root_uuid, "touchidle1-touch_idle2")
@@ -244,10 +465,9 @@ class PlanFormalizationV5Tests(unittest.TestCase):
         controller.set_plan_title(node_uuid, "尚未确定")
         self.assertEqual("draft", controller.plan_topic(node_uuid).formalization_state)
         controller.materialize_plan_topics()
-        self.assertEqual("PlanPlaceholder", controller.get_node(node_uuid).type)
-        self.assertEqual("virtual", controller.plan_topic(node_uuid).formalization_state)
-        controller.set_plan_title(node_uuid, "touchidle8-touch_idle3")
-        self.assertEqual("draft", controller.plan_topic(node_uuid).formalization_state)
+        self.assertEqual("TouchIdle", controller.get_node(node_uuid).type)
+        self.assertEqual("尚未确定", controller.get_node(node_uuid).fields["tips"])
+        self.assertEqual("materialized", controller.plan_topic(node_uuid).formalization_state)
 
     def test_v4_migration_marks_existing_topics_formal_without_heuristics(self) -> None:
         controller = ready_controller()

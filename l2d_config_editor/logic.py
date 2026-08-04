@@ -1440,6 +1440,8 @@ def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[
         if node.export_slot is not None:
             payload["export_slot"] = node.export_slot
         payload["locked"] = node.locked
+        if node.sequence_locked:
+            payload["sequence_locked"] = True
         if node.ui_size:
             payload["ui_size"] = node.ui_size
         if node.type in function_types:
@@ -1792,6 +1794,7 @@ def load_document_payload(
                 "type_slot",
                 "export_slot",
                 "locked",
+                "sequence_locked",
                 "numeric_linkage_enabled",
                 "manual_fields",
             }
@@ -1817,6 +1820,7 @@ def load_document_payload(
             type_slot=raw.get("type_slot"),
             export_slot=raw.get("export_slot"),
             locked=bool(raw.get("locked", False)),
+            sequence_locked=bool(raw.get("sequence_locked", False)),
             numeric_linkage_enabled=bool(
                 raw.get("numeric_linkage_enabled", settings_payload.get("numeric_linkage_enabled", False))
                 if node_type in function_types

@@ -37,6 +37,8 @@ PLAN_BRANCH_COLORS = (
     "#6D4C41",
 )
 PLAN_ROOT_COLOR = "#2F80ED"
+PLAN_TOUCHIDLE_COLOR = "#39A96B"
+PLAN_TOUCHDRAG_COLOR = "#8B5CF6"
 PLAN_TITLE_MAX_LENGTH = 4096
 PLAN_FORMALIZATION_STATES = frozenset(
     {"formal", "draft", "virtual", "materialized"}
@@ -322,7 +324,12 @@ def normalize_plan_layout(document: DocumentModel) -> PlanLayout:
         while queue:
             parent_uuid = queue.popleft()
             for child_uuid in children.get(parent_uuid, ()):
-                colors[child_uuid] = colors[parent_uuid]
+                saved = _valid_color(
+                    existing.get(child_uuid).branch_color
+                    if child_uuid in existing
+                    else ""
+                )
+                colors[child_uuid] = saved or colors[parent_uuid]
                 queue.append(child_uuid)
 
     topics: list[PlanTopicRecord] = []
@@ -379,6 +386,104 @@ def plan_children_map(document: DocumentModel) -> dict[str | None, list[str]]:
     for children in result.values():
         children.sort(key=lambda node_uuid: (topics[node_uuid].order, node_uuid))
     return dict(result)
+
+
+def plan_topic_type_from_color(topic: PlanTopicRecord) -> str | None:
+    """Return the explicit formal type represented by a plan-card color."""
+
+    color = _valid_color(topic.branch_color)
+    if color == PLAN_TOUCHIDLE_COLOR:
+        return "TouchIdle"
+    if color == PLAN_TOUCHDRAG_COLOR:
+        return "TouchDrag"
+    return None
+
+
+def plan_formal_positions(
+    document: DocumentModel,
+    *,
+    horizontal_gap: float = 460.0,
+    vertical_gap: float = 300.0,
+) -> dict[str, tuple[float, float]]:
+    """Lay out the formal graph in the same hierarchy as the plan tree."""
+
+    layout = normalize_plan_layout(document)
+    topics = {topic.node_uuid: topic for topic in layout.topics}
+    nodes = {node.uuid: node for node in document.nodes}
+    root_uuid = plan_root_uuid(document)
+    if root_uuid is None or root_uuid not in nodes:
+        return {}
+    children: dict[str | None, list[str]] = defaultdict(list)
+    for topic in layout.topics:
+        if topic.node_uuid != root_uuid:
+            children[topic.parent_uuid].append(topic.node_uuid)
+    for node_uuids in children.values():
+        node_uuids.sort(key=lambda node_uuid: (topics[node_uuid].order, node_uuid))
+
+    raw_positions: dict[str, tuple[int, float]] = {}
+    visited_nodes: set[str] = set()
+    next_leaf_y = 0.0
+    component_roots = [
+        root_uuid,
+        *(
+            node_uuid
+            for node_uuid in children.get(None, ())
+            if node_uuid != root_uuid
+        ),
+    ]
+    for component_root in component_roots:
+        if component_root in visited_nodes or component_root not in nodes:
+            continue
+        component_preorder: list[str] = []
+        depth_by_uuid: dict[str, int] = {}
+        stack: list[tuple[str, int]] = [(component_root, 0)]
+        while stack:
+            node_uuid, depth = stack.pop()
+            if node_uuid in visited_nodes or node_uuid not in nodes:
+                continue
+            visited_nodes.add(node_uuid)
+            component_preorder.append(node_uuid)
+            depth_by_uuid[node_uuid] = depth
+            child_ids = [
+                child_uuid
+                for child_uuid in children.get(node_uuid, ())
+                if child_uuid in nodes
+            ]
+            for child_uuid in reversed(child_ids):
+                stack.append((child_uuid, depth + 1))
+
+        raw_y: dict[str, float] = {}
+        for node_uuid in component_preorder:
+            if not children.get(node_uuid):
+                raw_y[node_uuid] = next_leaf_y
+                next_leaf_y += vertical_gap
+        for node_uuid in reversed(component_preorder):
+            if node_uuid in raw_y:
+                continue
+            child_ids = [
+                child_uuid
+                for child_uuid in children.get(node_uuid, ())
+                if child_uuid in raw_y
+            ]
+            if child_ids:
+                raw_y[node_uuid] = (raw_y[child_ids[0]] + raw_y[child_ids[-1]]) * 0.5
+            else:
+                raw_y[node_uuid] = next_leaf_y
+                next_leaf_y += vertical_gap
+        for node_uuid in component_preorder:
+            raw_positions[node_uuid] = (depth_by_uuid[node_uuid], raw_y[node_uuid])
+        next_leaf_y += vertical_gap
+    root = nodes[root_uuid]
+    root_x = float(root.ui_position.get("x", 0.0))
+    root_y = float(root.ui_position.get("y", 0.0))
+    raw_root_y = raw_positions[root_uuid][1]
+    return {
+        node_uuid: (
+            root_x + depth * horizontal_gap,
+            root_y + raw_y - raw_root_y,
+        )
+        for node_uuid, (depth, raw_y) in raw_positions.items()
+    }
 
 
 def plan_primary_edges(document: DocumentModel) -> set[tuple[str, str]]:

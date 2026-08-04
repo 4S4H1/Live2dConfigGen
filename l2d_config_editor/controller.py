@@ -33,6 +33,7 @@ from .commands import (
     UpdateFieldsCommand,
     UpdateManyFieldsCommand,
     UpdateNodeLockCommand,
+    UpdateSequenceLocksCommand,
     UpdatePlanGraphCommand,
 )
 from .constants import CLIPBOARD_MIME
@@ -88,15 +89,18 @@ from .models import (
     PlanTopicRecord,
 )
 from .plan import (
-    PLAN_BRANCH_COLORS,
+    PLAN_TOUCHDRAG_COLOR,
+    PLAN_TOUCHIDLE_COLOR,
     PLAN_TITLE_MAX_LENGTH,
     clone_connections,
     normalize_plan_layout,
     plan_children_map,
+    plan_formal_positions,
     plan_is_descendant,
     plan_root_uuid,
     plan_subtree_uuids,
     plan_topic_map,
+    plan_topic_type_from_color,
     plan_topic_title,
     parse_touchidle_plan_title,
     placeholder_fields_for_title,
@@ -206,6 +210,32 @@ class EditorController(QObject):
         if not node or node.locked == bool(locked):
             return
         self.undo_stack.push(UpdateNodeLockCommand(self, node_uuid, node.locked, bool(locked)))
+
+    def set_nodes_sequence_locked(
+        self,
+        node_uuids: list[str],
+        locked: bool,
+    ) -> bool:
+        """Persist or release visible sequence numbers for function nodes."""
+
+        target = bool(locked)
+        function_types = set(function_node_types(self.schema))
+        changes: dict[str, tuple[bool, bool]] = {}
+        for node_uuid in dict.fromkeys(node_uuids):
+            node = self.get_node(node_uuid)
+            if (
+                node is None
+                or node.type not in function_types
+                or not isinstance(node.type_slot, int)
+                or node.type_slot <= 0
+                or node.sequence_locked == target
+            ):
+                continue
+            changes[node_uuid] = (node.sequence_locked, target)
+        if not changes:
+            return False
+        self.undo_stack.push(UpdateSequenceLocksCommand(self, changes))
+        return True
 
     def new_document(self) -> None:
         with performance_recorder.measure("controller.new_document", "controller"):
@@ -477,7 +507,7 @@ class EditorController(QObject):
                 order=insert_index,
                 plan_title=resolved_title,
                 collapsed=False,
-                branch_color=PLAN_BRANCH_COLORS[insert_index % len(PLAN_BRANCH_COLORS)],
+                branch_color=PLAN_TOUCHIDLE_COLOR,
                 formalization_state="draft",
             )
         )
@@ -557,25 +587,141 @@ class EditorController(QObject):
         """Convert all pending plan topics as one undoable transaction."""
 
         old_layout = self.ensure_plan_layout().clone()
+        inferred = {
+            topic.node_uuid: node_type
+            for topic in old_layout.topics
+            if (node_type := plan_topic_type_from_color(topic)) is not None
+        }
         candidates = [
             topic
             for topic in old_layout.topics
-            if topic.formalization_state in {"draft", "virtual"}
+            if (
+                # Green/purple topics are plan-owned generated nodes.  Include
+                # materialized nodes as well so title edits, plan reordering,
+                # and newly added siblings cannot leave stale formal fields or
+                # old sequence numbers behind.
+                topic.node_uuid in inferred
+                or (
+                    topic.formalization_state in {"draft", "virtual"}
+                    and (
+                        topic.formalization_state == "draft"
+                        or parse_touchidle_plan_title(topic.plan_title) is not None
+                    )
+                )
+            )
         ]
         if not candidates:
             return False
         candidate_ids = {topic.node_uuid for topic in candidates}
+        candidate_topic_by_uuid = {
+            topic.node_uuid: topic for topic in candidates
+        }
+        formal_positions = plan_formal_positions(self.document)
+        tree_children = plan_children_map(self.document)
+        root_uuid = plan_root_uuid(self.document)
+        branch_order: dict[str, int] = {}
+        top_level_uuids = [
+            *tree_children.get(root_uuid, ()),
+            *tree_children.get(None, ()),
+        ]
+        for branch_uuid in top_level_uuids:
+            # Finish one horizontal root branch before moving down to the next
+            # one.  Depth-first preorder follows the upper child all the way
+            # to the right before returning to a lower sibling, e.g.
+            # 趴下1 -> 摸头1 -> 摸头3 -> 摸头2.
+            stack = [branch_uuid]
+            while stack:
+                node_uuid = stack.pop()
+                if node_uuid in branch_order:
+                    continue
+                branch_order[node_uuid] = len(branch_order)
+                stack.extend(reversed(tree_children.get(node_uuid, ())))
         old_nodes = [
             node.clone()
             for node in self.document.nodes
             if node.uuid in candidate_ids
         ]
+
+        def visual_order(node: NodeRecord) -> tuple[int, float, float, str]:
+            planned = formal_positions.get(
+                node.uuid,
+                (
+                    float(node.ui_position.get("x", 0.0)),
+                    float(node.ui_position.get("y", 0.0)),
+                ),
+            )
+            topic = candidate_topic_by_uuid.get(node.uuid)
+            # Follow the upper path from left to right before returning to its
+            # lower sibling, then move down to the next root branch.  Planned
+            # coordinates are stable fallbacks for malformed/legacy topics.
+            return (
+                branch_order.get(node.uuid, 10**9),
+                float(planned[1]),
+                float(planned[0]) + (int(topic.order) if topic is not None else 0) * 1e-6,
+                node.uuid,
+            )
+
+        old_nodes.sort(key=visual_order)
         staging = copy.copy(self.document)
         staging.nodes = [
             node.clone()
             for node in self.document.nodes
             if node.uuid not in candidate_ids
         ]
+
+        def sequence_namespace(node_type: str) -> str:
+            if node_type in {"TouchIdle", "ReturnDefaultIdle"}:
+                return "TouchIdle"
+            if node_type in {"TouchDrag", "ParameterTrigger"}:
+                return "TouchDrag"
+            return node_type
+
+        occupied_slots: dict[str, set[int]] = {}
+        for node in staging.nodes:
+            if not isinstance(node.type_slot, int) or node.type_slot <= 0:
+                continue
+            occupied_slots.setdefault(sequence_namespace(node.type), set()).add(
+                int(node.type_slot)
+            )
+
+        assigned_semantic_slots: dict[str, int] = {}
+
+        def next_free_slot(namespace: str) -> int:
+            occupied = occupied_slots.setdefault(namespace, set())
+            slot = 1
+            while slot in occupied:
+                slot += 1
+            occupied.add(slot)
+            return slot
+
+        # Reserve every fixed number before assigning any automatic number.
+        # A rare namespace collision (for example after changing a fixed node
+        # from Idle to Drag) keeps the first fixed node and moves the later one
+        # to the next available slot so the document remains valid.
+        for old_node in old_nodes:
+            target_type = inferred.get(old_node.uuid)
+            if target_type is None or not old_node.sequence_locked:
+                continue
+            namespace = sequence_namespace(target_type)
+            preferred = (
+                int(old_node.type_slot)
+                if isinstance(old_node.type_slot, int) and old_node.type_slot > 0
+                else 0
+            )
+            occupied = occupied_slots.setdefault(namespace, set())
+            if preferred > 0 and preferred not in occupied:
+                occupied.add(preferred)
+                assigned_semantic_slots[old_node.uuid] = preferred
+            else:
+                assigned_semantic_slots[old_node.uuid] = next_free_slot(namespace)
+        for old_node in old_nodes:
+            target_type = inferred.get(old_node.uuid)
+            if target_type is None or old_node.uuid in assigned_semantic_slots:
+                continue
+            assigned_semantic_slots[old_node.uuid] = next_free_slot(
+                sequence_namespace(target_type)
+            )
+
         new_layout = old_layout.clone()
         topic_by_uuid = {
             topic.node_uuid: topic for topic in new_layout.topics
@@ -583,60 +729,140 @@ class EditorController(QObject):
         new_nodes: list[NodeRecord] = []
         for old_node in old_nodes:
             topic = topic_by_uuid[old_node.uuid]
-            parsed = parse_touchidle_plan_title(topic.plan_title)
-            if parsed is None:
+            semantic = inferred.get(old_node.uuid)
+            # Explicit green/purple plan colors are authoritative.  Parsing
+            # the legacy numbered title is only a fallback for old files
+            # whose topics have not been assigned a semantic color yet.
+            parsed = (
+                None
+                if semantic is not None
+                else parse_touchidle_plan_title(topic.plan_title)
+            )
+            planned_position = formal_positions.get(old_node.uuid)
+            replacement_position = (
+                (
+                    float(old_node.ui_position.get("x", 0.0)),
+                    float(old_node.ui_position.get("y", 0.0)),
+                )
+                if old_node.locked or planned_position is None
+                else planned_position
+            )
+            if parsed is None and semantic is None:
                 replacement = old_node.clone()
                 replacement.type = "PlanPlaceholder"
                 replacement.fields = placeholder_fields_for_title(topic.plan_title)
+                replacement.ui_position = {
+                    "x": float(replacement_position[0]),
+                    "y": float(replacement_position[1]),
+                }
                 replacement.type_slot = None
                 replacement.export_slot = None
                 replacement.sequence_no = None
                 replacement.numeric_linkage_enabled = False
+                replacement.sequence_locked = False
                 replacement.manual_fields.clear()
                 apply_node_appearance_defaults(self.schema, replacement)
                 topic.formalization_state = "virtual"
             else:
+                replacement_type = semantic or "TouchIdle"
                 replacement = create_node(
                     self.schema,
                     staging,
-                    "TouchIdle",
-                    (
-                        float(old_node.ui_position.get("x", 0.0)),
-                        float(old_node.ui_position.get("y", 0.0)),
-                    ),
+                    replacement_type,
+                    replacement_position,
                 )
                 replacement.uuid = old_node.uuid
                 replacement.locked = old_node.locked
+                replacement.sequence_locked = old_node.sequence_locked
                 replacement.ui_size = (
                     dict(old_node.ui_size) if old_node.ui_size else None
                 )
-                replacement.fields["transition_type"] = "animated"
-                replacement.fields["draw_able_name"] = (
-                    f"TouchIdle{parsed.draw_index}"
-                )
-                replacement.fields["parameter"] = "empty"
-                replacement.fields["action_trigger"] = normalize_field_input(
-                    self.schema,
-                    replacement,
-                    "action_trigger",
-                    f"touch_idle{parsed.action_index}",
-                )
-                replacement.manual_fields.update(
-                    {"draw_able_name", "parameter", "action_trigger"}
-                )
-                if parsed.note_text:
-                    replacement.fields["tips"] = parsed.note_text
-                    replacement.manual_fields.add("tips")
-                apply_auto_rules(
-                    self.schema,
-                    staging,
-                    replacement,
-                    source_mode="advanced",
-                    force_generated=False,
-                )
+                assigned_slot = assigned_semantic_slots.get(old_node.uuid)
+                if assigned_slot is not None:
+                    replacement.type_slot = assigned_slot
+                    replacement.sequence_no = assigned_slot
+                elif (
+                    parsed is not None
+                    and old_node.sequence_locked
+                    and isinstance(old_node.type_slot, int)
+                    and old_node.type_slot > 0
+                ):
+                    replacement.type_slot = int(old_node.type_slot)
+                    replacement.sequence_no = int(old_node.type_slot)
+                if parsed is not None:
+                    replacement.fields["transition_type"] = "animated"
+                    replacement.fields["draw_able_name"] = (
+                        f"TouchIdle{parsed.draw_index}"
+                    )
+                    replacement.fields["parameter"] = "empty"
+                    replacement.fields["action_trigger"] = normalize_field_input(
+                        self.schema,
+                        replacement,
+                        "action_trigger",
+                        f"touch_idle{parsed.action_index}",
+                    )
+                    replacement.manual_fields.update(
+                        {"draw_able_name", "parameter", "action_trigger"}
+                    )
+                    if parsed.note_text:
+                        replacement.fields["tips"] = parsed.note_text
+                        replacement.manual_fields.add("tips")
+                    apply_auto_rules(
+                        self.schema,
+                        staging,
+                        replacement,
+                        source_mode="advanced",
+                        force_generated=False,
+                    )
+                else:
+                    sequence = int(assigned_slot or replacement.type_slot or replacement.sequence_no or 1)
+                    if topic.plan_title:
+                        replacement.fields["tips"] = topic.plan_title
+                        replacement.manual_fields.add("tips")
+                    if replacement.type == "TouchIdle":
+                        target_idle = sequence
+                        replacement.fields["draw_able_name"] = f"TouchIdle{sequence}"
+                        replacement.fields["transition_type"] = "animated"
+                        replacement.fields["target_idle"] = target_idle
+                        replacement.fields["parameter"] = "empty"
+                        replacement.fields["action_trigger_active"] = normalize_field_input(
+                            self.schema,
+                            replacement,
+                            "action_trigger_active",
+                            target_idle,
+                        )
+                        replacement.fields["action_trigger"] = normalize_field_input(
+                            self.schema,
+                            replacement,
+                            "action_trigger",
+                            f"touch_idle{sequence}",
+                        )
+                        replacement.manual_fields.update(
+                            {"parameter", "action_trigger"}
+                        )
+                    else:
+                        replacement.fields["draw_able_name"] = f"TouchDrag{sequence}"
+                        replacement.fields["parameter"] = f"touch_drag{sequence}"
+                        replacement.fields["result_type"] = "action"
+                        replacement.fields["target_idle"] = 0
+                        replacement.fields["action_trigger"] = normalize_field_input(
+                            self.schema,
+                            replacement,
+                            "action_trigger",
+                            f"touch_drag{sequence}",
+                        )
+                        replacement.fields["action_trigger_active"] = ""
+                        replacement.fields["action_trigger_active_kind_ui"] = "empty"
+                        replacement.fields["action_trigger_active_reserved_ui"] = ""
+                        replacement.manual_fields.add("action_trigger")
                 topic.formalization_state = "materialized"
-            staging.nodes.append(replacement.clone())
+            staging.nodes.append(replacement)
             new_nodes.append(replacement)
+        # Compute the same derived IDs/auto fields the command will install so
+        # an already synchronized plan does not create a no-op undo entry.
+        reassign_function_ids(self.schema, staging)
+        if old_nodes == new_nodes and old_layout == new_layout:
+            return False
         self.undo_stack.push(
             MaterializePlanTopicsCommand(
                 self,
@@ -771,6 +997,29 @@ class EditorController(QObject):
     def toggle_plan_collapsed(self, node_uuid: str) -> bool:
         topic = self.plan_topic(node_uuid)
         return bool(topic and self.set_plan_collapsed(node_uuid, not topic.collapsed))
+
+    def set_plan_topic_color(self, node_uuid: str, color: str) -> bool:
+        """Set one plan node's explicit TouchIdle/TouchDrag semantic color."""
+
+        resolved = str(color or "").strip().upper()
+        if resolved not in {PLAN_TOUCHIDLE_COLOR, PLAN_TOUCHDRAG_COLOR}:
+            return False
+        topic = self.plan_topic(node_uuid)
+        if topic is None or node_uuid == plan_root_uuid(self.document):
+            return False
+        if topic.branch_color.upper() == resolved:
+            return False
+        old_layout = self.document.plan_layout.clone()
+        new_layout = old_layout.clone()
+        for record in new_layout.topics:
+            if record.node_uuid == node_uuid:
+                record.branch_color = resolved
+                record.formalization_state = "draft"
+                break
+        self.undo_stack.push(
+            SetPlanLayoutCommand(self, old_layout, new_layout, label="设置计划节点类型")
+        )
+        return True
 
     def set_plan_branch_color(self, node_uuid: str, color: str) -> bool:
         resolved = str(color or "").strip().upper()
@@ -2242,6 +2491,18 @@ class EditorController(QObject):
         node.locked = bool(locked)
         self.nodeUpdated.emit(node_uuid)
         self.refresh_derived()
+
+    def _set_node_sequence_locks(self, values: dict[str, bool]) -> None:
+        changed = False
+        for node_uuid, locked in values.items():
+            node = self.get_node(node_uuid)
+            if node is None or node.sequence_locked == bool(locked):
+                continue
+            node.sequence_locked = bool(locked)
+            self.nodeUpdated.emit(node_uuid)
+            changed = True
+        if changed:
+            self.refresh_derived()
 
     def _set_editor_settings(self, settings: dict[str, Any]) -> None:
         self.document.editor_settings.numeric_linkage_enabled = bool(settings.get("numeric_linkage_enabled", False))
