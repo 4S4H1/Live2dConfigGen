@@ -49,6 +49,12 @@ class CanvasModernizationTests(unittest.TestCase):
             window = self._window(root)
             root_uuid = window.controller.document.nodes[0].uuid
             placeholder_uuid = window.controller.create_plan_topic(root_uuid, "纯备注")
+            topic = next(
+                topic
+                for topic in window.controller.ensure_plan_layout().topics
+                if topic.node_uuid == placeholder_uuid
+            )
+            topic.branch_color = "#2F80ED"
             window.controller.materialize_plan_topics()
             touch_uuid = window.controller.create_node("TouchIdle", (760.0, 160.0))
             self.app.processEvents()
@@ -191,6 +197,77 @@ class CanvasModernizationTests(unittest.TestCase):
             self.assertEqual({"x": 420.0, "y": 80.0}, child.ui_position)
             self._close(window)
 
+    def test_plan_edges_stay_attached_while_a_topic_moves(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            window = self._window(root)
+            controller = window.controller
+            root_uuid = controller.document.nodes[0].uuid
+            parent_uuid = controller.create_plan_topic(root_uuid, "parent")
+            child_uuid = controller.create_plan_topic(parent_uuid, "child")
+            window._switch_graph_view("plan")
+            self.app.processEvents()
+
+            child_item = window.plan_canvas.topic_items[child_uuid]
+            edge_item = next(
+                path_item
+                for path_item, _source, target in window.plan_canvas._curve_bindings
+                if target is child_item
+            )
+            old_end = edge_item.path().pointAtPercent(1.0)
+            child_item.setPos(child_item.pos() + QPointF(140.0, 90.0))
+            new_end = edge_item.path().pointAtPercent(1.0)
+            anchor = child_item.connection_point("left")
+
+            self.assertNotEqual((old_end.x(), old_end.y()), (new_end.x(), new_end.y()))
+            self.assertAlmostEqual(anchor.x(), new_end.x())
+            self.assertAlmostEqual(anchor.y(), new_end.y())
+            self._close(window)
+
+    def test_plan_drag_shows_a_dashed_preview_to_the_candidate_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            window = self._window(root)
+            controller = window.controller
+            root_uuid = controller.document.nodes[0].uuid
+            candidate_uuid = controller.create_plan_topic(root_uuid, "candidate")
+            dragged_uuid = controller.create_plan_topic(root_uuid, "dragged")
+            window._switch_graph_view("plan")
+            self.app.processEvents()
+
+            canvas = window.plan_canvas
+            candidate = canvas.topic_items[candidate_uuid]
+            dragged = canvas.topic_items[dragged_uuid]
+            original = QPointF(dragged.pos())
+            canvas._begin_topic_drag(dragged_uuid, original)
+            dragged.setPos(
+                QPointF(
+                    candidate.pos().x() + candidate.boundingRect().width() + 80.0,
+                    candidate.pos().y(),
+                )
+            )
+
+            intent = canvas._topic_drop_intent(
+                dragged_uuid,
+                QPointF(dragged.pos()),
+                original,
+            )
+            preview = canvas._drop_preview_item
+            self.assertIsNotNone(intent)
+            self.assertEqual("reparent", intent.action)
+            self.assertEqual(candidate_uuid, intent.new_parent_uuid)
+            self.assertTrue(preview.isVisible())
+            self.assertEqual(Qt.PenStyle.DashLine, preview.pen().style())
+            self.assertAlmostEqual(
+                candidate.connection_point("right").x(),
+                preview.path().pointAtPercent(0.0).x(),
+            )
+            self.assertAlmostEqual(
+                dragged.connection_point("left").x(),
+                preview.path().pointAtPercent(1.0).x(),
+            )
+            canvas._end_topic_drag()
+            self.assertFalse(preview.isVisible())
+            self._close(window)
+
     def test_plan_cards_size_to_content_and_keep_connection_anchors_on_edges(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             window = self._window(root)
@@ -233,7 +310,7 @@ class CanvasModernizationTests(unittest.TestCase):
                 )
             )
             self.assertEqual(
-                "TouchIdle123456-touch_idle987654-这是独立备注内容",
+                "TouchIdle123456-touch_idle987654-这是独立备注内容\n绿色：转换为 TouchIdle",
                 semantic_item.toolTip(),
             )
             self._close(window)
@@ -376,6 +453,12 @@ class CanvasModernizationTests(unittest.TestCase):
                 root_uuid,
                 "not-a-touchidle-rule",
             )
+            topic = next(
+                topic
+                for topic in window.controller.ensure_plan_layout().topics
+                if topic.node_uuid == placeholder_uuid
+            )
+            topic.branch_color = "#2F80ED"
             window.controller.materialize_plan_topics()
             self.app.processEvents()
 

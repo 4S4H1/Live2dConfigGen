@@ -489,7 +489,7 @@ class EditorToolService(QObject):
             ),
             self._definition(
                 "optimize_layout",
-                "Deterministically arrange unlocked formal-graph nodes.",
+                "Deterministically arrange unlocked and unfixed formal-graph nodes.",
                 {
                     "expected_revision": {"type": "integer", "minimum": 1},
                     "horizontal_spacing": {"type": "number", "minimum": 120},
@@ -1854,6 +1854,7 @@ class EditorToolService(QObject):
             formalization_state=str(
                 values.get("formalization_state", "formal") or "formal"
             ),
+            structure_dirty=bool(values.get("structure_dirty", False)),
         )
         topics.append(topic)
         self._normalize_plan_orders(topics)
@@ -1922,6 +1923,7 @@ class EditorToolService(QObject):
                 "collapsed": operation.get("collapsed", False),
                 "branch_color": operation.get("branch_color", ""),
                 "formalization_state": "draft",
+                "structure_dirty": True,
             },
             client_ids,
         )
@@ -1974,7 +1976,7 @@ class EditorToolService(QObject):
             topic.plan_title = str(
                 values.get("plan_title", values.get("title", "")) or ""
             )
-            if topic.formalization_state in {"virtual", "materialized"}:
+            if topic.formalization_state in {"formal", "virtual", "materialized"}:
                 topic.formalization_state = "draft"
             node = self._node(document, node_uuid)
             if node is not None and node.type == "PlanPlaceholder":
@@ -1987,6 +1989,7 @@ class EditorToolService(QObject):
             changed.append("collapsed")
         if "branch_color" in values:
             topic.branch_color = str(values["branch_color"] or "")
+            topic.formalization_state = "draft"
             changed.append("branch_color")
         if "parent_uuid" in values:
             raise ToolServiceError(
@@ -2002,6 +2005,10 @@ class EditorToolService(QObject):
                     "INVALID_ARGUMENT",
                     "Plan order must be an integer",
                 ) from exc
+            self._mark_plan_subtree_structure_dirty(
+                self._plan_topics(document),
+                node_uuid,
+            )
             changed.append("order")
         self._normalize_plan_orders(self._plan_topics(document))
         self._validate_plan_tree(document)
@@ -2074,6 +2081,10 @@ class EditorToolService(QObject):
         topic = self._plan_topic(document, node.uuid)
         old_parent = topic.parent_uuid
         topic.parent_uuid = parent.uuid if parent is not None else None
+        self._mark_plan_subtree_structure_dirty(
+            self._plan_topics(document),
+            node.uuid,
+        )
         if "order" in operation:
             try:
                 topic.order = max(0, int(operation["order"]))
@@ -2179,6 +2190,27 @@ class EditorToolService(QObject):
             group.sort(key=lambda topic: (int(topic.order), topic.node_uuid))
             for index, topic in enumerate(group):
                 topic.order = index
+
+    @staticmethod
+    def _mark_plan_subtree_structure_dirty(
+        topics: list[Any],
+        node_uuid: str,
+    ) -> None:
+        children: dict[str, list[str]] = defaultdict(list)
+        for topic in topics:
+            if topic.parent_uuid is not None:
+                children[topic.parent_uuid].append(topic.node_uuid)
+        pending = [node_uuid]
+        dirty: set[str] = set()
+        while pending:
+            current = pending.pop()
+            if current in dirty:
+                continue
+            dirty.add(current)
+            pending.extend(children.get(current, ()))
+        for topic in topics:
+            if topic.node_uuid in dirty:
+                topic.structure_dirty = True
 
     @staticmethod
     def _idle0_uuid(document: DocumentModel) -> str:
@@ -2361,7 +2393,7 @@ class EditorToolService(QObject):
             )
             total_height = (len(nodes) - 1) * vertical
             for index, node in enumerate(nodes):
-                if node.locked:
+                if node.locked or node.sequence_locked:
                     continue
                 new_position = (
                     72.0 + depth * horizontal,

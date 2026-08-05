@@ -78,6 +78,15 @@ class _PlanTopicCardSpec:
         return bool(self.semantic_draw_text or self.semantic_action_text)
 
 
+@dataclass(frozen=True)
+class _TopicDropIntent:
+    """The structural edit currently implied by a topic's drag position."""
+
+    action: str
+    new_parent_uuid: str | None = None
+    index: int | None = None
+
+
 class PlanTopicItem(QGraphicsObject):
     """A measured plan card which becomes a text-free outline in overview."""
 
@@ -159,6 +168,12 @@ class PlanTopicItem(QGraphicsObject):
         bounds = self.boundingRect()
         x = bounds.left() if side == "left" else bounds.right()
         return self.mapToScene(QPointF(x, bounds.center().y()))
+
+    def itemChange(self, change: QGraphicsItem.GraphicsItemChange, value: Any):
+        result = super().itemChange(change, value)
+        if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
+            self.view._on_topic_item_position_changed(self)
+        return result
 
     @staticmethod
     def _elide_semantic_segment(
@@ -434,6 +449,7 @@ class PlanTopicItem(QGraphicsObject):
         if not self.root and not self.virtual:
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             self.view._set_busy("topic_drag", True)
+            self.view._begin_topic_drag(self.node_uuid, self._drag_start)
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event: QGraphicsSceneMouseEvent) -> None:
@@ -445,6 +461,7 @@ class PlanTopicItem(QGraphicsObject):
         if not self.root and not self.virtual:
             self.setCursor(Qt.CursorShape.OpenHandCursor)
             self.view._set_busy("topic_drag", False)
+            self.view._end_topic_drag()
             if moved > 4.0:
                 self.view._handle_topic_drop(
                     self.node_uuid,
@@ -503,6 +520,15 @@ class PlanCanvasView(QGraphicsView):
         self.topic_items: dict[str, PlanTopicItem] = {}
         self.reference_items: list[QGraphicsPathItem] = []
         self.primary_items: list[QGraphicsPathItem] = []
+        self._curve_bindings: list[
+            tuple[QGraphicsPathItem, PlanTopicItem, PlanTopicItem]
+        ] = []
+        self._dragged_topic_uuid: str | None = None
+        self._drag_original_position = QPointF()
+        self._drop_preview_item = QGraphicsPathItem()
+        self._drop_preview_item.setZValue(-2.0)
+        self._drop_preview_item.hide()
+        self.scene_ref.addItem(self._drop_preview_item)
         self.stroke_items: dict[str, CanvasStrokeItem] = {}
         self.pen_color = "#2F80ED"
         self.pen_width = 4.0
@@ -751,6 +777,8 @@ class PlanCanvasView(QGraphicsView):
 
     def rebuild_scene(self, *, restore_view: bool = False) -> None:
         selected = set(self.selected_node_uuids())
+        self._end_topic_drag()
+        self._curve_bindings.clear()
         self._selection_guard = True
         try:
             for item in list(self.topic_items.values()):
@@ -916,15 +944,7 @@ class PlanCanvasView(QGraphicsView):
         *,
         dashed: bool,
     ) -> QGraphicsPathItem:
-        start = source.connection_point("right")
-        end = target.connection_point("left")
-        span = max(48.0, abs(end.x() - start.x()) * 0.52)
-        path = QPainterPath(start)
-        path.cubicTo(
-            QPointF(start.x() + span, start.y()),
-            QPointF(end.x() - span, end.y()),
-            end,
-        )
+        path = self._curve_path(source, target)
         item = QGraphicsPathItem(path)
         pen = QPen(color, 1.4 if dashed else 1.8)
         pen.setCosmetic(True)
@@ -938,7 +958,76 @@ class PlanCanvasView(QGraphicsView):
             item.setZValue(-6.0)
         item.setPen(pen)
         self.scene_ref.addItem(item)
+        self._curve_bindings.append((item, source, target))
         return item
+
+    @staticmethod
+    def _curve_path(
+        source: PlanTopicItem,
+        target: PlanTopicItem,
+    ) -> QPainterPath:
+        start = source.connection_point("right")
+        end = target.connection_point("left")
+        span = max(48.0, abs(end.x() - start.x()) * 0.52)
+        path = QPainterPath(start)
+        path.cubicTo(
+            QPointF(start.x() + span, start.y()),
+            QPointF(end.x() - span, end.y()),
+            end,
+        )
+        return path
+
+    def _on_topic_item_position_changed(self, moved: PlanTopicItem) -> None:
+        """Keep every visible edge attached while a topic is being dragged."""
+
+        for path_item, source, target in self._curve_bindings:
+            if moved is source or moved is target:
+                path_item.setPath(self._curve_path(source, target))
+        if self._dragged_topic_uuid == moved.node_uuid:
+            self._update_topic_drop_preview(moved)
+
+    def _begin_topic_drag(
+        self,
+        node_uuid: str,
+        original_position: QPointF,
+    ) -> None:
+        self._dragged_topic_uuid = node_uuid
+        self._drag_original_position = QPointF(original_position)
+        self._drop_preview_item.hide()
+        self._drop_preview_item.setPath(QPainterPath())
+
+    def _end_topic_drag(self) -> None:
+        self._dragged_topic_uuid = None
+        self._drop_preview_item.hide()
+        self._drop_preview_item.setPath(QPainterPath())
+
+    def _update_topic_drop_preview(self, moved: PlanTopicItem) -> None:
+        intent = self._topic_drop_intent(
+            moved.node_uuid,
+            QPointF(moved.pos()),
+            QPointF(self._drag_original_position),
+        )
+        if intent is None or intent.action != "reparent":
+            self._drop_preview_item.hide()
+            self._drop_preview_item.setPath(QPainterPath())
+            return
+        parent_item_uuid = (
+            PLAN_UNCONNECTED_UUID
+            if intent.new_parent_uuid is None
+            else intent.new_parent_uuid
+        )
+        parent = self.topic_items.get(parent_item_uuid)
+        if parent is None:
+            self._drop_preview_item.hide()
+            return
+        color = QColor(moved.color)
+        color.setAlpha(210)
+        pen = QPen(color, 2.0, Qt.PenStyle.DashLine)
+        pen.setCosmetic(True)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        self._drop_preview_item.setPen(pen)
+        self._drop_preview_item.setPath(self._curve_path(parent, moved))
+        self._drop_preview_item.show()
 
     def selected_node_uuids(self) -> list[str]:
         return [
@@ -1426,18 +1515,15 @@ class PlanCanvasView(QGraphicsView):
             return
         super().mouseReleaseEvent(event)
 
-    def _handle_topic_drop(
+    def _topic_drop_intent(
         self,
         node_uuid: str,
         dropped_position: QPointF,
         original_position: QPointF,
-    ) -> None:
+    ) -> _TopicDropIntent | None:
         topic = self.controller.plan_topic(node_uuid)
         if topic is None:
-            self.rebuild_scene()
-            return
-        # A plan drag has structural meaning only.  Formal positions belong to
-        # the formal canvas, so never call controller.move_node() here.
+            return None
         horizontal_delta = dropped_position.x() - original_position.x()
         if abs(horizontal_delta) < self.REORDER_HORIZONTAL_SLOP:
             siblings = self.controller.plan_children(topic.parent_uuid)
@@ -1456,15 +1542,24 @@ class PlanCanvasView(QGraphicsView):
                     < drop_y
                 )
             )
-            if not self.controller.reorder_plan_topic(node_uuid, index):
-                self.rebuild_scene()
-            return
+            try:
+                current_index = siblings.index(node_uuid)
+            except ValueError:
+                return None
+            if index == current_index:
+                return None
+            return _TopicDropIntent(
+                action="reorder",
+                new_parent_uuid=topic.parent_uuid,
+                index=index,
+            )
 
         source = self.topic_items.get(node_uuid)
         drop_center = dropped_position + (
             source.boundingRect().center() if source is not None else QPointF()
         )
-        candidates: list[tuple[float, PlanTopicItem]] = []
+        topics = plan_topic_map(self.controller.document)
+        candidates: list[tuple[float, PlanTopicItem, str | None]] = []
         for candidate in self.topic_items.values():
             if candidate.node_uuid == node_uuid:
                 continue
@@ -1474,12 +1569,54 @@ class PlanCanvasView(QGraphicsView):
             distance = math.hypot(
                 center.x() - drop_center.x(), center.y() - drop_center.y()
             )
-            candidates.append((distance, candidate))
+            new_parent = None if candidate.virtual else candidate.node_uuid
+            current = new_parent
+            valid = True
+            seen: set[str] = set()
+            while current is not None:
+                if current == node_uuid or current in seen:
+                    valid = False
+                    break
+                seen.add(current)
+                parent_topic = topics.get(current)
+                current = parent_topic.parent_uuid if parent_topic is not None else None
+            if valid:
+                candidates.append((distance, candidate, new_parent))
         candidates.sort(key=lambda item: item[0])
         if candidates and candidates[0][0] <= self.REPARENT_DISTANCE:
-            target = candidates[0][1]
-            new_parent = None if target.virtual else target.node_uuid
-            if not self.controller.reparent_plan_topic(node_uuid, new_parent):
+            new_parent = candidates[0][2]
+            if new_parent != topic.parent_uuid:
+                return _TopicDropIntent(
+                    action="reparent",
+                    new_parent_uuid=new_parent,
+                )
+        return None
+
+    def _handle_topic_drop(
+        self,
+        node_uuid: str,
+        dropped_position: QPointF,
+        original_position: QPointF,
+    ) -> None:
+        # A plan drag has structural meaning only.  Formal positions belong to
+        # the formal canvas, so never call controller.move_node() here.
+        intent = self._topic_drop_intent(
+            node_uuid,
+            dropped_position,
+            original_position,
+        )
+        if intent is not None and intent.action == "reorder":
+            if not self.controller.reorder_plan_topic(
+                node_uuid,
+                int(intent.index or 0),
+            ):
+                self.rebuild_scene()
+            return
+        if intent is not None and intent.action == "reparent":
+            if not self.controller.reparent_plan_topic(
+                node_uuid,
+                intent.new_parent_uuid,
+            ):
                 self.rebuild_scene()
             return
         self.rebuild_scene()

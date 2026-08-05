@@ -5187,8 +5187,27 @@ class NodeCanvasView(QGraphicsView):
         movable_node_ids = {
             node_uuid
             for node_uuid, node in layout_nodes.items()
-            if not node.locked and self.schema.nodes[node.type].category != "root"
+            if (
+                not node.locked
+                and not node.sequence_locked
+                and self.schema.nodes[node.type].category != "root"
+            )
         }
+        # Parameter rows are rendered as one visual table.  If any row is an
+        # anchor, keep the whole table together instead of tearing its rows
+        # apart around the fixed position.
+        for table in self.controller.parameter_tables():
+            table_node_ids = {
+                node_uuid
+                for node_uuid in table["node_uuids"]
+                if node_uuid in layout_nodes
+            }
+            if any(
+                layout_nodes[node_uuid].locked
+                or layout_nodes[node_uuid].sequence_locked
+                for node_uuid in table_node_ids
+            ):
+                movable_node_ids.difference_update(table_node_ids)
         if not movable_node_ids:
             self.controller.statusMessage.emit("当前没有可优化的连线布局")
             return False
@@ -5332,54 +5351,208 @@ class NodeCanvasView(QGraphicsView):
         for node_uuid in component:
             levels.setdefault(node_uuid, 0)
 
-        layout_roots, layout_children = self._build_layout_tree(component, incoming, levels, original_x, original_y)
-        row_spans: dict[str, int] = {}
-        for root_uuid in layout_roots:
-            self._subtree_row_span(root_uuid, layout_children, row_spans)
-        row_indices: dict[str, int] = {}
-        next_row = 0
-        for root_uuid in layout_roots:
-            self._assign_subtree_rows(root_uuid, next_row, layout_children, row_spans, row_indices)
-            next_row += row_spans[root_uuid]
-        for node_uuid in component:
-            if node_uuid not in row_indices:
-                row_indices[node_uuid] = next_row
-                next_row += 1
-
-        node_sizes = [self._layout_node_size(node_uuid) for node_uuid in component]
-        max_width = max(width for width, _height in node_sizes)
-        max_height = max(height for _width, height in node_sizes)
-        column_gap = max(90.0, max_width * 0.275)
-        row_stride = max(132.0, max_height + 56.0)
-        anchor_x = min(original_x.values())
-        anchor_y = min(original_y.values())
-        positions: dict[str, tuple[float, float]] = {}
-        row_y_positions: dict[int, float] = {}
+        layout_roots, layout_children = self._build_layout_tree(
+            component,
+            incoming,
+            levels,
+            original_x,
+            original_y,
+        )
+        preorder: dict[str, int] = {}
+        stack = list(reversed(layout_roots))
+        while stack:
+            node_uuid = stack.pop()
+            if node_uuid in preorder:
+                continue
+            preorder[node_uuid] = len(preorder)
+            stack.extend(reversed(layout_children.get(node_uuid, ())))
         for node_uuid in sorted(
             component,
-            key=lambda value: (
-                row_indices.get(value, 0),
-                levels.get(value, 0),
-                original_y[value],
-                original_x[value],
-            ),
+            key=lambda value: (original_y[value], original_x[value], value),
         ):
-            row_index = row_indices.get(node_uuid, 0)
-            if node_uuid in fixed_node_ids:
-                positions[node_uuid] = (original_x[node_uuid], original_y[node_uuid])
-                row_y_positions.setdefault(row_index, original_y[node_uuid])
-                continue
-            desired_y = row_y_positions.get(row_index)
-            if desired_y is None:
-                previous_rows = [row for row in row_y_positions if row < row_index]
-                previous_y = max((row_y_positions[row] for row in previous_rows), default=anchor_y - row_stride)
-                desired_y = max(anchor_y + row_index * row_stride, previous_y + row_stride)
-            x = anchor_x + levels.get(node_uuid, 0) * (max_width + column_gap)
-            y = self._resolve_non_overlapping_y(node_uuid, x, desired_y, occupied_rects)
-            row_y_positions.setdefault(row_index, y)
-            positions[node_uuid] = (x, row_y_positions[row_index])
-            occupied_rects.append(self._expanded_rect_for(node_uuid, positions[node_uuid]))
+            preorder.setdefault(node_uuid, len(preorder))
+
+        nodes_by_level: dict[int, list[str]] = defaultdict(list)
+        for node_uuid in component:
+            nodes_by_level[levels.get(node_uuid, 0)].append(node_uuid)
+        for layer in nodes_by_level.values():
+            layer.sort(
+                key=lambda node_uuid: (
+                    preorder[node_uuid],
+                    original_y[node_uuid],
+                    original_x[node_uuid],
+                    node_uuid,
+                )
+            )
+
+        node_size_by_uuid = {
+            node_uuid: self._layout_node_size(node_uuid)
+            for node_uuid in component
+        }
+        max_width = max(width for width, _height in node_size_by_uuid.values())
+        max_height = max(height for _width, height in node_size_by_uuid.values())
+        column_gap = max(90.0, max_width * 0.275)
+        # The obstacle rectangles add 26px on each side, so a 52px gap is the
+        # tightest deterministic stride that does not trigger incremental
+        # collision nudges and break horizontal main-path alignment.
+        row_stride = max(112.0, max_height + 52.0)
+        anchor_x = min(original_x.values())
+        anchor_y = min(original_y.values())
+        primary_parent = {
+            child_uuid: parent_uuid
+            for parent_uuid, child_ids in layout_children.items()
+            for child_uuid in child_ids
+        }
+
+        # Use one uniform row grid for the whole graph, while giving every
+        # first-level branch its own consecutive row band.  The band height is
+        # the largest number of parallel nodes on any depth inside that
+        # branch—not its leaf count.  Consequently a wide branch gets enough
+        # breathing room, unrelated branches never interleave, and the next
+        # branch starts on the immediately following row without an artificial
+        # extra group gap.
+        layout_groups: list[list[str]] = []
+        grouped_node_ids: set[str] = set(layout_roots)
+        for root_uuid in layout_roots:
+            for branch_root_uuid in layout_children.get(root_uuid, ()):
+                branch_nodes: list[str] = []
+                branch_stack = [branch_root_uuid]
+                while branch_stack:
+                    node_uuid = branch_stack.pop()
+                    if node_uuid in grouped_node_ids:
+                        continue
+                    grouped_node_ids.add(node_uuid)
+                    branch_nodes.append(node_uuid)
+                    branch_stack.extend(
+                        reversed(layout_children.get(node_uuid, ()))
+                    )
+                if branch_nodes:
+                    branch_nodes.sort(key=lambda node_uuid: preorder[node_uuid])
+                    layout_groups.append(branch_nodes)
+        for node_uuid in sorted(component, key=lambda value: preorder[value]):
+            if node_uuid not in grouped_node_ids:
+                grouped_node_ids.add(node_uuid)
+                layout_groups.append([node_uuid])
+
+        row_indices: dict[str, float] = {
+            root_uuid: (
+                (original_y[root_uuid] - anchor_y) / row_stride
+                if root_uuid in fixed_node_ids
+                else 0.0
+            )
+            for root_uuid in layout_roots
+        }
+        group_row_offset = 0
+        for group_nodes in layout_groups:
+            group_set = set(group_nodes)
+            group_layers: dict[int, list[str]] = defaultdict(list)
+            for node_uuid in group_nodes:
+                group_layers[levels.get(node_uuid, 0)].append(node_uuid)
+            for layer in group_layers.values():
+                layer.sort(
+                    key=lambda node_uuid: (
+                        preorder[node_uuid],
+                        original_y[node_uuid],
+                        original_x[node_uuid],
+                        node_uuid,
+                    )
+                )
+            group_row_count = max(len(layer) for layer in group_layers.values())
+
+            for level in sorted(group_layers):
+                layer = group_layers[level]
+                desired_rows: list[float] = []
+                for index, node_uuid in enumerate(layer):
+                    parent_uuid = primary_parent.get(node_uuid)
+                    if parent_uuid in group_set and parent_uuid in row_indices:
+                        desired_rows.append(
+                            row_indices[parent_uuid] - group_row_offset
+                        )
+                    else:
+                        desired_rows.append(float(index))
+                slots = self._ordered_compact_rows(
+                    desired_rows,
+                    group_row_count,
+                )
+                for node_uuid, slot in zip(layer, slots):
+                    row_indices[node_uuid] = (
+                        (original_y[node_uuid] - anchor_y) / row_stride
+                        if node_uuid in fixed_node_ids
+                        else float(group_row_offset + slot)
+                    )
+
+            group_row_offset += group_row_count
+
+        positions: dict[str, tuple[float, float]] = {}
+        for level in sorted(nodes_by_level):
+            layer = sorted(
+                nodes_by_level[level],
+                key=lambda node_uuid: (
+                    row_indices.get(node_uuid, 0.0),
+                    preorder[node_uuid],
+                ),
+            )
+            inherited_shifts = sorted(
+                positions[parent_uuid][1]
+                - (anchor_y + row_indices[parent_uuid] * row_stride)
+                for node_uuid in layer
+                if (parent_uuid := primary_parent.get(node_uuid)) in positions
+            )
+            layer_shift = (
+                inherited_shifts[(len(inherited_shifts) - 1) // 2]
+                if inherited_shifts
+                else 0.0
+            )
+            for node_uuid in layer:
+                if node_uuid in fixed_node_ids:
+                    positions[node_uuid] = (
+                        original_x[node_uuid],
+                        original_y[node_uuid],
+                    )
+                    continue
+                x = anchor_x + level * (max_width + column_gap)
+                desired_y = (
+                    anchor_y
+                    + row_indices[node_uuid] * row_stride
+                    + layer_shift
+                )
+                y = self._resolve_non_overlapping_y(
+                    node_uuid,
+                    x,
+                    desired_y,
+                    occupied_rects,
+                )
+                positions[node_uuid] = (x, y)
+                occupied_rects.append(
+                    self._expanded_rect_for(node_uuid, positions[node_uuid])
+                )
         return positions
+
+    @staticmethod
+    def _ordered_compact_rows(
+        desired_rows: list[float],
+        row_count: int,
+    ) -> list[int]:
+        """Project ordered nodes into the smallest shared row band."""
+
+        node_count = len(desired_rows)
+        if node_count == 0:
+            return []
+        row_count = max(node_count, int(row_count))
+        rows: list[int] = []
+        for index, desired in enumerate(desired_rows):
+            lower = index
+            upper = row_count - node_count + index
+            # Exact half rows prefer the upper slot so the first/main branch
+            # remains horizontally aligned and side branches expand downward.
+            rounded = int(math.floor(float(desired) + 0.499999))
+            if rows:
+                lower = max(lower, rows[-1] + 1)
+            rows.append(max(lower, min(upper, rounded)))
+        for index in range(node_count - 2, -1, -1):
+            rows[index] = min(rows[index], rows[index + 1] - 1)
+            rows[index] = max(index, rows[index])
+        return rows
 
     def _build_layout_tree(
         self,
@@ -5416,46 +5589,6 @@ class NodeCanvasView(QGraphicsView):
         for parent_uuid in layout_children:
             layout_children[parent_uuid].sort(key=lambda node_uuid: (original_y[node_uuid], original_x[node_uuid], node_uuid))
         return roots, layout_children
-
-    def _subtree_row_span(
-        self,
-        node_uuid: str,
-        layout_children: dict[str, list[str]],
-        row_spans: dict[str, int],
-    ) -> int:
-        if node_uuid in row_spans:
-            return row_spans[node_uuid]
-        child_ids = layout_children.get(node_uuid, [])
-        if not child_ids:
-            row_spans[node_uuid] = 1
-            return 1
-        if len(child_ids) == 1:
-            span = self._subtree_row_span(child_ids[0], layout_children, row_spans)
-            row_spans[node_uuid] = span
-            return span
-        span = sum(self._subtree_row_span(child_uuid, layout_children, row_spans) for child_uuid in child_ids)
-        row_spans[node_uuid] = max(1, span)
-        return row_spans[node_uuid]
-
-    def _assign_subtree_rows(
-        self,
-        node_uuid: str,
-        start_row: int,
-        layout_children: dict[str, list[str]],
-        row_spans: dict[str, int],
-        row_indices: dict[str, int],
-    ) -> None:
-        row_indices[node_uuid] = start_row
-        child_ids = layout_children.get(node_uuid, [])
-        if not child_ids:
-            return
-        if len(child_ids) == 1:
-            self._assign_subtree_rows(child_ids[0], start_row, layout_children, row_spans, row_indices)
-            return
-        current_row = start_row
-        for child_uuid in child_ids:
-            self._assign_subtree_rows(child_uuid, current_row, layout_children, row_spans, row_indices)
-            current_row += row_spans[child_uuid]
 
     def _build_comment_attachments(self, components: list[list[str]]) -> dict[str, tuple[str, float, float]]:
         attachments: dict[str, tuple[str, float, float]] = {}

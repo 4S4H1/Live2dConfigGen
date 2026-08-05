@@ -3032,7 +3032,38 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
-    def test_optimize_layout_reserves_rows_for_branch_subtrees(self) -> None:
+    def test_optimize_layout_keeps_sequence_fixed_nodes_in_place(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            _set_ready_controller_meta(window.controller, char_name="fixed-layout")
+
+            first = window.controller.create_node("TouchIdle", (420, 280))
+            fixed = window.controller.create_node("TouchDrag", (760, 460))
+            third = window.controller.create_node("TouchIdle", (80, 120))
+            window.controller.add_connection(first, fixed)
+            window.controller.add_connection(fixed, third)
+            fixed_before = dict(window.controller.get_node(fixed).ui_position)
+            first_before = dict(window.controller.get_node(first).ui_position)
+            third_before = dict(window.controller.get_node(third).ui_position)
+            self.assertTrue(
+                window.controller.set_nodes_sequence_locked([fixed], True)
+            )
+
+            changed = window.canvas.optimize_connection_layout()
+
+            self.assertTrue(changed)
+            self.assertEqual(
+                fixed_before,
+                window.controller.get_node(fixed).ui_position,
+            )
+            self.assertTrue(
+                first_before != window.controller.get_node(first).ui_position
+                or third_before != window.controller.get_node(third).ui_position
+            )
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_optimize_layout_keeps_main_paths_aligned_and_branches_ordered(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             _set_ready_controller_meta(window.controller)
@@ -3064,8 +3095,100 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             self.assertAlmostEqual(branch_a_node.ui_position["y"], branch_a_top_node.ui_position["y"], delta=1.0)
             self.assertGreater(branch_a_bottom_node.ui_position["y"], branch_a_top_node.ui_position["y"] + 50.0)
             self.assertGreater(branch_b_node.ui_position["y"], branch_a_bottom_node.ui_position["y"] + 50.0)
-            self.assertAlmostEqual(branch_b_node.ui_position["y"], branch_b_child_node.ui_position["y"], delta=1.0)
+            self.assertLess(
+                abs(
+                    branch_b_node.ui_position["y"]
+                    - branch_b_child_node.ui_position["y"]
+                ),
+                100.0,
+            )
             self.assertLess(branch_a_node.ui_position["x"] - root_node.ui_position["x"], 850.0)
+            window._mark_saved_checkpoint(saved=True)
+        window.close()
+
+    def test_optimize_layout_uses_uniform_rows_and_consecutive_branch_bands(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            _set_ready_controller_meta(window.controller)
+            root_uuid = window.controller.document.nodes[0].uuid
+            root = window.controller.get_node(root_uuid)
+            root.ui_position = {"x": 80.0, "y": 80.0}
+            branches = [
+                window.controller.create_node(
+                    "TouchIdle",
+                    (520.0, 80.0 + index * 240.0),
+                )
+                for index in range(8)
+            ]
+            for branch_uuid in branches:
+                window.controller.add_connection(root_uuid, branch_uuid)
+            crowded_children = [
+                window.controller.create_node(
+                    "TouchDrag",
+                    (960.0, 80.0 + index * 240.0),
+                )
+                for index in range(6)
+            ]
+            for child_uuid in crowded_children:
+                window.controller.add_connection(branches[1], child_uuid)
+            for branch_uuid in (branches[4], branches[6]):
+                child_uuid = window.controller.create_node(
+                    "TouchIdle",
+                    (960.0, 1800.0),
+                )
+                window.controller.add_connection(branch_uuid, child_uuid)
+
+            changed = window.canvas.optimize_connection_layout()
+
+            self.assertTrue(changed)
+            connected_ids = {root_uuid, *branches, *crowded_children}
+            connected_ids.update(
+                edge.to_uuid
+                for edge in window.controller.document.connections
+                if edge.from_uuid in {branches[4], branches[6]}
+            )
+            maximum_height = max(
+                window.canvas._layout_node_size(node_uuid)[1]
+                for node_uuid in connected_ids
+            )
+            compact_row_stride = max(112.0, maximum_height + 52.0)
+            branch_rows = [
+                window.controller.get_node(node_uuid).ui_position["y"]
+                for node_uuid in branches
+            ]
+            crowded_rows = sorted(
+                window.controller.get_node(node_uuid).ui_position["y"]
+                for node_uuid in crowded_children
+            )
+
+            self.assertAlmostEqual(
+                compact_row_stride,
+                branch_rows[1] - branch_rows[0],
+                delta=1.0,
+            )
+            self.assertAlmostEqual(branch_rows[1], crowded_rows[0], delta=1.0)
+            for first_y, second_y in zip(crowded_rows, crowded_rows[1:]):
+                self.assertAlmostEqual(
+                    compact_row_stride,
+                    second_y - first_y,
+                    delta=1.0,
+                )
+            self.assertAlmostEqual(
+                compact_row_stride,
+                branch_rows[2] - crowded_rows[-1],
+                delta=1.0,
+            )
+            for first_y, second_y in zip(branch_rows[2:], branch_rows[3:]):
+                self.assertAlmostEqual(
+                    compact_row_stride,
+                    second_y - first_y,
+                    delta=1.0,
+                )
+            self.assertAlmostEqual(
+                compact_row_stride * 12.0,
+                branch_rows[-1] - branch_rows[0],
+                delta=1.0,
+            )
             window._mark_saved_checkpoint(saved=True)
         window.close()
 

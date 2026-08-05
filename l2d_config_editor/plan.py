@@ -115,6 +115,24 @@ def _valid_color(value: Any) -> str:
     return text.upper() if _COLOR_PATTERN.fullmatch(text) else ""
 
 
+def _formal_plan_color(node: NodeRecord) -> str:
+    """Return the plan semantic color implied by a real formal node."""
+
+    if node.type in {"TouchIdle", "ReturnDefaultIdle"}:
+        return PLAN_TOUCHIDLE_COLOR
+    if node.type in {"TouchDrag", "ParameterTrigger"}:
+        return PLAN_TOUCHDRAG_COLOR
+    return ""
+
+
+def _formal_plan_title(node: NodeRecord) -> str:
+    """Return the editable formal-card title shared with the plan view."""
+
+    if node.type == "Idle0":
+        return ""
+    return str(node.fields.get("tips", "") or "").strip()[:PLAN_TITLE_MAX_LENGTH]
+
+
 class _DisjointSet:
     """Small union/find helper used while selecting a stable primary forest."""
 
@@ -180,6 +198,7 @@ def normalize_plan_layout(document: DocumentModel) -> PlanLayout:
 
     nodes = [node for node in document.nodes if node.type != "DrawFrame"]
     node_ids = {node.uuid for node in nodes}
+    nodes_by_uuid = {node.uuid: node for node in nodes}
     node_index = _node_index(document)
     root_uuid = plan_root_uuid(document)
     old_layout = document.plan_layout if isinstance(document.plan_layout, PlanLayout) else PlanLayout()
@@ -318,36 +337,62 @@ def normalize_plan_layout(document: DocumentModel) -> PlanLayout:
         colors[root_uuid] = PLAN_ROOT_COLOR
     top_level = list(children.get(root_uuid, ())) + list(children.get(None, ()))
     for index, node_uuid in enumerate(top_level):
-        saved = _valid_color(existing.get(node_uuid).branch_color if node_uuid in existing else "")
-        colors[node_uuid] = saved or PLAN_BRANCH_COLORS[index % len(PLAN_BRANCH_COLORS)]
+        old = existing.get(node_uuid)
+        node = nodes_by_uuid.get(node_uuid)
+        saved = _valid_color(old.branch_color if old else "")
+        implied = _formal_plan_color(node) if node is not None else ""
+        # A draft topic's green/purple color is an explicit plan edit.  For a
+        # newly discovered or old formal node, the real node type wins over
+        # the legacy decorative branch palette.
+        if old is not None and old.formalization_state == "draft" and saved in {
+            PLAN_TOUCHIDLE_COLOR,
+            PLAN_TOUCHDRAG_COLOR,
+        }:
+            colors[node_uuid] = saved
+        else:
+            colors[node_uuid] = implied or saved or PLAN_BRANCH_COLORS[index % len(PLAN_BRANCH_COLORS)]
         queue = deque([node_uuid])
         while queue:
             parent_uuid = queue.popleft()
             for child_uuid in children.get(parent_uuid, ()):
-                saved = _valid_color(
-                    existing.get(child_uuid).branch_color
-                    if child_uuid in existing
-                    else ""
-                )
-                colors[child_uuid] = saved or colors[parent_uuid]
+                old = existing.get(child_uuid)
+                node = nodes_by_uuid.get(child_uuid)
+                saved = _valid_color(old.branch_color if old else "")
+                implied = _formal_plan_color(node) if node is not None else ""
+                if old is not None and old.formalization_state == "draft" and saved in {
+                    PLAN_TOUCHIDLE_COLOR,
+                    PLAN_TOUCHDRAG_COLOR,
+                }:
+                    colors[child_uuid] = saved
+                else:
+                    colors[child_uuid] = implied or saved or colors[parent_uuid]
                 queue.append(child_uuid)
 
     topics: list[PlanTopicRecord] = []
     for node in nodes:
         old = existing.get(node.uuid)
+        state = (
+            old.formalization_state
+            if old and old.formalization_state in PLAN_FORMALIZATION_STATES
+            else "formal"
+        )
+        # Formal-owned topics mirror their real card title.  Materialized and
+        # draft topics keep the plan title as their source of truth.
+        plan_title = (
+            _formal_plan_title(node)
+            if old is None or state == "formal"
+            else str(old.plan_title)[:PLAN_TITLE_MAX_LENGTH]
+        )
         topics.append(
             PlanTopicRecord(
                 node_uuid=node.uuid,
                 parent_uuid=parents.get(node.uuid),
                 order=normalized_order.get(node.uuid, 0),
-                plan_title=(str(old.plan_title)[:PLAN_TITLE_MAX_LENGTH] if old else ""),
+                plan_title=plan_title,
                 collapsed=bool(old.collapsed) if old else False,
                 branch_color=colors.get(node.uuid, PLAN_ROOT_COLOR),
-                formalization_state=(
-                    old.formalization_state
-                    if old and old.formalization_state in PLAN_FORMALIZATION_STATES
-                    else "formal"
-                ),
+                formalization_state=state,
+                structure_dirty=bool(old.structure_dirty) if old else False,
             )
         )
     topics.sort(
@@ -562,6 +607,7 @@ def serialize_plan_layout(document: DocumentModel) -> dict[str, Any]:
                 "collapsed": bool(topic.collapsed),
                 "branch_color": topic.branch_color,
                 "formalization_state": topic.formalization_state,
+                "structure_dirty": bool(topic.structure_dirty),
             }
             for topic in layout.topics
         ],
@@ -598,6 +644,10 @@ def load_plan_layout(
         collapsed = raw.get("collapsed", False)
         branch_color = raw.get("branch_color", "")
         formalization_state = raw.get("formalization_state", "formal")
+        structure_dirty = raw.get(
+            "structure_dirty",
+            formalization_state == "draft",
+        )
         if not isinstance(node_uuid, str) or not node_uuid or node_uuid in seen:
             raise ValueError("Plan topic node_uuid is invalid or duplicated")
         if parent_uuid is not None and (not isinstance(parent_uuid, str) or not parent_uuid):
@@ -614,6 +664,8 @@ def load_plan_layout(
             raise ValueError("Plan topic formalization state is missing")
         if formalization_state not in PLAN_FORMALIZATION_STATES:
             raise ValueError("Plan topic formalization state is invalid")
+        if not isinstance(structure_dirty, bool):
+            raise ValueError("Plan topic structure dirty flag is invalid")
         seen.add(node_uuid)
         topics.append(
             PlanTopicRecord(
@@ -624,6 +676,7 @@ def load_plan_layout(
                 collapsed=collapsed,
                 branch_color=_valid_color(branch_color),
                 formalization_state=formalization_state,
+                structure_dirty=structure_dirty,
             )
         )
     raw_view = payload.get("view", {})

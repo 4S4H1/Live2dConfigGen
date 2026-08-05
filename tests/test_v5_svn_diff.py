@@ -469,6 +469,88 @@ class PlanFormalizationV5Tests(unittest.TestCase):
         self.assertEqual("尚未确定", controller.get_node(node_uuid).fields["tips"])
         self.assertEqual("materialized", controller.plan_topic(node_uuid).formalization_state)
 
+    def test_formal_nodes_reverse_sync_type_color_and_title_to_plan(self) -> None:
+        controller = ready_controller()
+        idle_uuid = controller.create_node("TouchIdle", (777.0, 333.0))
+        drag_uuid = controller.create_node("TouchDrag", (999.0, 555.0))
+        controller.ensure_plan_layout()
+
+        controller.update_field(idle_uuid, "tips", "head pat", "advanced")
+        controller.update_field(drag_uuid, "tips", "sleeve pull", "advanced")
+
+        idle_topic = controller.plan_topic(idle_uuid)
+        drag_topic = controller.plan_topic(drag_uuid)
+        self.assertEqual(PLAN_TOUCHIDLE_COLOR, idle_topic.branch_color.upper())
+        self.assertEqual(PLAN_TOUCHDRAG_COLOR, drag_topic.branch_color.upper())
+        self.assertEqual("head pat", idle_topic.plan_title)
+        self.assertEqual("sleeve pull", drag_topic.plan_title)
+        self.assertEqual("formal", idle_topic.formalization_state)
+        self.assertEqual("formal", drag_topic.formalization_state)
+
+    def test_old_formal_topic_uses_real_type_and_title(self) -> None:
+        controller = ready_controller()
+        node_uuid = controller.create_node("TouchIdle", (321.0, 654.0))
+        node = controller.get_node(node_uuid)
+        node.fields["tips"] = "legacy title"
+        controller.ensure_plan_layout()
+        topic = next(
+            item
+            for item in controller.document.plan_layout.topics
+            if item.node_uuid == node_uuid
+        )
+        topic.branch_color = PLAN_TOUCHDRAG_COLOR
+        topic.plan_title = "stale title"
+        topic.formalization_state = "formal"
+
+        controller.ensure_plan_layout()
+
+        topic = controller.plan_topic(node_uuid)
+        self.assertEqual(PLAN_TOUCHIDLE_COLOR, topic.branch_color.upper())
+        self.assertEqual("legacy title", topic.plan_title)
+
+    def test_switching_views_preserves_unchanged_formal_positions(self) -> None:
+        controller = ready_controller()
+        root_uuid = controller.document.nodes[0].uuid
+        node_uuid = controller.create_plan_topic(root_uuid, "head pat")
+        controller.materialize_plan_topics()
+        controller._move_node(node_uuid, (1234.0, 876.0))
+
+        controller.ensure_plan_layout()
+        controller.materialize_plan_topics()
+
+        node = controller.get_node(node_uuid)
+        self.assertEqual(
+            {"x": 1234.0, "y": 876.0},
+            node.ui_position,
+        )
+        self.assertFalse(controller.plan_topic(node_uuid).structure_dirty)
+
+    def test_plan_reorder_marks_only_the_moved_subtree_for_layout(self) -> None:
+        controller = ready_controller()
+        root_uuid = controller.document.nodes[0].uuid
+        first_uuid = controller.create_plan_topic(root_uuid, "first")
+        second_uuid = controller.create_plan_topic(root_uuid, "second")
+        child_uuid = controller.create_plan_topic(first_uuid, "child")
+        controller.materialize_plan_topics()
+        controller._move_node(first_uuid, (1200.0, 100.0))
+        controller._move_node(second_uuid, (1300.0, 200.0))
+        controller._move_node(child_uuid, (1400.0, 300.0))
+
+        self.assertTrue(controller.reorder_plan_topic(first_uuid, 1))
+        self.assertTrue(controller.plan_topic(first_uuid).structure_dirty)
+        self.assertTrue(controller.plan_topic(child_uuid).structure_dirty)
+        self.assertFalse(controller.plan_topic(second_uuid).structure_dirty)
+        controller.materialize_plan_topics()
+
+        self.assertEqual(
+            {"x": 1300.0, "y": 200.0},
+            controller.get_node(second_uuid).ui_position,
+        )
+        self.assertNotEqual(
+            {"x": 1200.0, "y": 100.0},
+            controller.get_node(first_uuid).ui_position,
+        )
+
     def test_v4_migration_marks_existing_topics_formal_without_heuristics(self) -> None:
         controller = ready_controller()
         root_uuid = controller.document.nodes[0].uuid
@@ -478,6 +560,7 @@ class PlanFormalizationV5Tests(unittest.TestCase):
         payload.pop("plan_canvas_strokes", None)
         for topic in payload["plan_layout"]["topics"]:
             topic.pop("formalization_state", None)
+            topic.pop("structure_dirty", None)
 
         loaded = load_document_payload(controller.schema, payload)
 

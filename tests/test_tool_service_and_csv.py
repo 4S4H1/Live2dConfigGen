@@ -289,6 +289,38 @@ class EditorToolServiceTests(unittest.TestCase):
         graph["nodes"][0]["type"] = "Comment"
         self.assertEqual("Idle0", self.controller.document.nodes[0].type)
 
+    def test_optimize_layout_tool_skips_sequence_fixed_nodes(self) -> None:
+        self.controller.document.meta.author = "tester"
+        self.controller.document.meta.ship_skin_id = 100
+        self.controller.document.meta.memo = "asset"
+        self.controller.document.meta.CharName = "character"
+        self.controller.refresh_derived()
+        first_uuid = self.controller.create_node("TouchIdle", (640.0, 280.0))
+        fixed_uuid = self.controller.create_node("TouchDrag", (930.0, 510.0))
+        self.controller.add_connection(first_uuid, fixed_uuid)
+        self.assertTrue(
+            self.controller.set_nodes_sequence_locked([fixed_uuid], True)
+        )
+        fixed_before = dict(self.controller.get_node(fixed_uuid).ui_position)
+
+        result = self.invoke(
+            "optimize_layout",
+            expected_revision=self.service.revision,
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(
+            fixed_before,
+            self.controller.get_node(fixed_uuid).ui_position,
+        )
+        self.assertNotIn(
+            fixed_uuid,
+            {
+                move["node_uuid"]
+                for move in result["result"]["moves"]
+            },
+        )
+
     def test_tool_results_above_the_old_two_mib_limit_are_returned(self) -> None:
         large_value = "x" * (2 * 1024 * 1024 + 1)
         with patch.object(

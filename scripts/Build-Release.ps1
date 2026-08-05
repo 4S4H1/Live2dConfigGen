@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
     [string]$KeyDirectory = "$env:LOCALAPPDATA\4S4H1\release-keys",
-    [string]$Notes = "1.3.1：计划图自适应卡片、独立树布局与可读性缩放优化。",
+    [string]$Notes = "1.4.0：计划图双向同步、自动编号、固定序号、拖动预览和分支分组式连线布局。",
     [string]$MinimumSupportedVersion = "1.0.0"
 )
 

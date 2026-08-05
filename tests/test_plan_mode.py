@@ -20,7 +20,6 @@ from l2d_config_editor.logic import (
     export_document_dict,
     get_default_schema,
     load_document,
-    node_title,
     parameter_table_id,
     save_document,
 )
@@ -298,7 +297,7 @@ class PlanModelTests(unittest.TestCase):
             controller.plan_topic(child_uuid).parent_uuid,
         )
 
-    def test_plan_title_falls_back_to_canonical_formal_title(self) -> None:
+    def test_formal_card_title_is_shared_with_the_plan_topic(self) -> None:
         controller = make_ready_controller()
         node_uuid = controller.create_node("TouchIdle", (100.0, 100.0))
         node = controller.get_node(node_uuid)
@@ -308,7 +307,7 @@ class PlanModelTests(unittest.TestCase):
         controller.ensure_plan_layout()
 
         self.assertEqual(
-            node_title(controller.schema, node),
+            "说明",
             controller.plan_title(node_uuid),
         )
 

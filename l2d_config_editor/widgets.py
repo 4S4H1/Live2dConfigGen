@@ -903,7 +903,10 @@ class NodeFormWidget(QFrame):
         return rows
 
     def commit_pending_edits(self) -> None:
-        for binding in self._bindings.values():
+        # Committing a field can change a node's visible schema and rebuild
+        # this form.  Iterate a snapshot so close/save does not mutate the
+        # bindings dictionary while it is being traversed.
+        for binding in tuple(self._bindings.values()):
             widget = binding.widget
             if isinstance(widget, NumericLineEdit):
                 widget._emit_commit()

@@ -457,6 +457,27 @@ class EditorController(QObject):
             if topic.parent_uuid == parent_uuid and topic.node_uuid in order_by_uuid:
                 topic.order = order_by_uuid[topic.node_uuid]
 
+    @staticmethod
+    def _mark_plan_subtree_structure_dirty(
+        layout: PlanLayout,
+        node_uuid: str,
+    ) -> None:
+        children: dict[str, list[str]] = {}
+        for topic in layout.topics:
+            if topic.parent_uuid is not None:
+                children.setdefault(topic.parent_uuid, []).append(topic.node_uuid)
+        pending = [node_uuid]
+        dirty: set[str] = set()
+        while pending:
+            current = pending.pop()
+            if current in dirty:
+                continue
+            dirty.add(current)
+            pending.extend(children.get(current, ()))
+        for topic in layout.topics:
+            if topic.node_uuid in dirty:
+                topic.structure_dirty = True
+
     def create_plan_topic(
         self,
         parent_uuid: str | None,
@@ -509,6 +530,7 @@ class EditorController(QObject):
                 collapsed=False,
                 branch_color=PLAN_TOUCHIDLE_COLOR,
                 formalization_state="draft",
+                structure_dirty=True,
             )
         )
         siblings.insert(insert_index, node.uuid)
@@ -552,7 +574,7 @@ class EditorController(QObject):
         for record in new_layout.topics:
             if record.node_uuid == node_uuid:
                 record.plan_title = resolved
-                if record.formalization_state in {"virtual", "materialized"}:
+                if record.formalization_state in {"formal", "virtual", "materialized"}:
                     record.formalization_state = "draft"
                 break
         node = self.get_node(node_uuid)
@@ -600,7 +622,10 @@ class EditorController(QObject):
                 # materialized nodes as well so title edits, plan reordering,
                 # and newly added siblings cannot leave stale formal fields or
                 # old sequence numbers behind.
-                topic.node_uuid in inferred
+                (
+                    topic.node_uuid in inferred
+                    and topic.formalization_state != "formal"
+                )
                 or (
                     topic.formalization_state in {"draft", "virtual"}
                     and (
@@ -744,7 +769,11 @@ class EditorController(QObject):
                     float(old_node.ui_position.get("x", 0.0)),
                     float(old_node.ui_position.get("y", 0.0)),
                 )
-                if old_node.locked or planned_position is None
+                if (
+                    old_node.locked
+                    or not topic.structure_dirty
+                    or planned_position is None
+                )
                 else planned_position
             )
             if parsed is None and semantic is None:
@@ -763,6 +792,7 @@ class EditorController(QObject):
                 replacement.manual_fields.clear()
                 apply_node_appearance_defaults(self.schema, replacement)
                 topic.formalization_state = "virtual"
+                topic.structure_dirty = False
             else:
                 replacement_type = semantic or "TouchIdle"
                 replacement = create_node(
@@ -856,6 +886,7 @@ class EditorController(QObject):
                         replacement.fields["action_trigger_active_reserved_ui"] = ""
                         replacement.manual_fields.add("action_trigger")
                 topic.formalization_state = "materialized"
+                topic.structure_dirty = False
             staging.nodes.append(replacement)
             new_nodes.append(replacement)
         # Compute the same derived IDs/auto fields the command will install so
@@ -968,6 +999,7 @@ class EditorController(QObject):
             force_generated=False,
         )
         topic.formalization_state = "materialized"
+        topic.structure_dirty = False
         self.undo_stack.push(
             MaterializePlanTopicsCommand(
                 self,
@@ -1070,6 +1102,7 @@ class EditorController(QObject):
         old_layout = self.document.plan_layout.clone()
         new_layout = old_layout.clone()
         self._set_plan_sibling_order(new_layout, topic.parent_uuid, siblings)
+        self._mark_plan_subtree_structure_dirty(new_layout, node_uuid)
         self.undo_stack.push(
             SetPlanLayoutCommand(self, old_layout, new_layout, label="重排计划主题")
         )
@@ -1114,6 +1147,7 @@ class EditorController(QObject):
                 record.parent_uuid = new_parent_uuid
                 record.order = resolved_index
                 break
+        self._mark_plan_subtree_structure_dirty(new_layout, node_uuid)
         self._set_plan_sibling_order(new_layout, topic.parent_uuid, old_siblings)
         self._set_plan_sibling_order(new_layout, new_parent_uuid, new_siblings)
 
@@ -1860,6 +1894,7 @@ class EditorController(QObject):
                 "collapsed": bool(topics[node.uuid].collapsed),
                 "branch_color": topics[node.uuid].branch_color,
                 "formalization_state": topics[node.uuid].formalization_state,
+                "structure_dirty": bool(topics[node.uuid].structure_dirty),
             }
             for node in selected_nodes
             if node.uuid in topics
@@ -1952,6 +1987,10 @@ class EditorController(QObject):
             collapsed = item.get("collapsed", False)
             branch_color = item.get("branch_color", "")
             formalization_state = item.get("formalization_state", "formal")
+            structure_dirty = item.get(
+                "structure_dirty",
+                formalization_state == "draft",
+            )
             if (
                 not isinstance(node_uuid, str)
                 or not node_uuid
@@ -1975,6 +2014,8 @@ class EditorController(QObject):
                 "materialized",
             }:
                 raise ValueError("节点剪贴板计划正式化状态无效")
+            if not isinstance(structure_dirty, bool):
+                raise ValueError("Plan topic structure dirty flag is invalid")
             if (
                 not isinstance(branch_color, str)
                 or (
@@ -2000,6 +2041,7 @@ class EditorController(QObject):
                     "collapsed": collapsed,
                     "branch_color": branch_color.upper(),
                     "formalization_state": formalization_state,
+                    "structure_dirty": structure_dirty,
                 }
             )
 
@@ -2181,6 +2223,7 @@ class EditorController(QObject):
                         if item.get("formalization_state") in {"draft", "virtual"}
                         else str(item.get("formalization_state", "formal"))
                     ),
+                    structure_dirty=bool(item.get("structure_dirty", False)),
                 )
             )
             pair = (parent_uuid, new_uuid_value)
@@ -2395,6 +2438,21 @@ class EditorController(QObject):
     def _set_field(self, node_uuid: str, key: str, value: Any, source_mode: str) -> None:
         self._set_fields(node_uuid, {key: value}, source_mode, changed_key=key)
 
+    def _sync_plan_title_from_formal_node(self, node: NodeRecord) -> bool:
+        """Mirror the visible formal-card note into its plan topic."""
+
+        if node.type not in function_node_types(self.schema):
+            return False
+        title = str(node.fields.get("tips", "") or "").strip()[:PLAN_TITLE_MAX_LENGTH]
+        for topic in self.document.plan_layout.topics:
+            if topic.node_uuid != node.uuid:
+                continue
+            if topic.plan_title == title:
+                return False
+            topic.plan_title = title
+            return True
+        return False
+
     def _set_fields(
         self,
         node_uuid: str,
@@ -2435,12 +2493,19 @@ class EditorController(QObject):
         ):
             infer_manual_fields(self.schema, node, self.document)
         apply_auto_rules(self.schema, self.document, node, source_mode=source_mode, changed_key=effective_changed_key)
+        plan_title_changed = (
+            "tips" in changed_keys
+            and self._sync_plan_title_from_formal_node(node)
+        )
         reassign_function_ids(self.schema, self.document)
         self.nodeUpdated.emit(node_uuid)
+        if plan_title_changed:
+            self.planLayoutChanged.emit()
         self.refresh_derived()
 
     def _set_many_fields(self, node_values: dict[str, dict[str, Any]], source_mode: str) -> None:
         changed_node_uuids: list[str] = []
+        plan_title_changed = False
         for node_uuid, values in node_values.items():
             node = self.get_node(node_uuid)
             if not node or not values:
@@ -2476,12 +2541,19 @@ class EditorController(QObject):
             ):
                 infer_manual_fields(self.schema, node, self.document)
             apply_auto_rules(self.schema, self.document, node, source_mode=source_mode, changed_key=effective_changed_key)
+            if "tips" in changed_keys:
+                plan_title_changed = (
+                    self._sync_plan_title_from_formal_node(node)
+                    or plan_title_changed
+                )
             changed_node_uuids.append(node_uuid)
         if not changed_node_uuids:
             return
         reassign_function_ids(self.schema, self.document)
         for node_uuid in changed_node_uuids:
             self.nodeUpdated.emit(node_uuid)
+        if plan_title_changed:
+            self.planLayoutChanged.emit()
         self.refresh_derived()
 
     def _set_node_locked(self, node_uuid: str, locked: bool) -> None:

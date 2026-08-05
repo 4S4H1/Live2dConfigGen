@@ -120,6 +120,7 @@ def canonical_graph_snapshot(document: DocumentModel) -> dict[str, dict[str, Any
             "collapsed": bool(topic.collapsed),
             "branch_color": topic.branch_color,
             "formalization_state": topic.formalization_state,
+            "structure_dirty": bool(topic.structure_dirty),
         }
         for topic in document.plan_layout.topics
     }

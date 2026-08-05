@@ -539,7 +539,9 @@ class InstallerRuntimeTests(unittest.TestCase):
 
             self.assertEqual(0, upgraded.returncode)
             self.assertGreaterEqual(elapsed, 0.75)
-            self.assertLess(elapsed, 6.5)
+            # Include managed-manifest PowerShell startup time on slower
+            # Windows hosts while retaining a bound below the 15 s timeout.
+            self.assertLess(elapsed, 9.0)
             self.assertTrue((target / "payload.txt").is_file())
             self.assertFalse(Path(f"{target}.__old").exists())
 

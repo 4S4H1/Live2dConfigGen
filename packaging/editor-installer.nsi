@@ -211,7 +211,7 @@ Function ${PREFIX}WriteManagedManifest
   Exch $R0
   System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_MANIFEST_ROOT", w "$R0") i.r1'
   System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_MANIFEST_NAME", w "${MANAGED_MANIFEST_NAME}") i.r1'
-  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -File "${SCRIPT}" -Mode WriteManifest'
+  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${SCRIPT}" -Mode WriteManifest'
   Pop $R1
   Pop $R2
   System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_MANIFEST_ROOT", w "") i.r3'
@@ -231,7 +231,7 @@ Function ${PREFIX}MergeUnknownFiles
   System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_MANIFEST_NAME", w "${MANAGED_MANIFEST_NAME}") i.r2'
   System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_KNOWN_FILES", w "${OWNER_MARKER_NAME}|Uninstall.exe|L2DConfigEditor.exe|L2DUpdateHost.exe") i.r2'
   System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_PRESERVE_SUFFIX", w ".user-preserved") i.r2'
-  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -File "${SCRIPT}" -Mode MergeUnknown'
+  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${SCRIPT}" -Mode MergeUnknown'
   Pop $R2
   Pop $R3
   System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_MERGE_SOURCE", w "") i.r4'
@@ -252,7 +252,7 @@ Function ${PREFIX}DeleteManagedFiles
   System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_DELETE_ROOT", w "$R0") i.r1'
   System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_MANIFEST_NAME", w "${MANAGED_MANIFEST_NAME}") i.r1'
   System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_KNOWN_FILES", w "${OWNER_MARKER_NAME}|Uninstall.exe|L2DConfigEditor.exe|L2DUpdateHost.exe") i.r1'
-  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -File "${SCRIPT}" -Mode DeleteManaged'
+  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${SCRIPT}" -Mode DeleteManaged'
   Pop $R1
   Pop $R2
   System::Call 'kernel32::SetEnvironmentVariableW(w "L2D_DELETE_ROOT", w "") i.r3'

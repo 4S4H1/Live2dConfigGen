@@ -1,15 +1,15 @@
 # L2D 交互图表编辑器
 
-面向 Live2D 交互配置的 Windows 节点式编辑器。1.3.1 使用 Python
+面向 Live2D 交互配置的 Windows 节点式编辑器。1.4.0 使用 Python
 3.13.14、PySide6 6.11.1 和动态 Qt 共享库，支持 Windows 10/11 x64。
 本版本的升级要点和兼容提示见
-[`docs/RELEASE_NOTES_1.3.1.md`](docs/RELEASE_NOTES_1.3.1.md)。
+[`docs/RELEASE_NOTES_1.4.0.md`](docs/RELEASE_NOTES_1.4.0.md)。
 
 ## 安装与启动
 
 普通用户安装：
 
-- `L2DConfigEditor-Setup-1.3.1-x64.exe`：一个安装包同时安装两个独立
+- `L2DConfigEditor-Setup-1.4.0-x64.exe`：一个安装包同时安装两个独立
   `onedir` 程序。编辑器位于 `%LOCALAPPDATA%\Programs\L2DConfigEditor`，
   托盘更新主机位于 `%LOCALAPPDATA%\Programs\L2DUpdateHost`。二者只有一个
   卸载入口，关闭编辑器不会停止 Host。
@@ -129,7 +129,7 @@ v1-v4 文件会在内存中安全迁移；旧计划主题统一标为 `formal`�
    下载验证成功后才由用户确认安装。
 
 发布电脑若保留了构建生成的完整安装器，直接运行
-`L2DConfigEditor-Setup-1.3.1-x64.exe` 覆盖安装最简单，不必先启动 Host。
+`L2DConfigEditor-Setup-1.4.0-x64.exe` 覆盖安装最简单，不必先启动 Host。
 若当前已是 1.1.0 或更高版本，手上只有 `.l2dupdate` 时也可在 Host
 中导入并发布更高版本、保持服务运行，再在同一个编辑器中选择“检查更新…”；
 客户端会显式探测本机回环地址。1.0.0 尚不包含 UDP 自动发现，因此从 1.0.0

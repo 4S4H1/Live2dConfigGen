@@ -36,6 +36,7 @@ class PlanTopicRecord:
     collapsed: bool = False
     branch_color: str = ""
     formalization_state: str = "formal"
+    structure_dirty: bool = False
 
     def clone(self) -> "PlanTopicRecord":
         return PlanTopicRecord(
@@ -46,6 +47,7 @@ class PlanTopicRecord:
             collapsed=bool(self.collapsed),
             branch_color=self.branch_color,
             formalization_state=self.formalization_state,
+            structure_dirty=bool(self.structure_dirty),
         )
 
 
