@@ -37,6 +37,7 @@ PLAN_BRANCH_COLORS = (
     "#6D4C41",
 )
 PLAN_ROOT_COLOR = "#2F80ED"
+PLAN_NEUTRAL_COLOR = "#8B95A5"
 PLAN_TOUCHIDLE_COLOR = "#39A96B"
 PLAN_TOUCHDRAG_COLOR = "#8B5CF6"
 PLAN_TITLE_MAX_LENGTH = 4096
@@ -336,36 +337,28 @@ def normalize_plan_layout(document: DocumentModel) -> PlanLayout:
     if root_uuid is not None:
         colors[root_uuid] = PLAN_ROOT_COLOR
     top_level = list(children.get(root_uuid, ())) + list(children.get(None, ()))
-    for index, node_uuid in enumerate(top_level):
+
+    def resolved_topic_color(node_uuid: str) -> str:
         old = existing.get(node_uuid)
         node = nodes_by_uuid.get(node_uuid)
         saved = _valid_color(old.branch_color if old else "")
         implied = _formal_plan_color(node) if node is not None else ""
-        # A draft topic's green/purple color is an explicit plan edit.  For a
-        # newly discovered or old formal node, the real node type wins over
-        # the legacy decorative branch palette.
-        if old is not None and old.formalization_state == "draft" and saved in {
-            PLAN_TOUCHIDLE_COLOR,
-            PLAN_TOUCHDRAG_COLOR,
-        }:
-            colors[node_uuid] = saved
-        else:
-            colors[node_uuid] = implied or saved or PLAN_BRANCH_COLORS[index % len(PLAN_BRANCH_COLORS)]
+        # Formal nodes own their card appearance, but never their plan color.
+        # Discard the decorative branch palette stored by v1-v4 projects and
+        # derive only the green/purple semantic color from the formal type.
+        if old is None or old.formalization_state == "formal":
+            return implied or PLAN_NEUTRAL_COLOR
+        # Draft/materialized topics are plan-owned, so an explicit plan color
+        # remains authoritative and independent of formal card colors.
+        return saved or implied or PLAN_NEUTRAL_COLOR
+
+    for node_uuid in top_level:
+        colors[node_uuid] = resolved_topic_color(node_uuid)
         queue = deque([node_uuid])
         while queue:
             parent_uuid = queue.popleft()
             for child_uuid in children.get(parent_uuid, ()):
-                old = existing.get(child_uuid)
-                node = nodes_by_uuid.get(child_uuid)
-                saved = _valid_color(old.branch_color if old else "")
-                implied = _formal_plan_color(node) if node is not None else ""
-                if old is not None and old.formalization_state == "draft" and saved in {
-                    PLAN_TOUCHIDLE_COLOR,
-                    PLAN_TOUCHDRAG_COLOR,
-                }:
-                    colors[child_uuid] = saved
-                else:
-                    colors[child_uuid] = implied or saved or colors[parent_uuid]
+                colors[child_uuid] = resolved_topic_color(child_uuid)
                 queue.append(child_uuid)
 
     topics: list[PlanTopicRecord] = []

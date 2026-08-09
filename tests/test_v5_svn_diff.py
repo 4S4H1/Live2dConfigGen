@@ -24,6 +24,7 @@ from l2d_config_editor.logic import (
 )
 from l2d_config_editor.models import CanvasStrokeRecord, GroupRecord, PlanTopicRecord
 from l2d_config_editor.plan import (
+    PLAN_NEUTRAL_COLOR,
     PLAN_TOUCHDRAG_COLOR,
     PLAN_TOUCHIDLE_COLOR,
     plan_formal_positions,
@@ -507,6 +508,52 @@ class PlanFormalizationV5Tests(unittest.TestCase):
         topic = controller.plan_topic(node_uuid)
         self.assertEqual(PLAN_TOUCHIDLE_COLOR, topic.branch_color.upper())
         self.assertEqual("legacy title", topic.plan_title)
+
+    def test_old_formal_non_semantic_topic_drops_legacy_decorative_color(self) -> None:
+        controller = ready_controller()
+        node_uuid = controller.create_node("Comment", (321.0, 654.0))
+        payload = export_document_dict(controller.schema, controller.document)
+        payload["format_version"] = 4
+        for topic in payload["plan_layout"]["topics"]:
+            topic.pop("formalization_state", None)
+            topic.pop("structure_dirty", None)
+            if topic["node_uuid"] == node_uuid:
+                topic["branch_color"] = "#E53935"
+
+        loaded = load_document_payload(controller.schema, payload)
+        loaded_topic = next(
+            topic for topic in loaded.plan_layout.topics if topic.node_uuid == node_uuid
+        )
+
+        self.assertEqual(
+            PLAN_NEUTRAL_COLOR,
+            loaded_topic.branch_color.upper(),
+        )
+
+    def test_rematerializing_plan_node_preserves_formal_appearance_colors(self) -> None:
+        controller = ready_controller()
+        root_uuid = controller.document.nodes[0].uuid
+        node_uuid = controller.create_plan_topic(root_uuid, "head pat")
+        controller.materialize_plan_topics()
+        appearance = {
+            "theme_body_color": "#102030",
+            "theme_border_color": "#405060",
+            "theme_text_color": "#F0E0D0",
+        }
+        controller.update_fields(node_uuid, appearance, "advanced")
+        expected = {
+            key: controller.get_node(node_uuid).fields[key]
+            for key in appearance
+        }
+
+        controller.ensure_plan_layout()
+        controller.materialize_plan_topics()
+
+        node = controller.get_node(node_uuid)
+        self.assertEqual(
+            expected,
+            {key: node.fields[key] for key in appearance},
+        )
 
     def test_switching_views_preserves_unchanged_formal_positions(self) -> None:
         controller = ready_controller()

@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("L2D_CONFIG_EDITOR_TEST_CLOSE_EVENT_POLICY", "discard")
 
 from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QPointF, QRectF, QSettings, Qt
-from PySide6.QtGui import QContextMenuEvent, QFontMetricsF, QImage, QMouseEvent, QPainter
+from PySide6.QtGui import QColor, QContextMenuEvent, QFontMetricsF, QImage, QMouseEvent, QPainter
 from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QGraphicsItem, QMessageBox, QSplitter, QToolBar
 
 from l2d_config_editor.controller import EditorController
@@ -1008,8 +1008,11 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
 
             editor = item._card_editor_proxy.widget()
             self.assertNotEqual(editor.font().pointSizeF(), -1.0)
-            self.assertGreater(editor.font().pointSizeF(), item._compact_parameter_font().pointSizeF())
-            self.assertGreater(editor.fontMetrics().height(), 30)
+            self.assertAlmostEqual(
+                editor.font().pointSizeF(),
+                item._compact_parameter_font().pointSizeF(),
+                delta=0.1,
+            )
             self.assertGreaterEqual(editor.height(), editor.fontMetrics().height())
             editor.setText("Paramtouch_idle99")
             item._commit_card_field_edit("parameter", editor.text(), editor)
@@ -1021,7 +1024,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
             window.close()
 
-    def test_all_compact_card_field_editors_use_large_fonts(self) -> None:
+    def test_all_compact_card_field_editors_match_display_fonts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             window.controller.set_global_mode("simple")
@@ -1040,14 +1043,14 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
                 self.assertTrue(item._begin_card_field_edit(field_key))
                 self.app.processEvents()
                 editor = item._card_editor_proxy.widget()
-                self.assertGreater(editor.font().pointSizeF(), base_size)
+                self.assertAlmostEqual(editor.font().pointSizeF(), base_size, delta=0.1)
                 self.assertGreaterEqual(editor.height(), editor.fontMetrics().height())
                 item._discard_card_field_editor()
 
             window._mark_saved_checkpoint(saved=True)
             window.close()
 
-    def test_compact_note_editor_grows_while_typing(self) -> None:
+    def test_compact_note_editor_keeps_the_title_frame_while_typing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             window.controller.set_global_mode("simple")
@@ -1055,20 +1058,21 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             created = window.controller.create_node("TouchIdle", (200, 120))
             item = window.canvas.node_items[created]
 
+            original_note_rect = QRectF(item._card_layout["note"])
             self.assertTrue(item._begin_card_field_edit("tips"))
             self.app.processEvents()
             editor = item._card_editor_proxy.widget()
-            initial_note_width = item._card_layout["note"].width()
-            initial_editor_width = editor.width()
             long_title = "超长长长长长长长长长长长长长长"
 
             editor.setText(long_title)
             self.app.processEvents()
 
-            expected_note_width = item._compact_note_width_for_text(long_title, item._card_layout["frame"].width(), editor.font())
-            self.assertGreater(item._card_layout["note"].width(), initial_note_width)
-            self.assertGreater(editor.width(), initial_editor_width)
-            self.assertAlmostEqual(item._card_layout["note"].width(), expected_note_width, delta=1.0)
+            self.assertEqual(original_note_rect, item._card_layout["note"])
+            self.assertAlmostEqual(
+                editor.width(),
+                original_note_rect.adjusted(4.0, 4.0, -4.0, -4.0).width(),
+                delta=1.0,
+            )
             self.assertLessEqual(item._card_layout["note"].right(), item._card_layout["frame"].right() + 0.1)
             self.assertAlmostEqual(
                 item._compact_note_layout_font().pointSizeF(),
@@ -1093,6 +1097,61 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             item._commit_card_field_edit("tips", editor.text(), editor)
             self.app.processEvents()
             self.assertEqual(long_title, item._card_field_text("tips"))
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
+    def test_unchanged_compact_title_commit_restores_layout_and_removes_editor(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            window.controller.set_global_mode("simple")
+            _set_ready_controller_meta(window.controller)
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            window.controller.update_field(created, "tips", "title-3", "simple")
+            window.canvas._apply_view_state(0.35, QPointF())
+            self.app.processEvents()
+            item = window.canvas.node_items[created]
+            original_note_rect = QRectF(item._card_layout["note"])
+            original_node_rect = QRectF(item._rect)
+            display_point_size = item._compact_note_font_for_text(
+                "title-3", original_note_rect.width()
+            ).pointSizeF()
+
+            self.assertTrue(item._begin_card_field_edit("tips"))
+            proxy = item._card_editor_proxy
+            editor = proxy.widget()
+            self.assertEqual(original_note_rect, item._card_layout["note"])
+            self.assertAlmostEqual(
+                display_point_size * window.canvas.transform().m11(),
+                editor.font().pointSizeF() * window.canvas.transform().m11(),
+                delta=0.1,
+            )
+
+            item._commit_card_field_edit("tips", editor.text(), editor)
+
+            self.assertIsNone(item._card_editor_proxy)
+            self.assertFalse(proxy.isVisible())
+            self.assertIsNone(proxy.scene())
+            self.assertEqual(original_note_rect, item._card_layout["note"])
+            self.assertEqual(original_node_rect, item._rect)
+            window._mark_saved_checkpoint(saved=True)
+            window.close()
+
+    def test_sequence_fixed_node_outer_pens_scale_with_the_node(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = MainWindow(temp_dir, prefer_saved_workspace=False)
+            _set_ready_controller_meta(window.controller)
+            created = window.controller.create_node("TouchIdle", (200, 120))
+            self.assertTrue(window.controller.set_nodes_sequence_locked([created], True))
+            item = window.canvas.node_items[created]
+
+            for width in (1.6, 4.0, 9.0):
+                pen = item._outer_frame_pen(QColor("#f0b429"), width)
+                self.assertFalse(pen.isCosmetic())
+                self.assertAlmostEqual(width, pen.widthF(), delta=0.01)
+                self.assertLess(pen.widthF() * 0.18, pen.widthF())
+            fixed_pen = item._sequence_lock_pen()
+            self.assertFalse(fixed_pen.isCosmetic())
+            self.assertAlmostEqual(9.0, fixed_pen.widthF(), delta=0.01)
             window._mark_saved_checkpoint(saved=True)
             window.close()
 
@@ -2587,7 +2646,7 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window._mark_saved_checkpoint(saved=True)
         window.close()
 
-    def test_dropped_node_outside_group_is_removed_from_group(self) -> None:
+    def test_dropped_member_outside_saved_frame_expands_its_group(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             _set_ready_controller_meta(window.controller)
@@ -2600,8 +2659,13 @@ class ControllerAndGuiSmokeTests(unittest.TestCase):
             window.canvas.sync_group_membership_for_dropped_nodes([first_uuid])
 
             group = window.controller.get_group(group_uuid)
-            self.assertNotIn(first_uuid, group.node_uuids)
+            self.assertIn(first_uuid, group.node_uuids)
             self.assertIn(second_uuid, group.node_uuids)
+            self.assertTrue(
+                window.canvas.group_items[group_uuid].focus_rect().contains(
+                    window.canvas.node_visual_rect(first_uuid)
+                )
+            )
             window._mark_saved_checkpoint(saved=True)
         window.close()
 

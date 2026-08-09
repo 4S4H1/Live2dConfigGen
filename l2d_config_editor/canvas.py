@@ -714,7 +714,11 @@ class NodeItem(QGraphicsObject):
     CARD_PARAMETER_BASE_POINT_SIZE = 12.5
     CARD_PARAMETER_MIN_POINT_SIZE = 8.0
     CARD_PARAMETER_MAX_POINT_SIZE = 70.0
-    CARD_EDITOR_FONT_SCALE = 2.0
+    SEQUENCE_LOCK_OUTLINE_WIDTH = 9.0
+    # Inline editors should use the same visual scale as the text they replace.
+    # Enlarging the proxy font makes a compact title jump in size as soon as it
+    # enters edit mode, especially while the canvas is zoomed out.
+    CARD_EDITOR_FONT_SCALE = 1.0
     IDLE0_NODE_WIDTH = 640.0
     IDLE0_NODE_HEIGHT = 160.0
     IDLE0_TITLE_BASE_POINT_SIZE = 12.0
@@ -1354,9 +1358,23 @@ class NodeItem(QGraphicsObject):
         core = QColor(color)
         core.setAlpha(170 if strong else 112)
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(glow, 9.0 if strong else 5.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        painter.setPen(
+            self._outer_frame_pen(
+                glow,
+                9.0 if strong else 5.5,
+                cap_style=Qt.PenCapStyle.RoundCap,
+                join_style=Qt.PenJoinStyle.RoundJoin,
+            )
+        )
         painter.drawRoundedRect(rect.adjusted(-5.0, -5.0, 5.0, 5.0), 14, 14)
-        painter.setPen(QPen(core, 2.2 if strong else 1.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        painter.setPen(
+            self._outer_frame_pen(
+                core,
+                2.2 if strong else 1.4,
+                cap_style=Qt.PenCapStyle.RoundCap,
+                join_style=Qt.PenJoinStyle.RoundJoin,
+            )
+        )
         painter.drawRoundedRect(rect.adjusted(-1.5, -1.5, 1.5, 1.5), 11, 11)
 
     def _paint_pin_glow(self, painter: QPainter, color: QColor, *, strong: bool) -> None:
@@ -1750,18 +1768,33 @@ class NodeItem(QGraphicsObject):
         if self._supports_output_connection():
             painter.drawEllipse(self.output_pin_rect())
 
+    def _outer_frame_pen(
+        self,
+        color: QColor,
+        width: float,
+        *,
+        cap_style: Qt.PenCapStyle = Qt.PenCapStyle.SquareCap,
+        join_style: Qt.PenJoinStyle = Qt.PenJoinStyle.BevelJoin,
+    ) -> QPen:
+        return QPen(color, width, Qt.PenStyle.SolidLine, cap_style, join_style)
+
+    @staticmethod
+    def _sequence_lock_pen() -> QPen:
+        fixed_color = QColor("#9BE7B5")
+        fixed_color.setAlpha(235)
+        # Formal cards use a scene coordinate system roughly 2.6x larger than
+        # plan cards.  A 9-unit stroke therefore matches the plan view's
+        # 3.4-unit fixed outline at the same displayed card size.
+        return QPen(fixed_color, NodeItem.SEQUENCE_LOCK_OUTLINE_WIDTH)
+
     def _paint_sequence_lock_outline(self, painter: QPainter) -> None:
         if not self.node.sequence_locked or not self._is_function_node():
             return
         painter.save()
-        fixed_color = QColor("#9BE7B5")
-        fixed_color.setAlpha(235)
-        fixed_pen = QPen(fixed_color, 4.0)
-        fixed_pen.setCosmetic(True)
-        painter.setPen(fixed_pen)
+        painter.setPen(self._sequence_lock_pen())
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRoundedRect(
-            self._rect.adjusted(3.0, 3.0, -3.0, -3.0),
+            self._active_frame_rect().adjusted(3.0, 3.0, -3.0, -3.0),
             11.0,
             11.0,
         )
@@ -1806,14 +1839,14 @@ class NodeItem(QGraphicsObject):
             parameter_rect = self._card_layout["parameter"]
 
             palette = self._compact_card_palette()
-            painter.setPen(QPen(border, 2.4))
+            painter.setPen(self._outer_frame_pen(border, 2.4))
             painter.setBrush(palette["frame_fill"])
             painter.drawRoundedRect(frame_rect, 6, 6)
             if self.isSelected() or self.is_relation_highlighted():
                 select_glow = QColor("#fff4a8") if self.is_relation_highlighted() and not self.isSelected() else QColor("#f0b429")
                 select_glow.setAlpha(210)
                 painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.setPen(QPen(select_glow, 4.0))
+                painter.setPen(self._outer_frame_pen(select_glow, 4.0))
                 painter.drawRoundedRect(frame_rect.adjusted(-3, -3, 3, 3), 9, 9)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(palette["frame_inner_fill"])
@@ -1973,14 +2006,14 @@ class NodeItem(QGraphicsObject):
 
         frame_rect = self._active_frame_rect()
         border_width = 4.0 if self._warnings else (2.4 if self.node.type == "Initial" else 1.6)
-        painter.setPen(QPen(border, border_width))
+        painter.setPen(self._outer_frame_pen(border, border_width))
         painter.setBrush(body_color)
         painter.drawRoundedRect(frame_rect, 6 if self.node.type == "Initial" else 10, 6 if self.node.type == "Initial" else 10)
         if self.isSelected() or self.is_relation_highlighted():
             select_glow = QColor("#fff4a8") if self.is_relation_highlighted() and not self.isSelected() else QColor("#f0b429")
             select_glow.setAlpha(215)
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.setPen(QPen(select_glow, 4.0))
+            painter.setPen(self._outer_frame_pen(select_glow, 4.0))
             painter.drawRoundedRect(frame_rect.adjusted(-3, -3, 3, 3), 9 if self.node.type == "Initial" else 12, 9 if self.node.type == "Initial" else 12)
         painter.setBrush(header_color)
         painter.drawRoundedRect(QRectF(frame_rect.left(), frame_rect.top(), frame_rect.width(), self._header_height + 8), 6 if self.node.type == "Initial" else 10, 6 if self.node.type == "Initial" else 10)
@@ -2263,7 +2296,9 @@ class NodeItem(QGraphicsObject):
         if self._card_editor_proxy is not None and self._card_editor_proxy.widget() is not None:
             field_key = self._card_editor_key
             if field_key:
-                self._card_editor_proxy.widget().setFont(self._card_editor_font(field_key))
+                editor = self._card_editor_proxy.widget()
+                editor.setFont(self._card_editor_font(field_key))
+                self._sync_card_editor_geometry(field_key, editor)
         self.update()
 
     def _text_scale_floor(self, base_width: float, compact_mode: bool) -> float:
@@ -2482,6 +2517,7 @@ class NodeItem(QGraphicsObject):
 
     def _discard_card_field_editor(self) -> None:
         proxy = self._card_editor_proxy
+        field_key = self._card_editor_key
         self._card_editor_proxy = None
         self._card_editor_key = None
         if not proxy:
@@ -2489,11 +2525,25 @@ class NodeItem(QGraphicsObject):
         widget = proxy.widget()
         if widget is not None:
             widget.blockSignals(True)
+        proxy.hide()
+        if widget is not None:
+            widget.hide()
             proxy.setWidget(None)
             widget.deleteLater()
-        if self.scene():
-            self.scene().removeItem(proxy)
+        if proxy.scene() is not None:
+            proxy.scene().removeItem(proxy)
         proxy.deleteLater()
+        if (
+            field_key == self._compact_card_field_key("note")
+            and self._uses_compact_card()
+        ):
+            # Typing a title can temporarily recompute its layout.  Restore the
+            # persisted value immediately, even when committing unchanged text
+            # is a controller no-op and no update_node() callback follows.
+            self.prepareGeometryChange()
+            height = self._recompute_compact_card_layout(self._rect.width())
+            self._rect = QRectF(0.0, 0.0, self._rect.width(), height)
+        self.update()
 
     def _begin_card_field_edit(self, field_key: str) -> bool:
         if self.node.locked or not self._uses_compact_card():
@@ -2529,7 +2579,7 @@ class NodeItem(QGraphicsObject):
         self._card_editor_key = field_key
         self._sync_card_editor_geometry(field_key, editor)
         editor.committed.connect(lambda value, key=field_key, target=editor: self._commit_card_field_edit(key, value, target))
-        if field_key == "tips":
+        if field_key == self._compact_card_field_key("note"):
             editor.textChanged.connect(lambda _text, key=field_key, target=editor: self._sync_card_editor_geometry(key, target))
         editor.setFocus(Qt.FocusReason.MouseFocusReason)
         editor.selectAll()
@@ -2538,18 +2588,13 @@ class NodeItem(QGraphicsObject):
     def _sync_card_editor_geometry(self, field_key: str, editor) -> None:
         if not self._card_editor_proxy or self._card_editor_proxy.widget() is not editor:
             return
-        if field_key == "tips" and self._uses_compact_card():
+        if field_key == self._compact_card_field_key("note") and self._uses_compact_card():
             self.prepareGeometryChange()
             height = self._recompute_compact_card_layout(self._rect.width(), note_text=editor.text())
             frame_width = self._card_layout.get("frame", self._rect).width()
             editor_font = self._scaled_card_editor_font(self._compact_note_font_for_text(editor.text(), frame_width))
             editor.setFont(editor_font)
             self._apply_card_editor_style(editor)
-            editor_note_width = self._compact_note_width_for_text(editor.text(), frame_width, editor_font)
-            current_note = self._card_layout.get("note")
-            if current_note is not None:
-                note_height = max(current_note.height(), self._compact_note_height_for_font(editor_font))
-                self._card_layout["note"] = QRectF(current_note.left(), current_note.top(), editor_note_width, note_height)
             self._rect = QRectF(0.0, 0.0, self._rect.width(), height)
         field_rect = self._card_rect_for_field(field_key)
         if field_rect is None:
@@ -2576,7 +2621,7 @@ class NodeItem(QGraphicsObject):
 
     def _apply_card_editor_style(self, editor) -> None:
         point_size = editor.font().pointSizeF() if editor.font().pointSizeF() > 0 else float(editor.font().pointSize())
-        font_rule = f" font-size: {max(14.0, point_size):.1f}pt;"
+        font_rule = f" font-size: {max(1.0, point_size):.1f}pt;"
         editor.setStyleSheet(
             "QLineEdit {"
             " background: rgba(9, 11, 16, 0.94);"
@@ -2792,6 +2837,8 @@ class GroupItem(QGraphicsObject):
                 max(180.0, float(group.ui_size.get("width", 180.0))),
                 max(110.0, float(group.ui_size.get("height", 110.0))),
             )
+            if member_rects:
+                frame = frame.united(self.frame_rect_for_members(member_rects))
         else:
             frame = self.frame_rect_for_members(member_rects)
         self.setPos(frame.topLeft())
@@ -4857,6 +4904,10 @@ class NodeCanvasView(QGraphicsView):
         return min(matches)[2]
 
     def group_membership_changes_for_dropped_nodes(self, node_uuids: list[str]) -> dict[str, str | None]:
+        # Expand existing groups around their live member positions before
+        # hit-testing a drop.  Otherwise a member dragged beyond the saved
+        # frame is incorrectly treated as having left its group.
+        self._rebuild_groups()
         memberships: dict[str, str | None] = {}
         for node_uuid in node_uuids:
             target_group_uuid = self.group_for_node_drop(node_uuid)

@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 
 from .canvas import CanvasStrokeItem
 from .plan import (
+    PLAN_NEUTRAL_COLOR,
     PLAN_ROOT_COLOR,
     PLAN_TOUCHDRAG_COLOR,
     PLAN_TOUCHIDLE_COLOR,
@@ -328,12 +329,19 @@ class PlanTopicItem(QGraphicsObject):
             note_lines=note_lines,
         )
 
+    @staticmethod
+    def _sequence_lock_pen() -> QPen:
+        # Keep the fixed outline proportional to the plan card.  A cosmetic
+        # pen stays several pixels wide while the card shrinks and therefore
+        # looks progressively heavier at overview zoom levels.
+        return QPen(QColor("#F2C14E"), 3.4)
+
     def paint(self, painter: QPainter, option, widget=None) -> None:
         del option, widget
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         palette = self.view.theme_palette
         text_color = QColor(palette.editor_text)
-        branch_color = QColor("#8B95A5") if self.virtual else QColor(self.color)
+        branch_color = QColor(PLAN_NEUTRAL_COLOR) if self.virtual else QColor(self.color)
         bounds = self.boundingRect().adjusted(0.75, 0.75, -0.75, -0.75)
         fill = QColor(branch_color)
         fill.setAlpha(56 if self.isSelected() else 22)
@@ -343,9 +351,7 @@ class PlanTopicItem(QGraphicsObject):
         painter.setBrush(fill)
         painter.drawRoundedRect(bounds, self.CARD_CORNER_RADIUS, self.CARD_CORNER_RADIUS)
         if self.sequence_locked:
-            fixed_pen = QPen(QColor("#F2C14E"), 3.4)
-            fixed_pen.setCosmetic(True)
-            painter.setPen(fixed_pen)
+            painter.setPen(self._sequence_lock_pen())
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRoundedRect(
                 bounds.adjusted(2.5, 2.5, -2.5, -2.5),
@@ -854,7 +860,7 @@ class PlanCanvasView(QGraphicsView):
                         self,
                         node_uuid,
                         PLAN_UNCONNECTED_TITLE,
-                        "#8B95A5",
+                        PLAN_NEUTRAL_COLOR,
                         virtual=True,
                         card_spec=card_specs[node_uuid],
                     )
@@ -892,7 +898,7 @@ class PlanCanvasView(QGraphicsView):
                 if source is None or target is None:
                     continue
                 color = (
-                    QColor("#8B95A5")
+                    QColor(PLAN_NEUTRAL_COLOR)
                     if PLAN_UNCONNECTED_UUID in {from_uuid, to_uuid}
                     else QColor(target.color)
                 )

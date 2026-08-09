@@ -178,6 +178,13 @@ class CanvasModernizationTests(unittest.TestCase):
             )
             self._close(window)
 
+    def test_plan_fixed_outline_scales_with_the_card(self) -> None:
+        fixed_pen = PlanTopicItem._sequence_lock_pen()
+
+        self.assertFalse(fixed_pen.isCosmetic())
+        self.assertAlmostEqual(3.4, fixed_pen.widthF(), delta=0.01)
+        self.assertLess(fixed_pen.widthF() * 0.18, fixed_pen.widthF())
+
     def test_plan_topic_drag_only_changes_plan_structure_not_formal_position(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             window = self._window(root)

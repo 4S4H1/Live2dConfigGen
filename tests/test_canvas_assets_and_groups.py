@@ -438,6 +438,42 @@ class CanvasGroupInteractionTests(unittest.TestCase):
             self.assertEqual(original_frame, window.canvas.group_items[group_uuid].focus_rect())
             self.close_window(window)
 
+    def test_group_frame_expands_when_a_member_moves_beyond_its_edge(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            window = self.make_ready_window(temp_dir)
+            first_uuid = window.controller.create_node("TouchIdle", (260.0, 180.0))
+            second_uuid = window.controller.create_node("TouchIdle", (920.0, 300.0))
+            window.canvas.node_items[first_uuid].setSelected(True)
+            window.canvas.node_items[second_uuid].setSelected(True)
+            window._group_selected_nodes()
+            self.app.processEvents()
+            group_uuid = window.controller.document.groups[0].uuid
+            original_frame = window.canvas.group_items[group_uuid].focus_rect()
+            first = window.controller.get_node(first_uuid)
+            old_position = (first.ui_position["x"], first.ui_position["y"])
+
+            window.controller.move_node(
+                first_uuid,
+                old_position,
+                (original_frame.right() + 600.0, original_frame.bottom() + 300.0),
+            )
+            self.app.processEvents()
+
+            expanded_frame = window.canvas.group_items[group_uuid].focus_rect()
+            moved_rect = window.canvas.node_visual_rect(first_uuid)
+            self.assertGreater(expanded_frame.width(), original_frame.width())
+            self.assertGreater(expanded_frame.height(), original_frame.height())
+            self.assertTrue(expanded_frame.contains(moved_rect))
+            self.assertIn(first_uuid, window.controller.get_group(group_uuid).node_uuids)
+
+            window.controller.undo_stack.undo()
+            self.app.processEvents()
+            self.assertEqual(
+                original_frame,
+                window.canvas.group_items[group_uuid].focus_rect(),
+            )
+            self.close_window(window)
+
     def test_fit_group_to_contents_is_explicit_and_undoable(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = self.make_ready_window(temp_dir)

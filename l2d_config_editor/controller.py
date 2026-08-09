@@ -76,6 +76,7 @@ from .logic import (
     TABLE_BODY_COLOR_FIELD,
     TABLE_BORDER_COLOR_FIELD,
     TABLE_TEXT_COLOR_FIELD,
+    NODE_THEME_FIELD_KEYS,
 )
 from .models import (
     CanvasImageRecord,
@@ -752,6 +753,7 @@ class EditorController(QObject):
             topic.node_uuid: topic for topic in new_layout.topics
         }
         new_nodes: list[NodeRecord] = []
+        formal_node_types = set(function_node_types(self.schema))
         for old_node in old_nodes:
             topic = topic_by_uuid[old_node.uuid]
             semantic = inferred.get(old_node.uuid)
@@ -885,6 +887,10 @@ class EditorController(QObject):
                         replacement.fields["action_trigger_active_kind_ui"] = "empty"
                         replacement.fields["action_trigger_active_reserved_ui"] = ""
                         replacement.manual_fields.add("action_trigger")
+                if old_node.type in formal_node_types:
+                    for key in NODE_THEME_FIELD_KEYS:
+                        if key in old_node.fields:
+                            replacement.fields[key] = old_node.fields[key]
                 topic.formalization_state = "materialized"
                 topic.structure_dirty = False
             staging.nodes.append(replacement)

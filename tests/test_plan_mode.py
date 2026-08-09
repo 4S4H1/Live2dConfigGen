@@ -616,6 +616,28 @@ class MainWindowPlanIntegrationTests(unittest.TestCase):
                 set(window.canvas.selected_node_uuids()),
             )
 
+            appearance = {
+                "theme_body_color": "#102030",
+                "theme_border_color": "#405060",
+                "theme_text_color": "#F0E0D0",
+            }
+            window.controller.update_fields(first_uuid, appearance, "advanced")
+            expected_appearance = {
+                key: window.controller.get_node(first_uuid).fields[key]
+                for key in appearance
+            }
+            window._switch_graph_view("plan")
+            self.app.processEvents()
+            window._switch_graph_view("formal")
+            self.app.processEvents()
+            self.assertEqual(
+                expected_appearance,
+                {
+                    key: window.controller.get_node(first_uuid).fields[key]
+                    for key in appearance
+                },
+            )
+
             window._apply_wheel_settings(
                 {
                     "zoom_modifier": "alt",
