@@ -669,6 +669,38 @@ class BundleTests(unittest.TestCase):
             self.assertFalse((releases / "1.0.0").exists())
             self.assertFalse((releases / "latest").exists())
 
+    def test_failed_latest_switch_preserves_old_release_and_allows_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            releases = root / "releases"
+            import_release_bundle(self._bundle(root, "1.0.0"), releases, self.public_key)
+            bundle = self._bundle(root, "1.1.0")
+            replace = os.replace
+
+            def fail_pointer(source, target):
+                if Path(target).name == "latest":
+                    raise PermissionError("latest is locked")
+                return replace(source, target)
+
+            with patch("l2d_config_editor.update_manifest.os.replace", side_effect=fail_pointer):
+                with self.assertRaises(PermissionError):
+                    import_release_bundle(bundle, releases, self.public_key, retain=1)
+            self.assertEqual("1.0.0", (releases / "latest").read_text())
+            self.assertTrue((releases / "1.0.0").is_dir())
+            self.assertFalse((releases / "1.1.0").exists())
+            self.assertEqual("1.1.0", import_release_bundle(bundle, releases, self.public_key))
+
+    def test_locked_obsolete_cache_does_not_fail_new_release_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            releases = root / "releases"
+            import_release_bundle(self._bundle(root, "1.0.0"), releases, self.public_key)
+            bundle = self._bundle(root, "1.1.0")
+            with patch("l2d_config_editor.update_manifest.shutil.rmtree", side_effect=PermissionError("cache in use")):
+                self.assertEqual("1.1.0", import_release_bundle(bundle, releases, self.public_key, retain=1))
+            self.assertEqual("1.1.0", (releases / "latest").read_text())
+            self.assertTrue((releases / "1.1.0").is_dir())
+
     def test_import_rejects_downgrade_without_changing_latest(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

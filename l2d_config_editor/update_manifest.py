@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -36,6 +37,7 @@ MAX_SIGNATURE_BYTES = 512
 MAX_BUNDLE_MEMBERS = 8
 MAX_ARTIFACT_BYTES = 2 * 1024 * 1024 * 1024
 STABLE_SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+logger = logging.getLogger(__name__)
 
 
 class UpdateValidationError(ValueError):
@@ -326,14 +328,23 @@ def import_release_bundle(
         if final_dir.exists():
             raise UpdateValidationError("该版本已经发布")
         staging = Path(tempfile.mkdtemp(prefix=".import-", dir=releases_root))
+        latest_tmp = staging / ".latest.tmp"
+        activated = False
         try:
             for name in ("manifest.json", "manifest.sig", artifact.filename):
                 source = bundle.open(members[name])
                 with source, (staging / name).open("wb") as target:
                     shutil.copyfileobj(source, target, 1024 * 1024)
             verify_artifact(staging / artifact.filename, artifact)
+            latest_tmp.write_text(version_name, encoding="utf-8")
             os.replace(staging, final_dir)
+            activated = True
+            # Publish before pruning: the old pointer must never refer to a
+            # removed release. A failed pointer switch remains retryable.
+            os.replace(final_dir / latest_tmp.name, latest_path)
         except BaseException:
+            if activated:
+                os.replace(final_dir, staging)
             shutil.rmtree(staging, ignore_errors=True)
             raise
 
@@ -347,9 +358,10 @@ def import_release_bundle(
             continue
     versions.sort(reverse=True)
     for _, obsolete in versions[max(1, retain) :]:
-        shutil.rmtree(obsolete)
-
-    latest_tmp = releases_root / ".latest.tmp"
-    latest_tmp.write_text(version_name, encoding="utf-8")
-    os.replace(latest_tmp, releases_root / "latest")
+        try:
+            shutil.rmtree(obsolete)
+        except OSError:
+            # A Windows download/file lock should not undo a verified release.
+            # The next import retries pruning the obsolete cache.
+            logger.warning("旧更新缓存暂时无法清理：%s", obsolete, exc_info=True)
     return version_name

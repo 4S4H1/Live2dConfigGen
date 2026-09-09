@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
     [string]$KeyDirectory = "$env:LOCALAPPDATA\4S4H1\release-keys",
-    [string]$Notes = "1.4.1：修复计划/正式颜色隔离、标题重命名尺寸、打组自动扩展和固定节点描边缩放。",
+    [string]$Notes = "1.4.2：修复备注输入被自动保存打断、编辑字号和 CSV 中文编码，完善待提交编辑、撤销保存状态及更新包发布回滚。",
     [string]$MinimumSupportedVersion = "1.0.0"
 )
 
@@ -18,6 +18,8 @@ $ReleaseStageDir = Join-Path $RepoRoot "dist\release-staging"
 $ReleaseBackupDir = Join-Path $RepoRoot "dist\release-backup"
 $PyInstallerDist = Join-Path $RepoRoot "dist\pyinstaller"
 $WorkDir = Join-Path $RepoRoot "build\pyinstaller"
+$OriginalPath = $env:PATH
+$UvExecutable = (Get-Command uv -CommandType Application -ErrorAction Stop).Source
 
 function Assert-NativeSuccess([string]$Step) {
     if ($LASTEXITCODE -ne 0) {
@@ -79,9 +81,21 @@ if ([version]$NsisVersion -ne [version]"3.12") {
 
 Push-Location $RepoRoot
 try {
+    # PyInstaller searches PATH for transitive DLL dependencies. Other desktop
+    # tools can expose incompatible ICU/OpenSSL/UCRT builds under the same names.
+    # Only the locked toolchain and Windows system runtime may participate.
+    $env:PATH = @(
+        (Join-Path $RepoRoot ".venv\Scripts"),
+        (Split-Path -Parent $PythonExe),
+        (Join-Path $env:WINDIR "System32"),
+        $env:WINDIR,
+        (Join-Path $env:WINDIR "System32\Wbem"),
+        (Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0"),
+        $PSHOME
+    ) -join [System.IO.Path]::PathSeparator
     $env:UV_CACHE_DIR = Join-Path $RepoRoot ".uv-cache"
     $env:UV_PYTHON_INSTALL_DIR = Join-Path $RepoRoot ".uv-python"
-    uv sync --python $PythonExe --extra build --locked
+    & $UvExecutable sync --python $PythonExe --extra build --locked
     Assert-NativeSuccess "同步锁定环境"
     & $VenvPython scripts/release_tools.py verify-environment
     Assert-NativeSuccess "校验固定工具链版本"
@@ -110,6 +124,8 @@ try {
     Assert-NativeSuccess "构建编辑器 onedir"
     & $VenvPython -m PyInstaller --noconfirm --clean --distpath $PyInstallerDist --workpath $WorkDir packaging/L2DUpdateHost.spec
     Assert-NativeSuccess "构建独立 Host onedir"
+    & $VenvPython scripts/smoke_frozen_editor.py
+    Assert-NativeSuccess "验收成品编辑器启动、JSON 打开及单实例转交"
 
     $EditorSourceDir = Join-Path $PyInstallerDist "L2DConfigEditor"
     $HostSourceDir = Join-Path $PyInstallerDist "L2DUpdateHost"
@@ -181,5 +197,6 @@ try {
     Write-Host "发布完成：$ReleaseDir"
 }
 finally {
+    $env:PATH = $OriginalPath
     Pop-Location
 }

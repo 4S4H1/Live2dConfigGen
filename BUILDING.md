@@ -54,7 +54,7 @@ QSettings 指向一次性的 INI 目录，不读写开发机注册表偏好。
 也可直接执行：
 
 ```powershell
-.\scripts\Build-Release.ps1 -Notes "1.2.0：独立托盘 Host、计划模式、Tool/LLM 与当前图表 CSV"
+.\scripts\Build-Release.ps1 -Notes "1.4.2：备注编辑、CSV 编码、保存状态与更新发布可靠性修复"
 ```
 
 后续版本默认仍允许从 `1.0.0` 升级；只有确实放弃旧客户端时才显式传入
@@ -72,8 +72,10 @@ QSettings 指向一次性的 INI 目录，不读写开发机注册表偏好。
 5. 运行全部测试；测试失败时不会清理上一份 `dist\release`。
 6. 对预定义的暂存发布目录、`dist\pyinstaller` 和 `build\pyinstaller`
    绝对路径执行白名单校验后重建，杜绝混入上一次构建产物。
-7. 用 PyInstaller 分别构建编辑器和 `L2DUpdateHost` 两个独立 `onedir`，
-   保留动态 Qt DLL。
+7. 在仅含固定 Python 环境和 Windows 系统目录的 PATH 中，用 PyInstaller
+   分别构建编辑器和 `L2DUpdateHost` 两个独立 `onedir`，保留动态 Qt DLL。
+   构建后运行 `scripts/smoke_frozen_editor.py`，验证成品启动、JSON 打开和
+   单实例文件转交。其他桌面工具的 ICU/OpenSSL DLL 不得混入发布包。
 8. 用 NSIS 构建一个当前用户安装器；它将两个程序原子部署到独立安装根，
    任一激活失败时同时回滚。
 9. 生成并签名 `manifest.json`，制作 `.l2dupdate`。
@@ -83,8 +85,8 @@ QSettings 指向一次性的 INI 目录，不读写开发机注册表偏好。
 
 产物位于 `dist\release`：
 
-- `L2DConfigEditor-Setup-1.2.0-x64.exe`
-- `L2DConfigEditor-1.2.0.l2dupdate`
+- `L2DConfigEditor-Setup-1.4.2-x64.exe`
+- `L2DConfigEditor-1.4.2.l2dupdate`
 - `SHA256SUMS.txt`
 - `THIRD_PARTY_NOTICES.md` 和 `licenses\`
 
@@ -103,7 +105,7 @@ Host 的 HTTP 端口可配置；自动发现使用独立的固定 UDP `48765`。
 
 ```powershell
 .\scripts\Publish-Release.ps1 `
-  -Bundle .\dist\release\L2DConfigEditor-1.2.0.l2dupdate
+  -Bundle .\dist\release\L2DConfigEditor-1.4.2.l2dupdate
 ```
 
 更新主机拒绝清单或签名过大、ZIP 路径穿越、重复成员、符号链接、哈希/大小不符、
@@ -142,8 +144,8 @@ v1 清单使用固定 `key_id: release-1`，客户端和独立更新主机只信
 - 编辑器与 Host 两个安装根要么同时激活，要么同时回滚；从安装目录 CWD
   发起更新时也必须成功。短暂句柄占用应在约 5 秒内重试，永久占用必须保留
   两份旧程序。
-- 安装目录或恢复目录中存在 JSON、CSV、图片工作文件时，升级和卸载必须
-  中止且原文件保持不变。
+- 安装目录或恢复目录中存在 JSON、CSV、图片等未受管工作文件时，升级和卸载
+  应保留原文件，并仅替换或清理受管程序文件。
 - 开始菜单、可选桌面快捷方式、图标、版本资源和单实例文件转交。
 - 两台局域网电脑间首次下载、异步检查、Range 续传和更新主机离线。
 - 无已保存地址时可通过 UDP 自动发现；Host 与客户端在同一台电脑时可通过

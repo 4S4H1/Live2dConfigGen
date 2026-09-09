@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -281,26 +282,25 @@ class NumericLineEdit(CommitLineEdit):
     def __init__(self, mode: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.mode = mode
-        pattern = r"-?\d*" if mode == "int" else r"-?\d*(?:\.\d{0,3})?"
+        pattern = r"-?\d*" if mode in {"int", "nullable_int"} else r"-?\d*(?:\.\d{0,3})?"
         self.setValidator(QRegularExpressionValidator(QRegularExpression(pattern), self))
         self.setAlignment(Qt.AlignmentFlag.AlignRight)
 
     def _emit_commit(self) -> None:
+        try:
+            value = self.commit_value()
+        except ValueError:
+            # '-', '.' and '-.' are valid intermediate keystrokes, not values.
+            return
+        self.committed.emit(value)
+
+    def commit_value(self):
         text = self.text().strip()
         if self.mode == "nullable_int":
-            if not text:
-                self.committed.emit(None)
-                return
-            try:
-                self.committed.emit(int(text))
-                return
-            except ValueError:
-                self.committed.emit(None)
-                return
+            return int(text) if text else None
         if self.mode == "int":
-            self.committed.emit(int(text or "0"))
-            return
-        self.committed.emit(float(text or "0"))
+            return int(text or "0")
+        return float(text or "0")
 
 
 class CommitPlainTextEdit(QPlainTextEdit):
@@ -529,6 +529,7 @@ class EditorBinding:
     widget: QWidget
     setter: Callable[[Any], None]
     read_only_setter: Callable[[bool], None]
+    model_value: Any = None
 
 
 class ValidationIssueItem(QWidget):
@@ -704,7 +705,9 @@ class NodeFormWidget(QFrame):
         show_json_field_names: bool = False,
         compact_mode: bool = False,
     ) -> None:
-        same_node = bool(self.node and self.node.uuid == node.uuid and self.node.type == node.type)
+        same_node = bool(self.node and node and self.node.uuid == node.uuid and self.node.type == node.type)
+        if not same_node:
+            self.commit_pending_edits()
         self.node = node
         self.global_mode = global_mode
         self.show_json_field_names = show_json_field_names
@@ -738,11 +741,19 @@ class NodeFormWidget(QFrame):
         self._sync_header()
         self._sync_summary()
         for key, binding in self._bindings.items():
-            binding.setter(self.node.fields.get(key))
+            value = self.node.fields.get(key)
+            # A refresh of another field must not replace an uncommitted draft
+            # or reset the cursor/IME in this widget. Compare model snapshots,
+            # since NodeRecord itself is mutated in place by the controller.
+            if value != binding.model_value:
+                binding.setter(value)
+                binding.model_value = copy.deepcopy(value)
             binding.read_only_setter(bool(self.node.locked))
         self._apply_inline_visibility()
 
     def _clear_form(self) -> None:
+        for binding in self._bindings.values():
+            binding.widget.blockSignals(True)
         while self._form.rowCount():
             self._form.removeRow(0)
         self._bindings.clear()
@@ -794,7 +805,10 @@ class NodeFormWidget(QFrame):
             label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
             self._form.addRow(label, widget)
             self._form_row_widgets.append((label, widget))
-            self._bindings[field.key] = EditorBinding(widget=widget, setter=setter, read_only_setter=read_only_setter)
+            self._bindings[field.key] = EditorBinding(
+                widget=widget, setter=setter, read_only_setter=read_only_setter,
+                model_value=copy.deepcopy(self.node.fields.get(field.key, field.default)),
+            )
             setter(self.node.fields.get(field.key, field.default))
             read_only_setter(bool(self.node.locked))
         self._add_appearance_row()
@@ -903,26 +917,38 @@ class NodeFormWidget(QFrame):
         return rows
 
     def commit_pending_edits(self) -> None:
-        # Committing a field can change a node's visible schema and rebuild
-        # this form.  Iterate a snapshot so close/save does not mutate the
-        # bindings dictionary while it is being traversed.
-        for binding in tuple(self._bindings.values()):
+        if self.node is None or self.node.locked or getattr(self, "_committing_pending", False):
+            return
+        # Read all drafts before the first mutation: controller signals can
+        # regenerate fields, or replace a placeholder's entire form.
+        values = {}
+        for key, binding in self._bindings.items():
             widget = binding.widget
-            if isinstance(widget, NumericLineEdit):
-                widget._emit_commit()
+            if isinstance(widget, (QLineEdit, QPlainTextEdit)) and widget.isReadOnly():
                 continue
-            if isinstance(widget, CommitLineEdit):
-                widget._emit_commit()
+            try:
+                if isinstance(widget, NumericLineEdit):
+                    value = widget.commit_value()
+                elif isinstance(widget, CommitLineEdit):
+                    value = widget.text()
+                elif isinstance(widget, CommitPlainTextEdit):
+                    value = widget.toPlainText()
+                elif isinstance(widget, CommitComboBox):
+                    value = widget.currentData()
+                elif isinstance(widget, ColorFieldWidget):
+                    value = widget.edit.text().strip()
+                else:
+                    continue
+            except ValueError:
                 continue
-            if isinstance(widget, CommitPlainTextEdit):
-                widget.committed.emit(widget.toPlainText())
-                continue
-            if isinstance(widget, CommitComboBox):
-                widget.committed.emit(widget.currentData())
-                continue
-            if isinstance(widget, ColorFieldWidget):
-                widget.committed.emit(widget.edit.text().strip())
-                continue
+            if value != self._display_value(key, binding.model_value):
+                values[key] = value
+        if values:
+            self._committing_pending = True
+            try:
+                self.fieldsCommitted.emit(values)
+            finally:
+                self._committing_pending = False
 
     def focus_field(self, key: str) -> bool:
         binding = self._bindings.get(key)
@@ -1037,7 +1063,8 @@ class NodeFormWidget(QFrame):
     @staticmethod
     def _set_line_text(widget: QLineEdit, value: str) -> None:
         blocked = widget.blockSignals(True)
-        widget.setText(value)
+        if widget.text() != value:
+            widget.setText(value)
         widget.blockSignals(blocked)
 
     @staticmethod

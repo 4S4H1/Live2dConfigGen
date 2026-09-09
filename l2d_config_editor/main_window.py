@@ -491,7 +491,6 @@ class MainWindow(QMainWindow):
         self._auto_save_timer = QTimer(self)
         self._auto_save_timer.setSingleShot(True)
         self._auto_save_timer.timeout.connect(self._run_auto_save)
-        self._last_saved_undo_index = 0
         self._has_saved_snapshot = False
         self._last_paste_payload: bytes | None = None
         self._paste_repeat_count = 0
@@ -1518,13 +1517,12 @@ class MainWindow(QMainWindow):
         self._document_sessions[key] = {
             "document": self.controller.document,
             "undo_stack": self.controller.undo_stack,
-            "last_saved_undo_index": self._last_saved_undo_index,
             "has_saved_snapshot": self._has_saved_snapshot,
             "group_dir": self._pending_group_dir,
         }
         self._current_session_key = key
 
-    def _switch_to_document(self, document, *, undo_stack: QUndoStack, saved: bool, session_key: str | None, group_dir: str = "") -> None:
+    def _switch_to_document(self, document, *, undo_stack: QUndoStack, saved: bool, session_key: str | None, group_dir: str = "", restore_session: bool = False) -> None:
         self._auto_save_timer.stop()
         self.controller.document = document
         self.controller.undo_stack = undo_stack
@@ -1535,7 +1533,11 @@ class MainWindow(QMainWindow):
         self._pending_group_dir = group_dir
         self._current_session_key = session_key
         self._set_active_undo_stack(undo_stack)
-        self._mark_saved_checkpoint(saved=saved)
+        if restore_session:
+            self._has_saved_snapshot = saved
+            self._handle_undo_index_changed(undo_stack.index())
+        else:
+            self._mark_saved_checkpoint(saved=saved)
         self.controller.globalModeChanged.emit(self.controller.preferences.global_mode)
         self.controller.interactionCreationModeChanged.emit(self.controller.document.interaction_creation_mode)
         self.controller.documentLoaded.emit()
@@ -1571,8 +1573,8 @@ class MainWindow(QMainWindow):
                 saved=bool(session.get("has_saved_snapshot", False)),
                 session_key=session_key,
                 group_dir=str(session.get("group_dir") or Path(path).parent.name),
+                restore_session=True,
             )
-            self._last_saved_undo_index = int(session.get("last_saved_undo_index", 0))
             self._update_window_title(self.controller.document.path)
             return
         document = load_document(self.controller.schema, path)
@@ -2192,14 +2194,14 @@ class MainWindow(QMainWindow):
         self.canvas.focus_on_group(group_uuid)
 
     def _commit_inspector_field(self, key: str, value) -> None:
-        node_uuid = self.controller.selected_node_uuid
+        node_uuid = self.inspector_form.node.uuid if self.inspector_form.node else None
         if node_uuid:
             self.controller.update_field(node_uuid, key, value, "advanced")
 
     def _commit_inspector_fields(self, values: dict[str, object]) -> None:
-        node_uuid = self.controller.selected_node_uuid
+        node_uuid = self.inspector_form.node.uuid if self.inspector_form.node else None
         if node_uuid:
-            self.controller.update_fields(node_uuid, values, "advanced", label="应用外观方案")
+            self.controller.update_fields(node_uuid, values, "advanced", label="修改节点字段")
 
     def _update_inspector(self, node_uuid: str | None) -> None:
         node = self.controller.get_node(node_uuid) if node_uuid else None
@@ -2211,6 +2213,7 @@ class MainWindow(QMainWindow):
             )
             self.validation_summary.set_issues(self.validation_cache.get(node.uuid, []))
         else:
+            self.inspector_form.set_node(None, "advanced")
             self.validation_summary.set_issues([])
         self._refresh_node_list_panel()
 
@@ -3182,8 +3185,9 @@ class MainWindow(QMainWindow):
             return None
 
     def _mark_saved_checkpoint(self, *, saved: bool) -> None:
-        self._last_saved_undo_index = self.controller.undo_stack.index()
         self._has_saved_snapshot = saved
+        if saved:
+            self.controller.undo_stack.setClean()
         if not self._is_dirty():
             self._auto_save_timer.stop()
         self._sync_undo_actions()
@@ -3192,7 +3196,7 @@ class MainWindow(QMainWindow):
     def _is_dirty(self) -> bool:
         if not self._has_saved_snapshot:
             return bool(self.controller.document.path) or self.controller.undo_stack.index() != 0
-        return self.controller.undo_stack.index() != self._last_saved_undo_index
+        return not self.controller.undo_stack.isClean()
 
     def _handle_undo_index_changed(self, _index: int) -> None:
         if self._has_saved_snapshot and self.controller.document.path and self._is_dirty():
@@ -3204,18 +3208,36 @@ class MainWindow(QMainWindow):
 
     def _run_auto_save(self) -> None:
         if self._has_saved_snapshot and self.controller.document.path and self._is_dirty():
-            if hasattr(self, "canvas") and self._active_canvas().is_busy():
+            if self._has_active_text_editor() or (hasattr(self, "canvas") and self._active_canvas().is_busy()):
                 self._auto_save_timer.start(500)
                 return
             saved = self._save_current_file(silent=True, allow_incomplete=True)
             if saved:
                 self.statusBar().showMessage(f"已自动保存 {Path(saved).name}", 2500)
 
+    def _has_active_text_editor(self) -> bool:
+        # Saving commits/destroys inline widgets. Delay background saves until
+        # the user leaves them, including while a Chinese IME has preedit text.
+        if QApplication.activeModalWidget() is not None:
+            return True
+        focus = QApplication.focusWidget()
+        if isinstance(focus, (QLineEdit, QPlainTextEdit)) and not focus.isReadOnly():
+            return True
+        if hasattr(self, "canvas"):
+            if any(item.has_comment_editor() or item.has_card_field_editor() for item in self.canvas.node_items.values()):
+                return True
+            if any(item._editor_proxy is not None for item in self.canvas.table_items.values()):
+                return True
+            if any(item._title_editor_proxy is not None for item in self.canvas.group_items.values()):
+                return True
+        return False
+
     def _ensure_safe_to_leave_document(self, target_path: str | Path | None) -> bool:
         current = self.controller.document.path
         if current and target_path and Path(current).resolve() == Path(target_path).resolve():
             return True
         self._auto_save_timer.stop()
+        self._commit_pending_editor_changes()
         if not self._is_dirty():
             return True
         close_policy = str(os.environ.get("L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY") or "").strip().lower()

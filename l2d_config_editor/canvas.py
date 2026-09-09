@@ -2292,7 +2292,7 @@ class NodeItem(QGraphicsObject):
 
     def refresh_view_scale(self) -> None:
         if self._comment_editor_proxy is not None and self._comment_editor_proxy.widget() is not None:
-            self._comment_editor_proxy.widget().setFont(self._comment_content_font())
+            self._apply_comment_editor_style(self._comment_editor_proxy.widget())
         if self._card_editor_proxy is not None and self._card_editor_proxy.widget() is not None:
             field_key = self._card_editor_key
             if field_key:
@@ -2460,6 +2460,22 @@ class NodeItem(QGraphicsObject):
     def _sync_comment_editor_geometry(self) -> None:
         if self._comment_editor_proxy is not None:
             self._comment_editor_proxy.setGeometry(self._title_rect)
+            self._apply_comment_editor_style(self._comment_editor_proxy.widget())
+
+    def _apply_comment_editor_style(self, editor) -> None:
+        if editor is None:
+            return
+        font = self._comment_content_font()
+        editor.setFont(font)
+        editor.document().setDefaultFont(font)
+        palette = self._ui_theme_palette()
+        # An application-wide QWidget font-size overrides setFont(). Specify
+        # the same zoom-compensated font in QSS as in the canvas painter.
+        editor.setStyleSheet(
+            f"QPlainTextEdit {{ background: {palette.editor_background}; color: {palette.editor_text}; "
+            f"font-size: {font.pointSizeF():.3f}pt; font-weight: 700; "
+            f"border: 2px solid {palette.connection_selected}; border-radius: 7px; padding: 6px; }}"
+        )
 
     def begin_comment_edit(self) -> bool:
         if self.node.type != "Comment" or self.node.locked:
@@ -2471,13 +2487,8 @@ class NodeItem(QGraphicsObject):
             return True
         editor = InlineTitlePlainTextEdit()
         editor.setPlainText(str(self.node.fields.get("content", "") or ""))
-        editor.setFont(self._comment_content_font())
         editor.setObjectName("inlineCommentTitleEditor")
-        palette = self._ui_theme_palette()
-        editor.setStyleSheet(
-            f"QPlainTextEdit {{ background: {palette.editor_background}; color: {palette.editor_text}; "
-            f"border: 2px solid {palette.connection_selected}; border-radius: 7px; padding: 6px; }}"
-        )
+        self._apply_comment_editor_style(editor)
         proxy = QGraphicsProxyWidget(self)
         proxy.setZValue(120.0)
         proxy.setWidget(editor)
@@ -2509,11 +2520,14 @@ class NodeItem(QGraphicsObject):
             self.controller.update_field(self.node.uuid, "content", value, "simple")
 
     def commit_pending_inline_edit(self) -> None:
-        if self._comment_editor_proxy is None:
-            return
-        editor = self._comment_editor_proxy.widget()
-        if isinstance(editor, QPlainTextEdit):
-            self._finish_comment_edit(True, editor.toPlainText())
+        if self._comment_editor_proxy is not None:
+            editor = self._comment_editor_proxy.widget()
+            if isinstance(editor, QPlainTextEdit):
+                self._finish_comment_edit(True, editor.toPlainText())
+        if self._card_editor_proxy is not None:
+            editor = self._card_editor_proxy.widget()
+            if isinstance(editor, CommitLineEdit):
+                editor._emit_commit()
 
     def _discard_card_field_editor(self) -> None:
         proxy = self._card_editor_proxy
@@ -2662,7 +2676,7 @@ class NodeItem(QGraphicsObject):
             }
             updates = {key: value for key, value in updates.items() if self.node.fields.get(key) != value}
             if updates:
-                self.controller.update_fields(self.node.uuid, updates, "advanced", label="搴旂敤澶栬鏂规")
+                self.controller.update_fields(self.node.uuid, updates, "advanced", label="应用外观方案")
             return True
         if getattr(self.form, "node", None) is not self.node:
             dialog = NodeAppearanceDialog(self.node.fields, self._canvas_view() or self.form)

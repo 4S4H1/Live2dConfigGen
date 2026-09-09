@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import csv
 import json
 import math
@@ -13,7 +14,7 @@ from dataclasses import asdict
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from .models import (
     CanvasImageRecord,
@@ -1959,7 +1960,7 @@ def csv_template_header_rows(schema: EditorSchema, search_roots: list[str | Path
             try:
                 with template_path.open("r", encoding="utf-8-sig", newline="") as handle:
                     rows = list(csv.reader(handle))
-            except OSError:
+            except (OSError, UnicodeError, csv.Error):
                 continue
             if rows and rows[0] == list(schema.csv_columns):
                 return rows[:4] if len(rows) >= 4 else rows[:1]
@@ -1973,15 +1974,35 @@ def export_documents_to_csv(
     *,
     template_search_roots: list[str | Path] | tuple[str | Path, ...] = (),
 ) -> Path:
-    header_rows = csv_template_header_rows(schema, template_search_roots)
-    with Path(output_path).open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.writer(handle, delimiter=",", lineterminator="\n")
-        for row in header_rows:
-            writer.writerow(row)
-        for document in documents:
-            for preview_row in document_to_csv_rows(schema, document):
-                writer.writerow([preview_row.values.get(column, "") for column in schema.csv_columns])
-    return Path(output_path)
+    rows = csv_template_header_rows(schema, template_search_roots)
+    for document in documents:
+        for preview_row in document_to_csv_rows(schema, copy.deepcopy(document)):
+            rows.append([preview_row.values.get(column, "") for column in schema.csv_columns])
+    return write_csv_rows_atomic(output_path, rows)
+
+
+def write_csv_rows_atomic(output_path: str | Path, rows: Iterable[list[Any]]) -> Path:
+    """Write Excel-readable UTF-8 with BOM, preserving an old file on failure."""
+    target = Path(output_path)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8-sig", newline="", dir=target.parent,
+            prefix=f".{target.name}.", suffix=".tmp", delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            csv.writer(handle, delimiter=",", lineterminator="\n").writerows(rows)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, target)
+        temp_path = None
+        return target
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _issue_for_group(

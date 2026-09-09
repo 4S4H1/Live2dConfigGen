@@ -1,11 +1,10 @@
 {
   "editor_signature": "l2d_config_editor/v1",
-  "format_version": 2,
+  "format_version": 5,
   "global_mode": "simple",
   "interaction_creation_mode": "auto",
   "editor_settings": {
-    "numeric_linkage_enabled": false,
-    "trash_enabled": false
+    "numeric_linkage_enabled": false
   },
   "meta": {
     "version": "2026-07-11",
@@ -22,19 +21,628 @@
       "uuid": "c1c1025a06d041a3b8f7cd2fa115ac48",
       "type": "Idle0",
       "ui_position": {
-        "x": 72.0,
-        "y": 72.0
+        "x": 80.0,
+        "y": 80.0
       },
       "locked": false
+    },
+    {
+      "uuid": "225683683d5f411eba528439cae83dc7",
+      "type": "TouchIdle",
+      "ui_position": {
+        "x": 977.6,
+        "y": 80.0
+      },
+      "type_slot": 1,
+      "export_slot": 1,
+      "locked": false,
+      "numeric_linkage_enabled": false,
+      "manual_fields": [
+        "parameter"
+      ],
+      "tips": "",
+      "desc": "",
+      "draw_able_name": "TouchIdle1",
+      "parameter": "empty",
+      "range": "{0,1}",
+      "control_type": "click",
+      "drag_ui_direction": "",
+      "transition_type": "animated",
+      "action_trigger": "{type = 2 ,action = 'touch_idle1'}",
+      "action_trigger_active": "{enable = {},ignore = {'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'},idle = 1}",
+      "id": 601,
+      "mode": 1,
+      "start_value": 0,
+      "parts_data": "",
+      "ignore_react": 1,
+      "ignore_action": 1,
+      "range_abs": 1,
+      "drag_direct": 0,
+      "react_pos_x": null,
+      "react_pos_y": null,
+      "offset_circle": "",
+      "offset_x": 0,
+      "offset_y": 0,
+      "smooth": 100,
+      "revert_smooth": 100,
+      "revert": -1,
+      "save_parameter": "",
+      "gyro": 0,
+      "gyro_x": 0,
+      "gyro_y": 0,
+      "gyro_z": 0,
+      "limit_time": 1.0,
+      "listener_data": "",
+      "shop_action": 0,
+      "relation_parameter": "",
+      "theme_body_color": "#071b2d",
+      "theme_border_color": "#25b7ff",
+      "theme_text_color": "#e8f8ff"
+    },
+    {
+      "uuid": "e72fa6b48c2444149eebf54bfa979a2c",
+      "type": "PlanPlaceholder",
+      "ui_position": {
+        "x": 977.6,
+        "y": 2324.0
+      },
+      "locked": false,
+      "plan_source_title": "新主题",
+      "planned_draw_name": "",
+      "planned_action_name": "",
+      "theme_body_color": "#242933",
+      "theme_border_color": "#8b95a5",
+      "theme_text_color": "#d7dce5"
+    },
+    {
+      "uuid": "f5774fc467d444c6bb0ecad5035fb46d",
+      "type": "TouchIdle",
+      "ui_position": {
+        "x": 977.6,
+        "y": 1763.0
+      },
+      "type_slot": 3,
+      "export_slot": 3,
+      "locked": false,
+      "numeric_linkage_enabled": false,
+      "manual_fields": [
+        "action_trigger",
+        "draw_able_name",
+        "parameter",
+        "tips"
+      ],
+      "tips": "备注",
+      "desc": "",
+      "draw_able_name": "TouchIdle2",
+      "parameter": "empty",
+      "range": "{0,1}",
+      "control_type": "click",
+      "drag_ui_direction": "",
+      "transition_type": "animated",
+      "action_trigger": "{type = 2 ,action = 'touch_idle11'}",
+      "action_trigger_active": "{enable = {},ignore = {'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'},idle = 3}",
+      "id": 603,
+      "mode": 1,
+      "start_value": 0,
+      "parts_data": "",
+      "ignore_react": 1,
+      "ignore_action": 1,
+      "range_abs": 1,
+      "drag_direct": 0,
+      "react_pos_x": null,
+      "react_pos_y": null,
+      "offset_circle": "",
+      "offset_x": 0,
+      "offset_y": 0,
+      "smooth": 100,
+      "revert_smooth": 100,
+      "revert": -1,
+      "save_parameter": "",
+      "gyro": 0,
+      "gyro_x": 0,
+      "gyro_y": 0,
+      "gyro_z": 0,
+      "limit_time": 1.0,
+      "listener_data": "",
+      "shop_action": 0,
+      "relation_parameter": "",
+      "theme_body_color": "#071b2d",
+      "theme_border_color": "#25b7ff",
+      "theme_text_color": "#e8f8ff"
+    },
+    {
+      "uuid": "0d384b062e5e46639b389ef81ea05629",
+      "type": "TouchIdle",
+      "ui_position": {
+        "x": 980.0,
+        "y": 1200.0
+      },
+      "type_slot": 4,
+      "export_slot": 4,
+      "locked": false,
+      "numeric_linkage_enabled": false,
+      "manual_fields": [
+        "action_trigger",
+        "draw_able_name",
+        "parameter"
+      ],
+      "tips": "",
+      "desc": "",
+      "draw_able_name": "TouchIdle15",
+      "parameter": "empty",
+      "range": "{0,1}",
+      "control_type": "click",
+      "drag_ui_direction": "",
+      "transition_type": "animated",
+      "action_trigger": "{type = 2 ,action = 'touch_idle7'}",
+      "action_trigger_active": "{enable = {},ignore = {'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'},idle = 4}",
+      "id": 604,
+      "mode": 1,
+      "start_value": 0,
+      "parts_data": "",
+      "ignore_react": 1,
+      "ignore_action": 1,
+      "range_abs": 1,
+      "drag_direct": 0,
+      "react_pos_x": null,
+      "react_pos_y": null,
+      "offset_circle": "",
+      "offset_x": 0,
+      "offset_y": 0,
+      "smooth": 100,
+      "revert_smooth": 100,
+      "revert": -1,
+      "save_parameter": "",
+      "gyro": 0,
+      "gyro_x": 0,
+      "gyro_y": 0,
+      "gyro_z": 0,
+      "limit_time": 1.0,
+      "listener_data": "",
+      "shop_action": 0,
+      "relation_parameter": "",
+      "theme_body_color": "#071b2d",
+      "theme_border_color": "#25b7ff",
+      "theme_text_color": "#e8f8ff"
+    },
+    {
+      "uuid": "4de5bdf7672242d8b7c92a6f16bac7e8",
+      "type": "TouchIdle",
+      "ui_position": {
+        "x": 1880.0,
+        "y": 1760.0
+      },
+      "type_slot": 2,
+      "export_slot": 2,
+      "locked": false,
+      "numeric_linkage_enabled": false,
+      "manual_fields": [
+        "parameter"
+      ],
+      "tips": "",
+      "desc": "",
+      "draw_able_name": "TouchIdle2",
+      "parameter": "empty",
+      "range": "{0,1}",
+      "control_type": "click",
+      "drag_ui_direction": "",
+      "transition_type": "animated",
+      "action_trigger": "{type = 2 ,action = 'touch_idle2'}",
+      "action_trigger_active": "{enable = {},ignore = {'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'},idle = 2}",
+      "id": 602,
+      "mode": 1,
+      "start_value": 0,
+      "parts_data": "",
+      "ignore_react": 1,
+      "ignore_action": 1,
+      "range_abs": 1,
+      "drag_direct": 0,
+      "react_pos_x": null,
+      "react_pos_y": null,
+      "offset_circle": "",
+      "offset_x": 0,
+      "offset_y": 0,
+      "smooth": 100,
+      "revert_smooth": 100,
+      "revert": -1,
+      "save_parameter": "",
+      "gyro": 0,
+      "gyro_x": 0,
+      "gyro_y": 0,
+      "gyro_z": 0,
+      "limit_time": 1.0,
+      "listener_data": "",
+      "shop_action": 0,
+      "relation_parameter": "",
+      "theme_body_color": "#071b2d",
+      "theme_border_color": "#25b7ff",
+      "theme_text_color": "#e8f8ff"
+    },
+    {
+      "uuid": "e54abc43bd1b43ac925ead8581d5ee4a",
+      "type": "PlanPlaceholder",
+      "ui_position": {
+        "x": 1875.2,
+        "y": 2324.0
+      },
+      "locked": false,
+      "plan_source_title": "新主题",
+      "planned_draw_name": "",
+      "planned_action_name": "",
+      "theme_body_color": "#242933",
+      "theme_border_color": "#8b95a5",
+      "theme_text_color": "#d7dce5"
+    },
+    {
+      "uuid": "2466f99999ee4b51b09c57bcbf2ee370",
+      "type": "PlanPlaceholder",
+      "ui_position": {
+        "x": 1875.2,
+        "y": 80.0
+      },
+      "locked": false,
+      "plan_source_title": "新主题",
+      "planned_draw_name": "",
+      "planned_action_name": "",
+      "theme_body_color": "#242933",
+      "theme_border_color": "#8b95a5",
+      "theme_text_color": "#d7dce5"
+    },
+    {
+      "uuid": "e8c9df4c29214e93aaa48b1e976bc49b",
+      "type": "PlanPlaceholder",
+      "ui_position": {
+        "x": 1875.2,
+        "y": 641.0
+      },
+      "locked": false,
+      "plan_source_title": "新主题",
+      "planned_draw_name": "",
+      "planned_action_name": "",
+      "theme_body_color": "#242933",
+      "theme_border_color": "#8b95a5",
+      "theme_text_color": "#d7dce5"
+    },
+    {
+      "uuid": "1b666e2fa87e4a8fbb2c97bfed28c9fb",
+      "type": "TouchIdle",
+      "ui_position": {
+        "x": 2780.0,
+        "y": 2320.0
+      },
+      "type_slot": 5,
+      "export_slot": 5,
+      "locked": false,
+      "numeric_linkage_enabled": false,
+      "manual_fields": [
+        "draw_able_name",
+        "parameter",
+        "tips"
+      ],
+      "tips": "新主题",
+      "desc": "",
+      "draw_able_name": "1",
+      "parameter": "empty",
+      "range": "{0,1}",
+      "control_type": "click",
+      "drag_ui_direction": "",
+      "transition_type": "animated",
+      "action_trigger": "{type = 2 ,action = 'touch_idle5'}",
+      "action_trigger_active": "{enable = {},ignore = {'main_1','main_2','main_3','main_4','mission','mission_complete','complete','login','home','mail','touch_body','touch_head'},idle = 5}",
+      "id": 605,
+      "mode": 1,
+      "start_value": 0,
+      "parts_data": "",
+      "ignore_react": 1,
+      "ignore_action": 1,
+      "range_abs": 1,
+      "drag_direct": 0,
+      "react_pos_x": null,
+      "react_pos_y": null,
+      "offset_circle": "",
+      "offset_x": 0,
+      "offset_y": 0,
+      "smooth": 100,
+      "revert_smooth": 100,
+      "revert": -1,
+      "save_parameter": "",
+      "gyro": 0,
+      "gyro_x": 0,
+      "gyro_y": 0,
+      "gyro_z": 0,
+      "limit_time": 1.0,
+      "listener_data": "",
+      "shop_action": 0,
+      "relation_parameter": "",
+      "theme_body_color": "#071b2d",
+      "theme_border_color": "#25b7ff",
+      "theme_text_color": "#e8f8ff"
+    },
+    {
+      "uuid": "5b00f5a0bdf647deb784df304b8da625",
+      "type": "PlanPlaceholder",
+      "ui_position": {
+        "x": 2772.8,
+        "y": 3446.0
+      },
+      "locked": false,
+      "plan_source_title": "新主题",
+      "planned_draw_name": "",
+      "planned_action_name": "",
+      "theme_body_color": "#242933",
+      "theme_border_color": "#8b95a5",
+      "theme_text_color": "#d7dce5"
+    },
+    {
+      "uuid": "0769a848a0754a038f8206ece1b8345b",
+      "type": "PlanPlaceholder",
+      "ui_position": {
+        "x": 2772.8,
+        "y": 4007.0
+      },
+      "locked": false,
+      "plan_source_title": "新主题",
+      "planned_draw_name": "",
+      "planned_action_name": "",
+      "theme_body_color": "#242933",
+      "theme_border_color": "#8b95a5",
+      "theme_text_color": "#d7dce5"
+    },
+    {
+      "uuid": "9e0854e82b2f4f79afec7156fb4a244c",
+      "type": "PlanPlaceholder",
+      "ui_position": {
+        "x": 3670.4,
+        "y": 2324.0
+      },
+      "locked": false,
+      "plan_source_title": "新主题",
+      "planned_draw_name": "",
+      "planned_action_name": "",
+      "theme_body_color": "#242933",
+      "theme_border_color": "#8b95a5",
+      "theme_text_color": "#d7dce5"
+    },
+    {
+      "uuid": "05524ec057cd42f1bf0972bd2a849a59",
+      "type": "PlanPlaceholder",
+      "ui_position": {
+        "x": 4568.0,
+        "y": 2324.0
+      },
+      "locked": false,
+      "plan_source_title": "新主题",
+      "planned_draw_name": "",
+      "planned_action_name": "",
+      "theme_body_color": "#242933",
+      "theme_border_color": "#8b95a5",
+      "theme_text_color": "#d7dce5"
+    },
+    {
+      "uuid": "9182c5c4ca714ccf9723cef1c983c6e0",
+      "type": "PlanPlaceholder",
+      "ui_position": {
+        "x": 4568.0,
+        "y": 2885.0
+      },
+      "locked": false,
+      "plan_source_title": "新主题",
+      "planned_draw_name": "",
+      "planned_action_name": "",
+      "theme_body_color": "#242933",
+      "theme_border_color": "#8b95a5",
+      "theme_text_color": "#d7dce5"
     }
   ],
   "groups": [],
   "canvas_images": [],
-  "connections": [],
-  "trash_bin": [],
+  "canvas_strokes": [],
+  "plan_canvas_strokes": [],
+  "connections": [
+    {
+      "from_uuid": "c1c1025a06d041a3b8f7cd2fa115ac48",
+      "to_uuid": "225683683d5f411eba528439cae83dc7"
+    },
+    {
+      "from_uuid": "c1c1025a06d041a3b8f7cd2fa115ac48",
+      "to_uuid": "e72fa6b48c2444149eebf54bfa979a2c"
+    },
+    {
+      "from_uuid": "c1c1025a06d041a3b8f7cd2fa115ac48",
+      "to_uuid": "f5774fc467d444c6bb0ecad5035fb46d"
+    },
+    {
+      "from_uuid": "c1c1025a06d041a3b8f7cd2fa115ac48",
+      "to_uuid": "0d384b062e5e46639b389ef81ea05629"
+    },
+    {
+      "from_uuid": "f5774fc467d444c6bb0ecad5035fb46d",
+      "to_uuid": "4de5bdf7672242d8b7c92a6f16bac7e8"
+    },
+    {
+      "from_uuid": "e72fa6b48c2444149eebf54bfa979a2c",
+      "to_uuid": "e54abc43bd1b43ac925ead8581d5ee4a"
+    },
+    {
+      "from_uuid": "225683683d5f411eba528439cae83dc7",
+      "to_uuid": "2466f99999ee4b51b09c57bcbf2ee370"
+    },
+    {
+      "from_uuid": "225683683d5f411eba528439cae83dc7",
+      "to_uuid": "e8c9df4c29214e93aaa48b1e976bc49b"
+    },
+    {
+      "from_uuid": "e54abc43bd1b43ac925ead8581d5ee4a",
+      "to_uuid": "1b666e2fa87e4a8fbb2c97bfed28c9fb"
+    },
+    {
+      "from_uuid": "e54abc43bd1b43ac925ead8581d5ee4a",
+      "to_uuid": "5b00f5a0bdf647deb784df304b8da625"
+    },
+    {
+      "from_uuid": "e54abc43bd1b43ac925ead8581d5ee4a",
+      "to_uuid": "0769a848a0754a038f8206ece1b8345b"
+    },
+    {
+      "from_uuid": "1b666e2fa87e4a8fbb2c97bfed28c9fb",
+      "to_uuid": "9e0854e82b2f4f79afec7156fb4a244c"
+    },
+    {
+      "from_uuid": "9e0854e82b2f4f79afec7156fb4a244c",
+      "to_uuid": "05524ec057cd42f1bf0972bd2a849a59"
+    },
+    {
+      "from_uuid": "9e0854e82b2f4f79afec7156fb4a244c",
+      "to_uuid": "9182c5c4ca714ccf9723cef1c983c6e0"
+    }
+  ],
   "canvas_view": {
-    "scale": 1.0,
-    "offset_x": 0.0,
-    "offset_y": 0.0
+    "scale": 0.248588586710179,
+    "offset_x": 2144.1048724469665,
+    "offset_y": 1238.9949356729187
+  },
+  "plan_layout": {
+    "topics": [
+      {
+        "node_uuid": "c1c1025a06d041a3b8f7cd2fa115ac48",
+        "parent_uuid": null,
+        "order": 0,
+        "plan_title": "",
+        "collapsed": false,
+        "branch_color": "#2F80ED",
+        "formalization_state": "formal"
+      },
+      {
+        "node_uuid": "225683683d5f411eba528439cae83dc7",
+        "parent_uuid": "c1c1025a06d041a3b8f7cd2fa115ac48",
+        "order": 0,
+        "plan_title": "",
+        "collapsed": false,
+        "branch_color": "#F57C00",
+        "formalization_state": "formal"
+      },
+      {
+        "node_uuid": "e72fa6b48c2444149eebf54bfa979a2c",
+        "parent_uuid": "c1c1025a06d041a3b8f7cd2fa115ac48",
+        "order": 2,
+        "plan_title": "新主题",
+        "collapsed": false,
+        "branch_color": "#43A047",
+        "formalization_state": "virtual"
+      },
+      {
+        "node_uuid": "f5774fc467d444c6bb0ecad5035fb46d",
+        "parent_uuid": "c1c1025a06d041a3b8f7cd2fa115ac48",
+        "order": 1,
+        "plan_title": "touchidle2-touch_idle11-备注",
+        "collapsed": false,
+        "branch_color": "#E53935",
+        "formalization_state": "materialized"
+      },
+      {
+        "node_uuid": "0d384b062e5e46639b389ef81ea05629",
+        "parent_uuid": "c1c1025a06d041a3b8f7cd2fa115ac48",
+        "order": 3,
+        "plan_title": "Touchidle15-touch_idle7",
+        "collapsed": false,
+        "branch_color": "#7E57C2",
+        "formalization_state": "materialized"
+      },
+      {
+        "node_uuid": "4de5bdf7672242d8b7c92a6f16bac7e8",
+        "parent_uuid": "f5774fc467d444c6bb0ecad5035fb46d",
+        "order": 0,
+        "plan_title": "",
+        "collapsed": false,
+        "branch_color": "#E53935",
+        "formalization_state": "formal"
+      },
+      {
+        "node_uuid": "e54abc43bd1b43ac925ead8581d5ee4a",
+        "parent_uuid": "e72fa6b48c2444149eebf54bfa979a2c",
+        "order": 0,
+        "plan_title": "新主题",
+        "collapsed": false,
+        "branch_color": "#43A047",
+        "formalization_state": "virtual"
+      },
+      {
+        "node_uuid": "2466f99999ee4b51b09c57bcbf2ee370",
+        "parent_uuid": "225683683d5f411eba528439cae83dc7",
+        "order": 0,
+        "plan_title": "新主题",
+        "collapsed": false,
+        "branch_color": "#F57C00",
+        "formalization_state": "virtual"
+      },
+      {
+        "node_uuid": "e8c9df4c29214e93aaa48b1e976bc49b",
+        "parent_uuid": "225683683d5f411eba528439cae83dc7",
+        "order": 1,
+        "plan_title": "新主题",
+        "collapsed": false,
+        "branch_color": "#F57C00",
+        "formalization_state": "virtual"
+      },
+      {
+        "node_uuid": "1b666e2fa87e4a8fbb2c97bfed28c9fb",
+        "parent_uuid": "e54abc43bd1b43ac925ead8581d5ee4a",
+        "order": 0,
+        "plan_title": "新主题",
+        "collapsed": false,
+        "branch_color": "#43A047",
+        "formalization_state": "materialized"
+      },
+      {
+        "node_uuid": "5b00f5a0bdf647deb784df304b8da625",
+        "parent_uuid": "e54abc43bd1b43ac925ead8581d5ee4a",
+        "order": 1,
+        "plan_title": "新主题",
+        "collapsed": false,
+        "branch_color": "#43A047",
+        "formalization_state": "virtual"
+      },
+      {
+        "node_uuid": "0769a848a0754a038f8206ece1b8345b",
+        "parent_uuid": "e54abc43bd1b43ac925ead8581d5ee4a",
+        "order": 2,
+        "plan_title": "新主题",
+        "collapsed": false,
+        "branch_color": "#43A047",
+        "formalization_state": "virtual"
+      },
+      {
+        "node_uuid": "9e0854e82b2f4f79afec7156fb4a244c",
+        "parent_uuid": "1b666e2fa87e4a8fbb2c97bfed28c9fb",
+        "order": 0,
+        "plan_title": "新主题",
+        "collapsed": false,
+        "branch_color": "#43A047",
+        "formalization_state": "virtual"
+      },
+      {
+        "node_uuid": "05524ec057cd42f1bf0972bd2a849a59",
+        "parent_uuid": "9e0854e82b2f4f79afec7156fb4a244c",
+        "order": 0,
+        "plan_title": "新主题",
+        "collapsed": false,
+        "branch_color": "#43A047",
+        "formalization_state": "virtual"
+      },
+      {
+        "node_uuid": "9182c5c4ca714ccf9723cef1c983c6e0",
+        "parent_uuid": "9e0854e82b2f4f79afec7156fb4a244c",
+        "order": 1,
+        "plan_title": "新主题",
+        "collapsed": false,
+        "branch_color": "#43A047",
+        "formalization_state": "virtual"
+      }
+    ],
+    "view": {
+      "scale": 1.0,
+      "offset_x": 718.0,
+      "offset_y": 299.0
+    }
   }
 }

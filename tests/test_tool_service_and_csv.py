@@ -180,7 +180,7 @@ class CurrentCsvExportTests(unittest.TestCase):
             self.assertTrue(first.name.endswith("_20260729_123456.csv"))
             self.assertTrue(second.name.endswith("_20260729_123456_2.csv"))
             self.assertNotEqual(first, second)
-            with first.open("r", encoding="utf-8", newline="") as handle:
+            with first.open("r", encoding="utf-8-sig", newline="") as handle:
                 rows = list(csv.reader(handle))
             self.assertEqual(list(self.controller.schema.csv_columns), rows[0])
             self.assertEqual(2, len(rows))

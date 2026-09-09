@@ -21,7 +21,7 @@
 ## 构建
 
 ```powershell
-.\scripts\Build-Release.ps1 -Notes "1.3.0：滑动整线擦除、计划图正式化、独立画笔层、SVN 图表 Diff 与批量 AI 编辑"
+.\scripts\Build-Release.ps1 -Notes "1.4.2：备注编辑、CSV 编码、保存状态与更新发布可靠性修复"
 ```
 
 脚本先以锁定环境运行全部测试，再生成图标、PE 版本信息、编辑器与 Host 两个
@@ -33,7 +33,7 @@
 默认 `minimum_supported_version` 为 `1.0.0`。提高最低支持版本会让更旧
 客户端拒绝自动更新；这些用户需要从更新主机首页手动安装完整版本。
 
-`L2DConfigEditor-Setup-1.3.0-x64.exe` 用于首次安装及覆盖升级；同一个安装器
+`L2DConfigEditor-Setup-1.4.2-x64.exe` 用于首次安装及覆盖升级；同一个安装器
 把编辑器和独立托盘 Host 安装到各自的程序根，并只注册一个卸载入口。
 Windows 会因未做 Authenticode 签名显示“未知发布者”。
 
@@ -51,7 +51,7 @@ Windows 会因未做 Authenticode 签名显示“未知发布者”。
 选择 `.l2dupdate`。也可运行：
 
 ```powershell
-.\scripts\Publish-Release.ps1 -Bundle .\dist\release\L2DConfigEditor-1.3.0.l2dupdate
+.\scripts\Publish-Release.ps1 -Bundle .\dist\release\L2DConfigEditor-1.4.2.l2dupdate
 ```
 
 导入流程先验证 Ed25519 原始清单签名、产品/平台/SemVer、文件大小和

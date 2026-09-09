@@ -8,15 +8,13 @@ has identical naming and atomic-write behaviour.
 from __future__ import annotations
 
 import copy
-import csv
 import os
 import re
-import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .logic import csv_template_header_rows, document_to_csv_rows
+from .logic import csv_template_header_rows, document_to_csv_rows, write_csv_rows_atomic
 from .models import DocumentModel
 from .schema import EditorSchema
 
@@ -153,35 +151,13 @@ def export_current_document_csv(
     # Finish every fallible conversion before reserving a target name.
     output_path, lock_path = _reserve_output_path(root, snapshot, timestamp=timestamp)
 
-    temp_path: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            newline="",
-            dir=root,
-            prefix=f".{output_path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as temp_file:
-            temp_path = Path(temp_file.name)
-            writer = csv.writer(temp_file, delimiter=",", lineterminator="\n")
-            writer.writerows(header_rows)
-            for preview_row in preview_rows:
-                writer.writerow(
-                    [preview_row.values.get(column, "") for column in schema.csv_columns]
-                )
-            temp_file.flush()
-            os.fsync(temp_file.fileno())
-        os.replace(temp_path, output_path)
-        temp_path = None
-        return output_path
+        rows = header_rows + [
+            [row.values.get(column, "") for column in schema.csv_columns]
+            for row in preview_rows
+        ]
+        return write_csv_rows_atomic(output_path, rows)
     finally:
-        if temp_path is not None and temp_path.exists():
-            try:
-                temp_path.unlink()
-            except OSError:
-                pass
         if lock_path.exists():
             try:
                 lock_path.unlink()
