@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Mapping
 
 from .models import CanvasStrokeRecord, DocumentModel
@@ -137,6 +137,9 @@ def canonical_graph_snapshot(document: DocumentModel) -> dict[str, dict[str, Any
         for image in document.canvas_images
     }
     return {
+        "metadata": {"meta": _json_value(asdict(document.meta))},
+        "settings": {"editor": _json_value(asdict(document.editor_settings)),
+                     "interaction": {"creation_mode": document.interaction_creation_mode}},
         "nodes": nodes,
         "connections": connections,
         "groups": groups,

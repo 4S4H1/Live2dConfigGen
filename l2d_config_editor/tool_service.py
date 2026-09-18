@@ -201,7 +201,12 @@ class _DocumentSnapshotCommand(QUndoCommand):
     def _apply(self, document: DocumentModel) -> None:
         controller = self._controller
         selected_uuid = controller.selected_node_uuid
-        controller.document = copy.deepcopy(document)
+        replacement = copy.deepcopy(document)
+        # Undo changes graph content, never the last successful save or its disk
+        # baseline. A save (or Save As) may have happened after this command.
+        for name in ("path", "disk_stamp", "disk_digest", "disk_observed", "history", "history_snapshot"):
+            setattr(replacement, name, copy.deepcopy(getattr(controller.document, name)))
+        controller.document = replacement
         controller.preferences.global_mode = controller.document.global_mode
         if selected_uuid and controller.get_node(selected_uuid) is None:
             selected_uuid = None

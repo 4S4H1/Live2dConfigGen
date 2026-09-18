@@ -10,7 +10,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from PySide6.QtCore import QMimeData, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QFileSystemWatcher, QMimeData, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QColor, QDesktopServices, QGuiApplication, QKeySequence, QUndoStack
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -56,6 +56,7 @@ from .canvas import NodeCanvasView
 from .constants import CLIPBOARD_MIME
 from .controller import EditorController
 from .csv_export import export_current_document_csv
+from .file_tracking import disk_changed, ExternalDocumentChangeError
 from .host_process import HostProcessManager
 from .logic import (
     create_document,
@@ -68,7 +69,6 @@ from .plan_canvas import PlanCanvasView
 from .reference_images import read_reference_image
 from .schema import load_editor_schema
 from .styles import ThemeMode, normalize_theme_mode, stylesheet_for_theme
-from .svn_diff_dialog import SvnGraphDiffDialog
 from .svn_tools import SvnCommitRunner, SvnHistoryRunner, discover_svn_executable
 from .template_batch import BatchTemplateDialog, create_base_template_files
 from .tool_service import EditorToolService
@@ -502,16 +502,29 @@ class MainWindow(QMainWindow):
         self._refresh_file_list_after_save = False
         self.svn_commit_dialog: SvnCommitDialog | None = None
         self.svn_diff_dialog: SvnGraphDiffDialog | None = None
+        self.history_dialog = None
         self._update_client: UpdateClient | None = None
         self._update_progress: QProgressDialog | None = None
         self._update_check_is_manual = False
         self._pending_update_manifest: dict[str, object] | None = None
         self._approved_update_exit = False
         self._graph_view_mode = "formal"
+        self._external_change_pending = False
+        self._disk_watcher = QFileSystemWatcher(self)
+        self._disk_debounce = QTimer(self)
+        self._disk_debounce.setSingleShot(True)
+        self._disk_debounce.timeout.connect(self._check_external_document)
+        self._disk_watcher.fileChanged.connect(lambda _path: self._disk_debounce.start(350))
+        self._disk_watcher.directoryChanged.connect(lambda _path: self._disk_debounce.start(350))
+        self._disk_poll = QTimer(self)
+        self._disk_poll.setInterval(1500)
+        self._disk_poll.timeout.connect(self._check_external_document)
+        self._disk_poll.start()
 
         self.controller.pathChanged.connect(self._update_window_title)
         self.controller.pathChanged.connect(self._remember_last_opened_document)
         self.controller.pathChanged.connect(self._close_stale_svn_diff_dialog)
+        self.controller.pathChanged.connect(self._watch_current_document)
         self.controller.selectionChanged.connect(self._update_inspector)
         self.controller.csvPreviewChanged.connect(self._update_csv_preview)
         self.controller.statusMessage.connect(self._show_status)
@@ -519,7 +532,6 @@ class MainWindow(QMainWindow):
         self.controller.nodeAdded.connect(lambda _uuid: self._refresh_node_list_panel())
         self.controller.nodeRemoved.connect(lambda _uuid: self._refresh_node_list_panel())
         self.controller.nodeUpdated.connect(self._handle_node_updated)
-        self.controller.documentLoaded.connect(self._refresh_search_results)
         self.controller.documentLoaded.connect(self._refresh_node_list_panel)
         self.controller.documentLoaded.connect(self._refresh_node_directory_dialog)
         self.controller.groupsChanged.connect(self._refresh_node_list_panel)
@@ -729,6 +741,21 @@ class MainWindow(QMainWindow):
         self.top_toolbar = self._build_top_toolbar()
         layout.addWidget(self.top_toolbar)
 
+        self.external_change_bar = QWidget()
+        external_layout = QHBoxLayout(self.external_change_bar)
+        external_layout.setContentsMargins(8, 4, 8, 4)
+        self.external_change_label = QLabel()
+        self.external_change_label.setWordWrap(True)
+        external_layout.addWidget(self.external_change_label, 1)
+        reload_button = QPushButton("读取磁盘版本")
+        reload_button.clicked.connect(self._reload_external_document)
+        external_layout.addWidget(reload_button)
+        copy_button = QPushButton("另存本地副本…")
+        copy_button.clicked.connect(self._save_external_conflict_copy)
+        external_layout.addWidget(copy_button)
+        self.external_change_bar.hide()
+        layout.addWidget(self.external_change_bar)
+
         horizontal = QSplitter(Qt.Orientation.Horizontal)
         horizontal.setChildrenCollapsible(False)
         layout.addWidget(horizontal)
@@ -895,10 +922,10 @@ class MainWindow(QMainWindow):
         self.svn_commit_button.clicked.connect(self._commit_current_json_to_svn)
         toolbar.addWidget(self.svn_commit_button)
 
-        self.svn_diff_button = QPushButton("SVN 图表 Diff…")
-        self.svn_diff_button.setToolTip("比较 SVN 文件版本与打开窗口时的当前编辑内容，不保存本地 Diff 记录")
-        self.svn_diff_button.clicked.connect(self._show_svn_graph_diff)
-        toolbar.addWidget(self.svn_diff_button)
+        self.history_button = QPushButton("版本历史…")
+        self.history_button.setToolTip("在图表中查看 JSON 内保存的历史版本与修改项")
+        self.history_button.clicked.connect(self._show_document_history)
+        toolbar.addWidget(self.history_button)
 
         return toolbar
 
@@ -923,6 +950,7 @@ class MainWindow(QMainWindow):
         list_layout.addWidget(list_eyebrow)
         self.node_search_edit = QLineEdit()
         self.node_search_edit.setPlaceholderText("\u641c\u7d22\u5f53\u524d\u56fe\u5185\u8282\u70b9")
+        self.node_search_edit.setClearButtonEnabled(True)
         self.node_search_edit.textChanged.connect(self._refresh_node_list_panel)
         list_layout.addWidget(self.node_search_edit)
 
@@ -959,28 +987,6 @@ class MainWindow(QMainWindow):
         self.graph_view_stack.addWidget(self.plan_canvas)
         layout.addWidget(self.graph_view_stack, 1)
 
-        self.search_panel = QFrame(self, Qt.WindowType.Popup)
-        self.search_panel.setObjectName("searchPanel")
-        self.search_panel.setFixedWidth(620)
-        search_layout = QVBoxLayout(self.search_panel)
-        search_layout.setContentsMargins(12, 12, 12, 12)
-        search_layout.setSpacing(6)
-        search_row = QHBoxLayout()
-        search_title = QLabel("\u641c\u7d22")
-        search_title.setObjectName("searchTitle")
-        self.search_edit = QLineEdit()
-        self.search_edit.setMinimumWidth(360)
-        self.search_edit.setPlaceholderText("\u8f93\u5165\u5b57\u6bb5\u503c\uff0c\u4f8b\u5982 idle=13")
-        self.search_edit.textChanged.connect(self._refresh_search_results)
-        search_row.addWidget(search_title)
-        search_row.addWidget(self.search_edit, 1)
-        self.search_results = QListWidget()
-        self.search_results.setMaximumHeight(180)
-        self.search_results.itemClicked.connect(self._jump_to_search_result)
-        self.search_results.hide()
-        search_layout.addLayout(search_row)
-        search_layout.addWidget(self.search_results)
-        self.search_panel.hide()
         return panel
 
     def _active_canvas(self):
@@ -1251,6 +1257,12 @@ class MainWindow(QMainWindow):
         edit_menu = self.edit_menu
         view_menu = self.view_menu
         tools_menu = self.tools_menu
+        history_action = QAction("版本历史…", self)
+        history_action.triggered.connect(self._show_document_history)
+        tools_menu.addAction(history_action)
+        svn_history_action = QAction("SVN 历史版本…", self)
+        svn_history_action.triggered.connect(self._show_svn_graph_diff)
+        tools_menu.addAction(svn_history_action)
         help_menu = self.help_menu
 
         self.appearance_menu = view_menu.addMenu("外观")
@@ -1564,6 +1576,9 @@ class MainWindow(QMainWindow):
             if force_reload or workspace_changed
             else self._document_sessions.get(session_key or "")
         )
+        if session and session["undo_stack"].isClean() and disk_changed(session["document"], path):
+            self._document_sessions.pop(session_key, None)
+            session = None
         if session:
             if current_key and current_key != session_key:
                 self._stash_current_document_session()
@@ -1815,8 +1830,6 @@ class MainWindow(QMainWindow):
                 )
         for node_uuid in list(self.canvas.node_items):
             self.canvas._update_node_item(node_uuid)
-        if self.search_edit.text().strip():
-            self._refresh_search_results()
 
     def _refresh_file_list(self) -> None:
         current = self._relative_path_for_document(self.controller.document.path)
@@ -1865,23 +1878,7 @@ class MainWindow(QMainWindow):
         return f"[\u76ee\u5f55] {arrow} {label} · {count} \u4e2a\u914d\u7f6e"
 
     def _read_file_display_meta(self, path: Path) -> tuple[str, str]:
-        fallback_name = path.name
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return "", fallback_name
-
-        meta = payload.get("meta") if isinstance(payload, dict) else {}
-        if not isinstance(meta, dict):
-            meta = {}
-        char_name = str(meta.get("CharName") or "").strip()
-        if not char_name:
-            nodes = payload.get("nodes") if isinstance(payload, dict) else []
-            if isinstance(nodes, list):
-                initial = next((node for node in nodes if isinstance(node, dict) and node.get("type") == "Initial"), None)
-                if isinstance(initial, dict):
-                    char_name = str(initial.get("CharName") or "").strip()
-        display_name = char_name or path.stem
+        _, char_name, display_name = self.controller.file_display_metadata(path)
         return char_name, display_name
 
     def _current_file_relative_path(self) -> str | None:
@@ -2023,6 +2020,9 @@ class MainWindow(QMainWindow):
             target = str(generated)
         try:
             saved = self.controller.save_document(target)
+        except ExternalDocumentChangeError:
+            self._notify_external_change()
+            return None
         except (OSError, ValueError) as exc:
             self._refresh_file_list_after_save = False
             title = "拒绝覆盖" if "refusing to overwrite" in str(exc) else "保存失败"
@@ -2230,24 +2230,6 @@ class MainWindow(QMainWindow):
         if self.node_directory_dialog and self.node_directory_dialog.isVisible():
             self._refresh_node_directory_dialog()
         self._refresh_node_list_panel()
-        if self.search_edit.text().strip():
-            self._refresh_search_results()
-
-    def _refresh_search_results(self) -> None:
-        text = self.search_edit.text()
-        self.search_results.clear()
-        if not text.strip():
-            self.search_results.hide()
-            return
-        for hit in self.controller.search(text):
-            item = QListWidgetItem(f"{hit.title} | {hit.field_label}: {hit.preview}")
-            item.setData(Qt.ItemDataRole.UserRole, hit.node_uuid)
-            self.search_results.addItem(item)
-        self.search_results.setVisible(self.search_results.count() > 0)
-        if self.search_results.isVisible():
-            self.search_results.setFixedHeight(min(180, max(42, self.search_results.count() * 34 + 8)))
-        if self.search_panel.isVisible():
-            self._position_search_popup()
 
     def _select_canvas_target(self, node_uuid: str) -> None:
         if self._graph_view_mode == "plan":
@@ -2263,16 +2245,6 @@ class MainWindow(QMainWindow):
         table_item = self.canvas.table_row_to_item.get(node_uuid)
         if table_item:
             table_item.select_row(node_uuid)
-
-    def _jump_to_search_result(self, item: QListWidgetItem) -> None:
-        node_uuid = item.data(Qt.ItemDataRole.UserRole)
-        self._active_canvas().focus_on_node(
-            node_uuid,
-            target_scale=1.05,
-            emphasize=False,
-        )
-        self._select_canvas_target(node_uuid)
-        self.search_panel.close()
 
     def _restore_canvas_layout(self) -> None:
         self._active_canvas().reset_view_layout()
@@ -2715,6 +2687,8 @@ class MainWindow(QMainWindow):
         consumed_node_ids: set[str] = set()
         consumed_table_ids: set[str] = set()
 
+        matching_nodes = {hit.node_uuid for hit in self.controller.search(needle)} if needle else set()
+
         def _matches(text: str) -> bool:
             return not needle or needle in text.lower()
 
@@ -2725,7 +2699,7 @@ class MainWindow(QMainWindow):
 
         def _append_node(parent, node_uuid: str) -> bool:
             label = self.controller.node_summary(node_uuid)
-            if not _matches(label):
+            if not _matches(label) and node_uuid not in matching_nodes:
                 return False
             child = _make_payload_item(label, {"kind": "node", "node_uuid": node_uuid})
             parent.addChild(child)
@@ -2789,7 +2763,7 @@ class MainWindow(QMainWindow):
             if node.uuid in row_to_table:
                 continue
             label = self.controller.node_summary(node.uuid)
-            if not _matches(label):
+            if not _matches(label) and node.uuid not in matching_nodes:
                 continue
             item = _make_payload_item(label, {"kind": "node", "node_uuid": node.uuid})
             self.node_list.addTopLevelItem(item)
@@ -2867,6 +2841,8 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, lambda: runner.start(file_path, message, self.workdir))
 
     def _show_svn_graph_diff(self) -> None:
+        from .svn_diff_dialog import SvnGraphDiffDialog
+
         self._commit_pending_editor_changes()
         current_path = self.controller.document.path
         if not current_path or Path(current_path).suffix.lower() != ".json":
@@ -2895,11 +2871,27 @@ class MainWindow(QMainWindow):
         dialog.raise_()
         dialog.activateWindow()
 
+    def _show_document_history(self) -> None:
+        from .history_view import DocumentHistoryDialog
+
+        self._commit_pending_editor_changes()
+        if self.history_dialog is not None:
+            self.history_dialog.close()
+            self.history_dialog.deleteLater()
+        self.history_dialog = DocumentHistoryDialog(self.controller.schema, self.controller.document, self)
+        self.history_dialog.show()
+        self.history_dialog.raise_()
+        self.history_dialog.activateWindow()
+
     def _clear_svn_diff_dialog(self, dialog: SvnGraphDiffDialog) -> None:
         if self.svn_diff_dialog is dialog:
             self.svn_diff_dialog = None
 
     def _close_stale_svn_diff_dialog(self, path: str | None) -> None:
+        if self.history_dialog is not None and self.history_dialog.file_path != path:
+            self.history_dialog.close()
+            self.history_dialog.deleteLater()
+            self.history_dialog = None
         dialog = self.svn_diff_dialog
         if dialog is None:
             return
@@ -2980,36 +2972,8 @@ class MainWindow(QMainWindow):
                 return
 
     def _focus_search(self) -> None:
-        self.search_panel.adjustSize()
-        self.search_panel.show()
-        self._position_search_popup()
-        self.search_panel.raise_()
-        self.search_edit.setFocus()
-        self.search_edit.selectAll()
-
-    def _position_search_popup(self) -> None:
-        if not hasattr(self, "search_panel") or not hasattr(self, "canvas"):
-            return
-        self.search_panel.adjustSize()
-        popup_size = self.search_panel.sizeHint()
-        width = self.search_panel.width()
-        height = max(58, popup_size.height())
-        self.search_panel.resize(width, height)
-        canvas = self._active_canvas()
-        anchor = canvas.viewport().mapToGlobal(canvas.viewport().rect().topRight())
-        x = anchor.x() - width - 16
-        y = anchor.y() + 16
-        screen = QGuiApplication.screenAt(anchor)
-        if screen is not None:
-            available = screen.availableGeometry()
-            x = max(available.left() + 8, min(x, available.right() - width - 8))
-            y = max(available.top() + 8, min(y, available.bottom() - height - 8))
-        self.search_panel.move(x, y)
-
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        if hasattr(self, "search_panel") and self.search_panel.isVisible():
-            self._position_search_popup()
+        self.node_search_edit.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self.node_search_edit.selectAll()
 
     def _focus_file_search(self) -> None:
         self._show_file_directory_dialog()
@@ -3207,6 +3171,9 @@ class MainWindow(QMainWindow):
         self._update_window_title(self.controller.document.path)
 
     def _run_auto_save(self) -> None:
+        self._check_external_document()
+        if self._external_change_pending:
+            return
         if self._has_saved_snapshot and self.controller.document.path and self._is_dirty():
             if self._has_active_text_editor() or (hasattr(self, "canvas") and self._active_canvas().is_busy()):
                 self._auto_save_timer.start(500)
@@ -3214,6 +3181,91 @@ class MainWindow(QMainWindow):
             saved = self._save_current_file(silent=True, allow_incomplete=True)
             if saved:
                 self.statusBar().showMessage(f"已自动保存 {Path(saved).name}", 2500)
+
+    def _watch_current_document(self, _path=None) -> None:
+        paths = self._disk_watcher.files() + self._disk_watcher.directories()
+        if paths:
+            self._disk_watcher.removePaths(paths)
+        path = self.controller.document.path
+        if path:
+            target = Path(path)
+            watch = [str(target.parent)] if target.parent.is_dir() else []
+            if target.is_file():
+                watch.append(str(target))
+            if watch:
+                self._disk_watcher.addPaths(watch)
+        self._external_change_pending = False
+        self.external_change_bar.hide()
+        self._disk_debounce.start(350)
+
+    def _notify_external_change(self, message: str | None = None) -> None:
+        self._external_change_pending = True
+        self._auto_save_timer.stop()
+        self.external_change_label.setText(message or (
+            "磁盘 JSON 已更新。本地修改或输入已保留，自动保存已暂停；"
+            "可读取磁盘版本，或先另存本地副本。"
+        ))
+        self.external_change_bar.show()
+
+    def _check_external_document(self) -> None:
+        document = self.controller.document
+        if not document.path or document.disk_digest is None:
+            return
+        if not disk_changed(document):
+            self._external_change_pending = False
+            self.external_change_bar.hide()
+            return
+        if self._is_dirty() or self._has_active_text_editor() or self._active_canvas().is_busy():
+            self._notify_external_change()
+            return
+        try:
+            self._load_external_document()
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            self._notify_external_change(f"磁盘 JSON 暂不可读取，已保留当前图表并暂停保存，将自动重试：{exc}")
+
+    def _load_external_document(self) -> None:
+        import copy
+
+        old = self.controller.document
+        document = load_document(self.controller.schema, old.path)
+        # Keep the user's viewport while replacing graph data and stale undo history.
+        document.canvas_view = copy.deepcopy(old.canvas_view)
+        document.plan_layout.view = copy.deepcopy(old.plan_layout.view)
+        selected = self.controller.selected_node_uuid
+        key = self._session_key_for_path(old.path)
+        self._document_sessions.pop(key, None)
+        self._switch_to_document(document, undo_stack=QUndoStack(self), saved=True,
+                                 session_key=key, group_dir=self._pending_group_dir)
+        if selected and self.controller.get_node(selected):
+            self.controller.set_selected_node(selected)
+        self._stash_current_document_session()
+        self._show_status("已自动载入磁盘上的最新 JSON")
+
+    def _reload_external_document(self) -> None:
+        if not self._confirm_reload_current_document_from_disk():
+            return
+        try:
+            self._load_external_document()
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            self._notify_external_change(f"读取失败，当前图表已保留：{exc}")
+
+    def _save_external_conflict_copy(self) -> None:
+        current = Path(self.controller.document.path)
+        chosen, _ = QFileDialog.getSaveFileName(self, "另存本地副本", str(current.with_stem(current.stem + "-本地副本")), "JSON Files (*.json)")
+        if not chosen:
+            return
+        if Path(chosen).resolve() == current.resolve() or self._is_install_owned_path(Path(chosen).resolve()):
+            self._show_status("请选择原文件和安装目录以外的副本路径")
+            return
+        self._commit_pending_editor_changes()
+        try:
+            self.controller.save_document(chosen)
+            self._document_sessions.pop(self._session_key_for_path(current), None)
+            self._adopt_workspace_for_document(Path(chosen))
+            self._stash_current_document_session()
+            self._refresh_file_list()
+        except (OSError, ValueError) as exc:
+            self._notify_external_change(f"另存失败：{exc}")
 
     def _has_active_text_editor(self) -> bool:
         # Saving commits/destroys inline widgets. Delay background saves until
@@ -3280,6 +3332,8 @@ class MainWindow(QMainWindow):
             event.accept()
             return
         if self._confirm_safe_to_close():
+            self._disk_poll.stop()
+            self._disk_debounce.stop()
             event.accept()
         else:
             event.ignore()

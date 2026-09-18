@@ -207,6 +207,11 @@ class DocumentModel:
     global_mode: str = "simple"
     interaction_creation_mode: str = "auto"
     path: str | None = None
+    disk_stamp: tuple[int, int, int, int] | None = field(default=None, repr=False, compare=False)
+    disk_digest: str | None = field(default=None, repr=False, compare=False)
+    disk_observed: tuple[object, str] | None = field(default=None, repr=False, compare=False)
+    history: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
+    history_snapshot: dict[str, Any] | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass

@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import copy
-import json
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -17,33 +14,15 @@ from PySide6.QtWidgets import (
     QLabel,
     QPlainTextEdit,
     QPushButton,
-    QTreeWidget,
-    QTreeWidgetItem,
     QVBoxLayout,
 )
 
 from .graph_diff import GraphDiff, diff_documents
+from .history_view import GraphComparisonWidget
 from .logic import load_document_payload
 from .models import DocumentModel
 from .schema import EditorSchema
 from .svn_tools import SvnFileInfo, SvnHistoryRunner, SvnRevision
-
-
-_CATEGORY_LABELS = {
-    "nodes": "节点及字段/位置/尺寸",
-    "connections": "连线",
-    "groups": "分组",
-    "plan_topics": "计划标题/层级/顺序",
-    "formal_strokes": "正式图画笔",
-    "plan_strokes": "计划图画笔",
-    "images": "参考图片",
-}
-_CHANGE_LABELS = {"added": "新增", "deleted": "删除", "modified": "修改"}
-_CHANGE_COLORS = {
-    "added": QColor("#2EAD67"),
-    "deleted": QColor("#D94B55"),
-    "modified": QColor("#D6A323"),
-}
 
 
 class SvnGraphDiffDialog(QDialog):
@@ -99,13 +78,8 @@ class SvnGraphDiffDialog(QDialog):
 
         self.summary_label = QLabel("尚未比较。")
         layout.addWidget(self.summary_label)
-        self.tree = QTreeWidget()
-        self.tree.setColumnCount(5)
-        self.tree.setHeaderLabels(("变化", "对象", "字段", "修改前", "修改后"))
-        self.tree.setAlternatingRowColors(True)
-        self.tree.setUniformRowHeights(True)
-        self.tree.header().setStretchLastSection(True)
-        layout.addWidget(self.tree, 1)
+        self.comparison = GraphComparisonWidget(schema)
+        layout.addWidget(self.comparison, 1)
 
         self.log_edit = QPlainTextEdit()
         self.log_edit.setReadOnly(True)
@@ -257,49 +231,16 @@ class SvnGraphDiffDialog(QDialog):
             self._restore_combo_value(self.right_combo, self._revisions[0].revision)
             self._start_compare()
             return
+        self.comparison.set_documents(self._endpoint_document(left), self._endpoint_document(right))
         self._show_diff(graph_diff)
 
     def _show_diff(self, graph_diff: GraphDiff) -> None:
-        self.tree.clear()
         counts = graph_diff.counts()
         self.summary_label.setText(
             f"新增 {counts['added']} · 删除 {counts['deleted']} · 修改 {counts['modified']}"
             if not graph_diff.is_empty
             else "两个版本的规范化图表内容完全一致。"
         )
-        category_items: dict[str, QTreeWidgetItem] = {}
-        for entry in graph_diff.entries:
-            parent = category_items.get(entry.category)
-            if parent is None:
-                parent = QTreeWidgetItem([_CATEGORY_LABELS.get(entry.category, entry.category)])
-                parent.setFirstColumnSpanned(True)
-                category_items[entry.category] = parent
-                self.tree.addTopLevelItem(parent)
-            row = QTreeWidgetItem(
-                [
-                    _CHANGE_LABELS.get(entry.change, entry.change),
-                    entry.identity,
-                    entry.field_path,
-                    self._display_value(entry.before),
-                    self._display_value(entry.after),
-                ]
-            )
-            color = _CHANGE_COLORS.get(entry.change)
-            if color is not None:
-                for column in range(5):
-                    row.setForeground(column, color)
-            parent.addChild(row)
-        self.tree.expandToDepth(0)
-        for column in range(4):
-            self.tree.resizeColumnToContents(column)
-
-    @staticmethod
-    def _display_value(value: Any) -> str:
-        if value is None:
-            return ""
-        text = json.dumps(value, ensure_ascii=False, sort_keys=True) if isinstance(value, (dict, list)) else str(value)
-        return text if len(text) <= 240 else text[:237] + "…"
-
     def _on_failed(self, message: str) -> None:
         self._pending_revisions.clear()
         self._pending_endpoints = None

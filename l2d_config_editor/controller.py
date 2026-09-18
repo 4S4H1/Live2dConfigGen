@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+import os
 from pathlib import Path
 from typing import Any
 
@@ -156,6 +157,7 @@ class EditorController(QObject):
         self.document = create_document(self.schema)
         self.selected_node_uuid: str | None = None
         self._workspace_root: Path | None = None
+        self._file_metadata_cache: dict[Path, tuple[object, bool, str, str]] = {}
         self.refresh_derived()
 
     def _perf_document_meta(self) -> dict[str, Any]:
@@ -2794,19 +2796,51 @@ class EditorController(QObject):
             return []
         items: list[str] = []
         try:
-            for path in root.rglob("*.json"):
-                if not path.is_file():
-                    continue
-                if not is_editor_document_file(path):
-                    continue
-                try:
-                    rel = path.relative_to(root)
-                except ValueError:
-                    continue
-                items.append(rel.as_posix())
+            ignored = {".git", ".svn", ".venv", ".tools", ".uv-cache", ".uv-python",
+                       "__pycache__", "node_modules", "build", "dist"}
+            seen: set[Path] = set()
+            for directory_path, directories, filenames in os.walk(root):
+                directories[:] = [name for name in directories if name.lower() not in ignored]
+                for name in filenames:
+                    if not name.lower().endswith(".json"):
+                        continue
+                    path = Path(directory_path) / name
+                    seen.add(path)
+                    if self.file_display_metadata(path)[0]:
+                        items.append(path.relative_to(root).as_posix())
+            self._file_metadata_cache = {
+                path: value for path, value in self._file_metadata_cache.items() if path in seen
+            }
         except OSError:
             return []
         return sorted(items, key=lambda s: s.replace("\\", "/").lower())
+
+    def file_display_metadata(self, path: Path) -> tuple[bool, str, str]:
+        from .file_tracking import file_stamp
+        from .logic import is_editor_document_payload
+
+        path = path.resolve()
+        stamp = file_stamp(path)
+        cached = self._file_metadata_cache.get(path)
+        if cached is not None and cached[0] == stamp:
+            return cached[1:]
+        valid, char_name, display = False, "", path.name
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            valid = is_editor_document_payload(payload)
+            if valid:
+                meta = payload.get("meta") or {}
+                if isinstance(meta, dict):
+                    char_name = str(meta.get("CharName") or "").strip()
+                if not char_name:
+                    initial = next((node for node in payload.get("nodes", [])
+                                    if isinstance(node, dict) and node.get("type") == "Initial"), {})
+                    char_name = str(initial.get("CharName") or "").strip()
+                display = char_name or path.stem
+        except (OSError, ValueError, TypeError):
+            pass
+        self._file_metadata_cache[path] = (stamp, valid, char_name, display)
+        return valid, char_name, display
 
     def node_summary(self, node_uuid: str) -> str:
         node = self.get_node(node_uuid)

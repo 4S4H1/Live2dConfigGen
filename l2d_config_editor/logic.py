@@ -1479,6 +1479,7 @@ def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[
         "connections": [asdict(connection) for connection in document.connections],
         "canvas_view": asdict(document.canvas_view),
         "plan_layout": serialize_plan_layout(document),
+        **({"history": document.history} if document.history else {}),
     }
 
 
@@ -1513,9 +1514,16 @@ def _reject_future_document_overwrite(target: Path) -> None:
 
 
 def save_document(schema: EditorSchema, document: DocumentModel, path: str | Path) -> None:
+    from .file_tracking import check_save_baseline, content_digest, file_stamp
+    from .document_history import append_history, history_snapshot
+
     target = Path(path)
+    check_save_baseline(document, target)
     _reject_future_document_overwrite(target)
     data = export_document_dict(schema, document)
+    snapshot = history_snapshot(data)
+    history = append_history(document.history, document.history_snapshot, snapshot, document.meta.author)
+    data["history"] = history
     temp_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -1532,7 +1540,11 @@ def save_document(schema: EditorSchema, document: DocumentModel, path: str | Pat
             temp_file.write("\n")
             temp_file.flush()
             os.fsync(temp_file.fileno())
+        check_save_baseline(document, target)
+        saved_digest = content_digest(temp_path.read_bytes())
         os.replace(temp_path, target)
+        document.disk_stamp = file_stamp(target)
+        document.disk_digest = saved_digest
     finally:
         if temp_path is not None and temp_path.exists():
             try:
@@ -1540,6 +1552,8 @@ def save_document(schema: EditorSchema, document: DocumentModel, path: str | Pat
             except OSError:
                 pass
     document.path = str(target)
+    document.history = history
+    document.history_snapshot = snapshot
 
 
 def _finite_float(value: Any, default: float) -> float:
@@ -1909,12 +1923,24 @@ def load_document_payload(
     reassign_function_ids(schema, document)
     recompute_document_state(schema, document)
     normalize_plan_layout(document)
+    from .document_history import history_snapshot, read_history
+    document.history = read_history(payload.get("history"))
+    document.history_snapshot = history_snapshot(export_document_dict(schema, document))
     return document
 
 
 def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
+    from .file_tracking import content_digest, file_stamp
+
     target = Path(path)
-    return load_document_payload(schema, target.read_bytes(), path=target)
+    stamp = file_stamp(target)
+    payload = target.read_bytes()
+    document = load_document_payload(schema, payload, path=target)
+    if file_stamp(target) != stamp:
+        raise OSError("JSON 正在写入，稍后重试。")
+    document.disk_stamp = stamp
+    document.disk_digest = content_digest(payload)
+    return document
 
 
 def _csv_value_for_mapping(mapping, document: DocumentModel, node: NodeRecord) -> Any:

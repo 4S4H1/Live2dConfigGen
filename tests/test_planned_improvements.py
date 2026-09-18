@@ -335,15 +335,15 @@ class PlannedImprovementTests(unittest.TestCase):
                 window._mark_saved_checkpoint(saved=True)
                 window.close()
 
-    def test_search_is_a_popup_and_does_not_resize_the_canvas(self) -> None:
+    def test_search_uses_sidebar_and_does_not_resize_the_canvas(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             window = MainWindow(temp_dir, prefer_saved_workspace=False)
             before = window.canvas.geometry()
             window._focus_search()
-            window.search_edit.setText("idle0")
+            window.node_search_edit.setText("idle0")
             self.app.processEvents()
-            self.assertTrue(window.search_panel.windowFlags() & Qt.WindowType.Popup)
-            self.assertTrue(window.search_panel.isVisible())
+            self.assertFalse(hasattr(window, "search_panel"))
+            self.assertEqual("idle0", window.node_search_edit.text())
             self.assertEqual(before, window.canvas.geometry())
             window._mark_saved_checkpoint(saved=True)
             window.close()
