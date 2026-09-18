@@ -1590,15 +1590,11 @@ def _reject_future_document_overwrite(target: Path) -> None:
 
 def save_document(schema: EditorSchema, document: DocumentModel, path: str | Path) -> None:
     from .file_tracking import check_save_baseline, content_digest, file_stamp
-    from .document_history import append_history, history_snapshot
 
     target = Path(path)
     check_save_baseline(document, target)
     _reject_future_document_overwrite(target)
     data = export_document_dict(schema, document)
-    snapshot = history_snapshot(data)
-    history = append_history(document.history, document.history_snapshot, snapshot, document.meta.author)
-    data["history"] = history
     temp_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -1627,8 +1623,6 @@ def save_document(schema: EditorSchema, document: DocumentModel, path: str | Pat
             except OSError:
                 pass
     document.path = str(target)
-    document.history = history
-    document.history_snapshot = snapshot
 
 
 def _finite_float(value: Any, default: float) -> float:
@@ -2007,9 +2001,10 @@ def load_document_payload(
     reassign_function_ids(schema, document)
     recompute_document_state(schema, document)
     normalize_plan_layout(document)
-    from .document_history import history_snapshot, read_history
-    document.history = read_history(payload.get("history"))
-    document.history_snapshot = history_snapshot(export_document_dict(schema, document))
+    # The SVN repository is the only history source. Keep legacy dictionaries
+    # without interpreting, validating or extending their embedded revisions.
+    history = payload.get("history")
+    document.history = copy.deepcopy(history) if isinstance(history, dict) else {}
     return document
 
 
@@ -2028,6 +2023,11 @@ def load_document(schema: EditorSchema, path: str | Path) -> DocumentModel:
 
 
 def _csv_value_for_mapping(mapping, document: DocumentModel, node: NodeRecord) -> Any:
+    if mapping.column == "desc" and mapping.kind == "node" and mapping.field == "desc":
+        # Compact cards and parameter-table cells edit ``tips`` (备注). Keep an
+        # explicit CSV description, but do not silently drop the visible note.
+        description = node.fields.get("desc", mapping.default)
+        return description if _text(description).strip() else node.fields.get("tips", mapping.default)
     if mapping.column == "parts_data":
         return canonicalize_parts_data(node.fields.get(mapping.field or "", mapping.default))
     if mapping.column == "react_condition":

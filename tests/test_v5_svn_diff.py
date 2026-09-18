@@ -833,7 +833,7 @@ class SvnParsingTests(unittest.TestCase):
 
             checked_out_graph = working_copy / "graph.json"
             loaded = load_document(controller.schema, checked_out_graph)
-            changed = EditorController(controller.schema)
+            changed = EditorController()
             changed.document = loaded
             changed.create_node("Comment", (300.0, 200.0))
             save_document(changed.schema, changed.document, checked_out_graph)

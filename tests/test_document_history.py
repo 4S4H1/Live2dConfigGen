@@ -1,4 +1,4 @@
-"""Round-trip, retention, compatibility and read-only graphical history tests."""
+"""Legacy history preservation and read-only SVN comparison interaction."""
 import copy
 import json
 import os
@@ -8,16 +8,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtGui import QMouseEvent, QWheelEvent
 from PySide6.QtWidgets import QApplication
 from l2d_config_editor.controller import EditorController
-from l2d_config_editor.document_history import (
-    MAX_HISTORY_BYTES, MAX_HISTORY_VERSIONS, append_history, history_is_anchored,
-    history_size, history_snapshot, revision_snapshot, snapshot_payload,
-)
 from l2d_config_editor.file_tracking import ExternalDocumentChangeError
 from l2d_config_editor.graph_diff import diff_documents
-from l2d_config_editor.history_view import DocumentHistoryDialog
+from l2d_config_editor.history_view import GraphComparisonWidget
 from l2d_config_editor.logic import export_document_dict, load_document, load_document_payload, save_document
 
 
@@ -42,74 +39,55 @@ class DocumentHistoryTests(unittest.TestCase):
     def save(self):
         save_document(self.schema, self.document, self.path)
 
-    def snapshot(self):
-        return history_snapshot(export_document_dict(self.schema, self.document))
+    def test_new_and_repeated_saves_never_embed_history(self):
+        for memo in ("first", "second", "third"):
+            self.document.meta.memo = memo
+            self.save()
+            self.assertNotIn("history", json.loads(self.path.read_text(encoding="utf-8")))
+            self.assertEqual({}, self.document.history)
 
-    def test_saved_revisions_reconstruct_add_edit_delete_and_metadata(self):
-        self.save()
-        expected = [self.snapshot()]
-        uuid = self.controller.create_node("Comment", (200, 100))
-        self.save()
-        expected.append(self.snapshot())
-        self.controller.update_field(uuid, "content", "中文历史\n第二行")
-        self.document.meta.memo = "新元数据"
-        self.save()
-        expected.append(self.snapshot())
-        self.controller.remove_nodes([uuid])
-        self.save()
-        expected.append(self.snapshot())
-        loaded = load_document(self.schema, self.path)
-        self.assertTrue(history_is_anchored(loaded.history, loaded.history_snapshot))
-        self.assertEqual(4, len(loaded.history["revisions"]))
-        for index, snapshot in enumerate(expected):
-            restored = revision_snapshot(loaded.history, loaded.history_snapshot, index)
-            self.assertEqual(snapshot, restored)
-            self.assertEqual(snapshot, history_snapshot(export_document_dict(self.schema, load_document_payload(self.schema, snapshot_payload(restored)))))
-
-    def test_repeated_save_and_viewport_changes_do_not_create_versions(self):
-        self.save()
-        self.document.canvas_view.scale = .5
-        self.document.plan_layout.view.offset_x = 500
-        self.save()
-        self.assertEqual(1, len(self.document.history["revisions"]))
-
-    def test_legacy_json_without_history_gets_baseline_on_first_save(self):
+    def test_old_document_without_history_stays_without_history(self):
         payload = export_document_dict(self.schema, self.document)
         self.path.write_text(json.dumps(payload), encoding="utf-8")
         self.document = load_document(self.schema, self.path)
-        old = self.document.history_snapshot
         self.document.meta.memo = "首次修改"
         self.save()
-        self.assertEqual(5, json.loads(self.path.read_text(encoding="utf-8"))["format_version"])
-        self.assertEqual(old, revision_snapshot(self.document.history, self.document.history_snapshot, 0))
+        loaded = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual(5, loaded["format_version"])
+        self.assertNotIn("history", loaded)
 
-    def test_retention_bounds_and_every_retained_revision_is_replayable(self):
-        self.save()
-        for index in range(65):
-            self.document.meta.memo = f"version {index}"
-            self.save()
-        history = self.document.history
-        self.assertEqual(MAX_HISTORY_VERSIONS, len(history["revisions"]))
-        self.assertLessEqual(history_size(history), MAX_HISTORY_BYTES)
-        for index in range(len(history["revisions"])):
-            revision_snapshot(history, self.document.history_snapshot, index)
+    def test_legacy_and_future_history_are_preserved_without_interpretation(self):
+        for history in (
+            {"version": 1, "revisions": [{"reverse": "legacy invalid delta", "digest": "old"}]},
+            {"version": 999, "future": {"preserve": ["中文", None, True]}},
+            {"version": 1, "large_legacy_value": "x" * (513 * 1024)},
+        ):
+            with self.subTest(version=history["version"]):
+                payload = export_document_dict(self.schema, self.document)
+                payload["history"] = history
+                self.document = load_document_payload(self.schema, payload)
+                self.document.meta.memo = "正文已修改"
+                self.save()
+                self.assertEqual(history, self.document.history)
+                self.assertEqual(history, json.loads(self.path.read_text(encoding="utf-8"))["history"])
+                self.assertEqual(history, load_document(self.schema, self.path).history)
+                self.assertIsNot(history, self.document.history)
 
-    def test_large_removed_value_trims_history_without_bloating_json(self):
-        before = {"image": "x" * (MAX_HISTORY_BYTES + 1000), "field": "old"}
-        after = {"field": "new"}
-        history = append_history({}, before, after, "tester")
-        self.assertLessEqual(history_size(history), MAX_HISTORY_BYTES)
-        self.assertEqual(1, len(history["revisions"]))
-        self.assertEqual(after, revision_snapshot(history, after, 0))
+    def test_non_object_history_does_not_block_old_graph(self):
+        for history in (None, [], "old", 123):
+            payload = export_document_dict(self.schema, self.document)
+            payload["history"] = history
+            self.assertEqual({}, load_document_payload(self.schema, payload).history)
 
-    def test_unchanged_large_image_is_not_copied_into_each_revision(self):
-        before = {"image": "x" * (MAX_HISTORY_BYTES * 2), "field": "old"}
-        after = {**before, "field": "new"}
-        history = append_history({}, before, after, "tester")
-        self.assertLess(history_size(history), 2000)
-        self.assertEqual(before, revision_snapshot(history, after, 0))
+    def test_history_and_view_state_are_not_compared(self):
+        before = copy.deepcopy(self.document)
+        self.document.history = {"version": 99, "different": True}
+        self.document.canvas_view.scale = .5
+        self.document.plan_layout.view.offset_x = 500
+        self.assertTrue(diff_documents(before, self.document).is_empty)
 
-    def test_atomic_save_failure_does_not_advance_history(self):
+    def test_atomic_save_failure_preserves_file_and_opaque_history(self):
+        self.document.history = {"version": 1, "legacy": "keep"}
         self.save()
         history = copy.deepcopy(self.document.history)
         original = self.path.read_bytes()
@@ -129,9 +107,9 @@ class DocumentHistoryTests(unittest.TestCase):
             self.controller.save_document(str(self.path))
         self.assertEqual("external", json.loads(self.path.read_text(encoding="utf-8"))["meta"]["memo"])
 
-    def test_snapshot_command_undo_after_save_preserves_disk_baseline_and_history(self):
+    def test_snapshot_command_undo_redo_preserves_saved_baseline_and_legacy_history(self):
         from l2d_config_editor.tool_service import _DocumentSnapshotCommand
-
+        self.document.history = {"version": 1, "legacy": "keep"}
         self.save()
         after = copy.deepcopy(self.document)
         after.meta.memo = "工具修改"
@@ -139,57 +117,99 @@ class DocumentHistoryTests(unittest.TestCase):
         self.controller.save_document(str(self.path))
         self.controller.undo_stack.undo()
         self.controller.save_document(str(self.path))
-        self.assertEqual(3, len(self.controller.document.history["revisions"]))
         self.assertEqual("测试", load_document(self.schema, self.path).meta.memo)
         self.controller.undo_stack.redo()
         self.controller.save_document(str(self.path))
-        self.assertEqual(4, len(self.controller.document.history["revisions"]))
-        self.assertEqual("工具修改", load_document(self.schema, self.path).meta.memo)
+        loaded = load_document(self.schema, self.path)
+        self.assertEqual("工具修改", loaded.meta.memo)
+        self.assertEqual({"version": 1, "legacy": "keep"}, loaded.history)
 
-    def test_unknown_history_extension_is_preserved_and_graph_still_loads(self):
-        payload = export_document_dict(self.schema, self.document)
-        payload["history"] = {"version": 999, "future": "keep"}
-        self.document = load_document_payload(self.schema, payload)
-        self.save()
-        self.assertEqual(payload["history"], json.loads(self.path.read_text(encoding="utf-8"))["history"])
+    def comparison(self, before, after):
+        widget = GraphComparisonWidget(self.schema)
+        self.addCleanup(widget.close)
+        widget.resize(1200, 800)
+        widget.set_documents(before, after)
+        widget.show()
+        self.app.processEvents()
+        return widget
 
-    def test_corrupt_delta_is_rejected_without_changing_live_graph(self):
-        self.save()
-        self.document.meta.memo = "changed"
-        self.save()
-        history = copy.deepcopy(self.document.history)
-        history["revisions"][-1]["reverse"][0]["value"] = "tampered"
-        with self.assertRaises(ValueError):
-            revision_snapshot(history, self.document.history_snapshot, 0)
-        self.assertEqual("changed", self.document.meta.memo)
+    @staticmethod
+    def wheel(canvas, delta):
+        position = QPointF(canvas.viewport().rect().center())
+        event = QWheelEvent(position, QPointF(canvas.viewport().mapToGlobal(position.toPoint())),
+                            QPoint(), QPoint(0, delta), Qt.MouseButton.NoButton,
+                            Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False)
+        QApplication.sendEvent(canvas.viewport(), event)
 
-    def test_history_canvas_has_added_deleted_modified_nodes_and_is_read_only(self):
+    def drag_blank(self, canvas):
+        candidates = [QPoint(x, y) for y in range(10, canvas.viewport().height() - 100, 30)
+                      for x in range(10, canvas.viewport().width() - 150, 30)]
+        point = QPointF(next(point for point in candidates if canvas.itemAt(point) is None))
+        end = point + QPointF(120, 75)
+        before = canvas.mapToScene(canvas.viewport().rect().center())
+        for event_type, position, button, buttons in (
+            (QEvent.Type.MouseButtonPress, point, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton),
+            (QEvent.Type.MouseMove, end, Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton),
+            (QEvent.Type.MouseButtonRelease, end, Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton),
+        ):
+            event = QMouseEvent(event_type, position,
+                                QPointF(canvas.viewport().mapToGlobal(position.toPoint())),
+                                button, buttons, Qt.KeyboardModifier.NoModifier)
+            QApplication.sendEvent(canvas.viewport(), event)
+        after = canvas.mapToScene(canvas.viewport().rect().center())
+        self.assertGreater((after - before).manhattanLength(), 1)
+
+    def test_initial_large_graph_zooms_and_pans_without_selecting_a_change(self):
+        self.controller.create_node("Comment", (0, 35000))
+        before = copy.deepcopy(self.document)
+        widget = self.comparison(before, self.document)
+        self.assertIsNone(widget.changes.currentItem())
+        scale = widget.canvas.transform().m11()
+        self.assertLess(scale, .04)
+        self.wheel(widget.canvas, 120)
+        self.assertGreater(widget.canvas.transform().m11(), scale)
+        self.drag_blank(widget.canvas)
+
+    def test_initial_small_graph_can_pan_even_when_whole_graph_is_visible(self):
+        widget = self.comparison(copy.deepcopy(self.document), self.document)
+        self.drag_blank(widget.canvas)
+
+    def test_fit_after_show_uses_final_viewport_and_remains_interactive(self):
+        self.controller.create_node("Comment", (2500, 6000))
+        widget = self.comparison(copy.deepcopy(self.document), self.document)
+        initial = widget.canvas.transform().m11()
+        widget.fit_graph()
+        self.assertAlmostEqual(initial, widget.canvas.transform().m11(), places=6)
+        self.wheel(widget.canvas, -120)
+        self.assertLess(widget.canvas.transform().m11(), initial)
+        self.drag_blank(widget.canvas)
+
+    def test_diff_loaded_into_visible_widget_is_immediately_navigable(self):
+        widget = self.comparison(copy.deepcopy(self.document), self.document)
+        self.controller.create_node("Comment", (0, 35000))
+        widget.set_documents(copy.deepcopy(self.document), self.document)
+        scale = widget.canvas.transform().m11()
+        self.wheel(widget.canvas, 120)
+        self.assertGreater(widget.canvas.transform().m11(), scale)
+        self.drag_blank(widget.canvas)
+
+    def test_comparison_has_added_deleted_modified_nodes_and_is_read_only(self):
         removed = self.controller.create_node("Comment", (400, 0))
         edited = self.controller.create_node("Comment", (400, 300))
-        self.save()
+        before = copy.deepcopy(self.document)
         self.controller.remove_nodes([removed])
         added = self.controller.create_node("Comment", (800, 0))
         self.controller.update_field(edited, "content", "修改后")
-        self.save()
         original = copy.deepcopy(export_document_dict(self.schema, self.document))
-        dialog = DocumentHistoryDialog(self.schema, self.document)
-        self.addCleanup(dialog.close)
-        self.assertEqual("deleted", dialog.comparison._status(("nodes", removed)))
-        self.assertEqual("added", dialog.comparison._status(("nodes", added)))
-        self.assertEqual("modified", dialog.comparison._status(("nodes", edited)))
-        self.assertIn(("nodes", removed), dialog.comparison.items_by_key)
-        self.assertTrue(dialog.comparison.items_by_key[("nodes", edited)].childItems())
-        self.assertTrue(any("修改后" in item.toPlainText()
-                            for item in dialog.comparison._decorations if hasattr(item, "toPlainText")))
-        dialog.comparison.mode_combo.setCurrentIndex(1)
-        dialog.left_combo.setCurrentIndex(0)
+        widget = self.comparison(before, self.document)
+        self.assertEqual("deleted", widget._status(("nodes", removed)))
+        self.assertEqual("added", widget._status(("nodes", added)))
+        self.assertEqual("modified", widget._status(("nodes", edited)))
+        self.assertIn(("nodes", removed), widget.items_by_key)
+        self.assertTrue(any("修改后" in item.toPlainText() for item in widget._decorations
+                            if hasattr(item, "toPlainText")))
+        widget.mode_combo.setCurrentIndex(1)
         self.assertEqual(original, export_document_dict(self.schema, self.document))
-
-    def test_diff_includes_metadata(self):
-        before = copy.deepcopy(self.document)
-        self.document.meta.memo = "new"
-        self.assertTrue(any(entry.category == "metadata" and entry.field_path == "memo"
-                            for entry in diff_documents(before, self.document).entries))
 
 
 if __name__ == "__main__":

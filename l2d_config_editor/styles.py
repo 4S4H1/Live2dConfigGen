@@ -164,6 +164,18 @@ QPushButton[accentButton="true"]:hover {
 QPushButton[accentButton="true"]:pressed {
     background: #174ba6;
 }
+QPushButton[graphViewSwitch="true"]:checked {
+    background: #2264d6;
+    border-color: #4a8eff;
+    color: #ffffff;
+    font-weight: 700;
+}
+QPushButton[graphViewSwitch="true"]:checked:hover {
+    background: #2b74f0;
+}
+QPushButton[graphViewSwitch="true"]:checked:pressed {
+    background: #174ba6;
+}
 QLineEdit,
 QPlainTextEdit,
 QDateEdit,

@@ -90,7 +90,7 @@ class _TopicDropIntent:
 
 
 class PlanTopicItem(QGraphicsObject):
-    """A measured plan card which becomes a text-free outline in overview."""
+    """A measured plan card whose title and notes scale with the graph."""
 
     MIN_CARD_WIDTH = 156.0
     MAX_CARD_WIDTH = 360.0
@@ -102,9 +102,8 @@ class PlanTopicItem(QGraphicsObject):
     CARD_CORNER_RADIUS = 8.0
     TITLE_POINT_SIZE = 13.5
     ROOT_TITLE_POINT_SIZE = 15.0
-    # Text remains visible through ordinary manual zoom.  Overview is reserved
-    # for a genuinely remote view, while focus restores a comfortably readable
-    # scale rather than merely crossing the overview boundary.
+    # Overview changes the click-to-focus behavior, not the content.  Titles
+    # and notes remain painted at every zoom level, using a stable scene font.
     OVERVIEW_SCALE = 0.45
     READABLE_SCALE = 0.85
 
@@ -192,7 +191,7 @@ class PlanTopicItem(QGraphicsObject):
         )
 
     def _topic_font(self) -> QFont:
-        """Return the stable scene font; semantic zoom controls readability."""
+        """Keep text proportional to its card at every view scale."""
 
         font = QFont(self.view.font())
         font.setPointSizeF(
@@ -359,9 +358,6 @@ class PlanTopicItem(QGraphicsObject):
                 self.CARD_CORNER_RADIUS - 1.0,
                 self.CARD_CORNER_RADIUS - 1.0,
             )
-        if self.view.is_overview_mode():
-            return
-
         font = self._topic_font()
         metrics = QFontMetricsF(font)
         painter.setFont(font)
@@ -627,14 +623,14 @@ class PlanCanvasView(QGraphicsView):
         return bool(self._busy_flags)
 
     def is_overview_mode(self) -> bool:
-        """Overview deliberately omits labels instead of rendering tiny ellipses."""
+        """A distant view where clicking a topic restores readable zoom."""
 
         return float(self.transform().m11()) < PlanTopicItem.OVERVIEW_SCALE
 
     def shows_topic_text(self) -> bool:
-        """A small testable seam for the overview rendering contract."""
+        """Topic text is retained even in the distant overview."""
 
-        return not self.is_overview_mode()
+        return True
 
     def set_pen_style(self, color: str, width: float) -> None:
         resolved = QColor(str(color))
@@ -1243,8 +1239,8 @@ class PlanCanvasView(QGraphicsView):
                 if (current < PlanTopicItem.OVERVIEW_SCALE) != (
                     target < PlanTopicItem.OVERVIEW_SCALE
                 ):
-                    # Geometry is independent of zoom.  A repaint is enough
-                    # to exchange full card content for clean overview cards.
+                    # Keep item interaction affordances current when crossing
+                    # the click-to-focus threshold; card content stays intact.
                     for item in self.topic_items.values():
                         item.update()
         else:

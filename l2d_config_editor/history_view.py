@@ -1,4 +1,4 @@
-"""Read-only, navigable graph comparisons for embedded and SVN history."""
+"""Read-only, navigable graph comparisons for SVN revisions."""
 from __future__ import annotations
 from . import features
 
@@ -7,19 +7,17 @@ import copy
 import html
 import json
 from collections import defaultdict
-from datetime import datetime
 
-from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtCore import QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QGraphicsItem, QGraphicsRectItem, QGraphicsScene,
+    QComboBox, QGraphicsItem, QGraphicsRectItem, QGraphicsScene,
     QGraphicsTextItem, QGraphicsView, QHBoxLayout, QLabel, QPlainTextEdit,
     QPushButton, QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from .document_history import history_is_anchored, history_snapshot, revision_snapshot, snapshot_payload
 from .graph_diff import diff_documents
-from .logic import export_document_dict, load_document_payload, node_title
+from .logic import node_title
 from .plan import plan_formal_positions
 
 CATEGORY_LABELS = {"nodes": "节点", "connections": "连线", "groups": "分组",
@@ -38,6 +36,8 @@ def display_value(value) -> str:
 
 class HistoryCanvas(QGraphicsView):
     objectActivated = Signal(object)
+    MIN_SCALE = 0.00001
+    MAX_SCALE = 4.0
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -48,10 +48,18 @@ class HistoryCanvas(QGraphicsView):
         self.setBackgroundBrush(QColor("#151B24"))
 
     def wheelEvent(self, event):
-        factor = 1.18 if event.angleDelta().y() > 0 else 1 / 1.18
-        if .04 <= self.transform().m11() * factor <= 4:
-            self.scale(factor, factor)
+        delta = event.angleDelta().y() or event.pixelDelta().y()
+        if delta:
+            current = self.transform().m11()
+            target = max(self.MIN_SCALE, min(self.MAX_SCALE, current * 1.18 ** (delta / 120)))
+            self.scale(target / current, target / current)
         event.accept()
+
+    def set_content_bounds(self, bounds):
+        # Leave room to drag even when the whole graph is fitted in the view.
+        # A tightly bounded scene has no scroll range at the initial zoom.
+        margin = max(10000, bounds.width(), bounds.height())
+        self.scene().setSceneRect(bounds.adjusted(-margin, -margin, margin, margin))
 
     def mouseDoubleClickEvent(self, event):
         item = self.itemAt(event.position().toPoint())
@@ -76,6 +84,7 @@ class GraphComparisonWidget(QWidget):
         self._decorations = []
         self._selected_owner_uuid = None
         self._listener_history_dialogs = []
+        self._fit_pending = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         row = QHBoxLayout()
@@ -97,7 +106,10 @@ class GraphComparisonWidget(QWidget):
         fit.clicked.connect(self.fit_graph)
         row.addWidget(fit)
         layout.addLayout(row)
-        layout.addWidget(QLabel("绿色 新增  ·  红色虚线 删除  ·  金色 修改  |  滚轮缩放，拖动平移，点击修改项定位；双击监听器查看只读子蓝图。"))
+        navigation_hint = "绿色 新增  ·  红色虚线 删除  ·  金色 修改  |  滚轮缩放，拖动平移，点击修改项定位"
+        if features.LISTENER_EDITOR_ENABLED:
+            navigation_hint += "；双击监听器查看只读子蓝图"
+        layout.addWidget(QLabel(navigation_hint + "。"))
         splitter = QSplitter()
         self.canvas = HistoryCanvas()
         self.canvas.scene().selectionChanged.connect(self._scene_selected)
@@ -308,7 +320,7 @@ class GraphComparisonWidget(QWidget):
                     lines.append(html.escape(f"{self._field_label(entry)}: {before} → {after}"))
             if len(entries) > 4:
                 lines.append(f"另有 {len(entries) - 4} 项变化，点击查看")
-            if node.listener_graph is not None:
+            if features.LISTENER_EDITOR_ENABLED and node.listener_graph is not None:
                 lines.append("双击查看监听器子蓝图")
             card = QGraphicsRectItem()
             text = QGraphicsTextItem(card)
@@ -355,7 +367,7 @@ class GraphComparisonWidget(QWidget):
             item = scene.addPath(curve, self._pen(status, 2))
             self._register(item, key)
         self._render_assets(scene, plan_mode)
-        scene.setSceneRect(scene.itemsBoundingRect().adjusted(-80, -80, 80, 80))
+        self.canvas.set_content_bounds(scene.itemsBoundingRect())
         self._selecting = False
         self.fit_graph()
 
@@ -405,11 +417,27 @@ class GraphComparisonWidget(QWidget):
                 self._register(item, key)
 
     def fit_graph(self):
+        if not self.isVisible():
+            self._fit_pending = True
+            return
+        self._fit_pending = False
         bounds = self.canvas.scene().itemsBoundingRect()
         if not bounds.isEmpty():
             self.canvas.fitInView(bounds.adjusted(-40, -40, 40, 40), Qt.AspectRatioMode.KeepAspectRatio)
-            if self.canvas.transform().m11() > 1:
-                self.canvas.resetTransform()
+            current = self.canvas.transform().m11()
+            target = max(self.canvas.MIN_SCALE, min(1, current))
+            self.canvas.scale(target / current, target / current)
+            self.canvas.centerOn(bounds.center())
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._fit_pending:
+            # The splitter receives its real viewport size only after showing.
+            QTimer.singleShot(0, self._finish_initial_fit)
+
+    def _finish_initial_fit(self):
+        if self._fit_pending:
+            self.fit_graph()
 
     def _change_selected(self, row, _previous):
         if row is None:
@@ -447,69 +475,3 @@ class GraphComparisonWidget(QWidget):
         self.detail.setPlainText("\n\n".join(
             f"{self._field_label(entry) or CHANGE_LABELS[entry.change]}\n修改前：{display_value(entry.before)}\n修改后：{display_value(entry.after)}"
             for entry in entries) or "此对象在两个版本间没有变化。")
-
-
-class DocumentHistoryDialog(QDialog):
-    def __init__(self, schema, document, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("版本历史 · 图表对比")
-        self.resize(1360, 860)
-        self.schema = schema
-        self.document = copy.deepcopy(document)
-        self.file_path = document.path
-        self.current = history_snapshot(export_document_dict(schema, self.document))
-        self.saved = document.history_snapshot or self.current
-        self.history = copy.deepcopy(document.history)
-        layout = QVBoxLayout(self)
-        self.notice = QLabel("每次有内容变化的保存形成一个版本；保留最近 50 版，历史区最多 512 KiB。此窗口显示打开时的内容。")
-        self.notice.setWordWrap(True)
-        layout.addWidget(self.notice)
-        selectors = QHBoxLayout()
-        self.left_combo, self.right_combo = QComboBox(), QComboBox()
-        selectors.addWidget(QLabel("从"))
-        selectors.addWidget(self.left_combo, 1)
-        selectors.addWidget(QLabel("到"))
-        selectors.addWidget(self.right_combo, 1)
-        layout.addLayout(selectors)
-        self.comparison = GraphComparisonWidget(schema)
-        layout.addWidget(self.comparison, 1)
-        for combo in (self.left_combo, self.right_combo):
-            combo.addItem("当前编辑内容（打开时）", "current")
-        if history_is_anchored(self.history, self.saved):
-            for index in range(len(self.history["revisions"]) - 1, -1, -1):
-                entry = self.history["revisions"][index]
-                try:
-                    stamp = datetime.fromisoformat(entry["saved_at"]).astimezone().strftime("%Y-%m-%d %H:%M:%S")
-                except ValueError:
-                    stamp = entry["saved_at"]
-                label = f"{stamp} · {entry['author'] or '未知作者'} · {entry.get('label', '保存')} · {entry['id'][:6]}"
-                for combo in (self.left_combo, self.right_combo):
-                    combo.addItem(label, index)
-            if self.current == self.saved and self.left_combo.count() > 2:
-                self.left_combo.setCurrentIndex(2)
-                self.right_combo.setCurrentIndex(1)
-            else:
-                self.left_combo.setCurrentIndex(1)
-        else:
-            self.notice.setText("此文件尚无可还原的内嵌历史，或历史与文件内容不匹配。后续保存会建立历史；较早的提交可从 SVN 历史查看。")
-            if self.history and self.history.get("version") != 1:
-                self.notice.setText("此文件的历史由更新版本的编辑器生成，当前版本会原样保留历史扩展，仅预览当前图表。")
-            if document.history_snapshot is not None:
-                self.left_combo.addItem("打开文件时的基线", "baseline")
-                self.left_combo.setCurrentIndex(1)
-        self.left_combo.currentIndexChanged.connect(self._compare)
-        self.right_combo.currentIndexChanged.connect(self._compare)
-        self._compare()
-
-    def _document_for(self, value):
-        if value == "current":
-            return self.document
-        snapshot = self.saved if value == "baseline" else revision_snapshot(self.history, self.saved, int(value))
-        return load_document_payload(self.schema, snapshot_payload(snapshot))
-
-    def _compare(self, *_args):
-        try:
-            self.comparison.set_documents(self._document_for(self.left_combo.currentData()),
-                                          self._document_for(self.right_combo.currentData()))
-        except (ValueError, TypeError, KeyError) as exc:
-            self.notice.setText(f"此历史无法还原：{exc}。当前图表未被修改。")

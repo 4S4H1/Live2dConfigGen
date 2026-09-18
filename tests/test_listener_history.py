@@ -1,4 +1,4 @@
-"""Nested listener history stays compact, navigable and detached from editing."""
+"""Listener graphs in historical SVN payloads stay navigable and read-only."""
 import copy
 import os
 import tempfile
@@ -9,10 +9,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from l2d_config_editor.controller import EditorController
-from l2d_config_editor.document_history import history_snapshot, revision_snapshot, snapshot_payload
 from l2d_config_editor.graph_diff import diff_documents
 from l2d_config_editor.history_view import GraphComparisonWidget
 from l2d_config_editor.listener_graph import ListenerPart, ListenerWire
@@ -50,28 +49,23 @@ class ListenerHistoryTests(unittest.TestCase):
     def save(self):
         save_document(self.schema, self.document, self.path)
 
-    def snapshot(self):
-        return history_snapshot(export_document_dict(self.schema, self.document))
-
-    def test_nested_scalar_delta_restores_graph_without_viewport_noise(self):
+    def test_historical_payloads_compare_internal_fields_without_viewport_noise(self):
         self.save()
-        baseline = self.snapshot()
+        baseline = export_document_dict(self.schema, self.document)
         graph = self.controller.get_node(self.owner_uuid).listener_graph.clone()
         graph.view.update(scale=2, offset_x=100, offset_y=-100)
         self.controller.set_listener_graph(self.owner_uuid, graph)
         self.save()
-        self.assertEqual(1, len(self.document.history["revisions"]))
-        self.assertEqual(baseline, self.snapshot())
+        historical = load_document_payload(self.schema, baseline)
+        self.assertTrue(diff_documents(historical, self.document).is_empty)
+        self.assertNotIn("history", export_document_dict(self.schema, self.document))
         self.change_amount(3)
         self.save()
-        delta = self.document.history["revisions"][-1]["reverse"]
-        path = ["nodes", "items", self.owner_uuid, "listener_graph", "nodes", self.change_uuid, "fields", "value"]
-        self.assertTrue(any(operation["path"] == path and operation["value"] == 1 for operation in delta))
-        self.assertFalse(any(operation["path"][-1] in {"listener_graph", "view"} for operation in delta))
-        restored = revision_snapshot(self.document.history, self.document.history_snapshot, 0)
-        self.assertEqual(restored, baseline)
-        loaded = load_document_payload(self.schema, snapshot_payload(restored))
-        self.assertEqual(history_snapshot(export_document_dict(self.schema, loaded)), baseline)
+        diff = diff_documents(historical, self.document)
+        path = f"listener_graph.nodes.{self.change_uuid}.fields.value"
+        self.assertTrue(any(entry.field_path == path and entry.before == 1 and entry.after == 3
+                            for entry in diff.entries))
+        self.assertFalse(any("view" in entry.field_path for entry in diff.entries))
 
     def test_internal_add_delete_move_and_field_changes_locate_owner(self):
         before = copy.deepcopy(self.document)
@@ -140,6 +134,18 @@ class ListenerHistoryTests(unittest.TestCase):
         self.assertEqual(dialog.graph().to_payload(), self.graph.to_payload())
         self.assertFalse(widget.after_listener_button.isEnabled())
         dialog.close()
+
+    def test_hidden_listener_editor_has_no_subgraph_navigation_prompts(self):
+        from unittest.mock import patch
+        with patch("l2d_config_editor.features.LISTENER_EDITOR_ENABLED", False):
+            widget = GraphComparisonWidget(self.schema)
+            self.addCleanup(widget.close)
+            widget.set_documents(copy.deepcopy(self.document), self.document)
+            self.assertTrue(widget.before_listener_button.isHidden())
+            self.assertTrue(widget.after_listener_button.isHidden())
+            self.assertFalse(any("双击" in label.text() for label in widget.findChildren(QLabel)))
+            self.assertFalse(any("双击" in item.toPlainText() for item in widget._decorations
+                                 if hasattr(item, "toPlainText")))
 
 
 if __name__ == "__main__":

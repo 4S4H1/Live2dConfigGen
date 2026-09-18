@@ -3144,6 +3144,12 @@ class ParameterTableItem(QGraphicsObject):
     def selected_row_uuid(self) -> str | None:
         return self._selected_row_uuid
 
+    def can_add_row(self) -> bool:
+        return bool(self._rows) and (
+            features.LISTENER_EDITOR_ENABLED
+            or all(row.listener_graph is None for row in self._rows)
+        )
+
     def selected_row_uuids(self) -> list[str]:
         ordered = [row.uuid for row in self._rows if row.uuid in self._selected_row_uuids]
         if ordered:
@@ -3418,7 +3424,7 @@ class ParameterTableItem(QGraphicsObject):
         painter.setFont(button_font)
         for rect, label, enabled in (
             (self._remove_button_rect, "-", len(self._rows) > 1 and bool(self.selected_row_uuids())),
-            (self._add_button_rect, "+", True),
+            (self._add_button_rect, "+", self.can_add_row()),
         ):
             button_fill = QColor("#10151f")
             button_fill.setAlpha(230 if enabled else 90)
@@ -3470,7 +3476,8 @@ class ParameterTableItem(QGraphicsObject):
         if event.button() == Qt.MouseButton.LeftButton:
             self.commit_pending_edit()
             if self._add_button_rect.contains(event.pos()):
-                self.controller.add_parameter_table_row(self.table_id, self._selected_row_uuid)
+                if self.can_add_row():
+                    self.controller.add_parameter_table_row(self.table_id, self._selected_row_uuid)
                 event.accept()
                 return
             if self._remove_button_rect.contains(event.pos()) and len(self._rows) > 1:
@@ -5206,6 +5213,7 @@ class NodeCanvasView(QGraphicsView):
     def _show_parameter_table_menu(self, table_item: ParameterTableItem, global_pos) -> None:
         menu = QMenu(self)
         add_row_action = menu.addAction("新增一行")
+        add_row_action.setEnabled(table_item.can_add_row())
         remove_row_action = menu.addAction("删除当前行")
         color_action = menu.addAction("设置参数表颜色")
         if not table_item.selected_row_uuids() or len(table_item.row_node_uuids()) <= 1:

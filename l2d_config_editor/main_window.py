@@ -64,6 +64,7 @@ from .logic import (
     load_document,
 )
 from .llm_chat import LLMChatPanel
+from .models import NodeRecord
 from .perf_tools import PerformanceToolDialog
 from .plan import PLAN_TOUCHDRAG_COLOR, PLAN_TOUCHIDLE_COLOR
 from .plan_canvas import PlanCanvasView
@@ -503,7 +504,6 @@ class MainWindow(QMainWindow):
         self._refresh_file_list_after_save = False
         self.svn_commit_dialog: SvnCommitDialog | None = None
         self.svn_diff_dialog: SvnGraphDiffDialog | None = None
-        self.history_dialog = None
         self.listener_dialog = None
         self._update_client: UpdateClient | None = None
         self._update_progress: QProgressDialog | None = None
@@ -796,6 +796,8 @@ class MainWindow(QMainWindow):
         toolbar.setObjectName("topControlBar")
         toolbar.setMovable(False)
         toolbar.setFloatable(False)
+        self._formal_toolbar_actions = []
+        self._plan_toolbar_actions = []
 
         rule_widget = QWidget(toolbar)
         rule_layout = QHBoxLayout(rule_widget)
@@ -812,21 +814,23 @@ class MainWindow(QMainWindow):
         self.manual_create_rule_radio.toggled.connect(lambda checked: checked and self.controller.set_interaction_creation_mode("manual"))
         rule_layout.addWidget(self.auto_create_rule_radio)
         rule_layout.addWidget(self.manual_create_rule_radio)
-        toolbar.addWidget(rule_widget)
+        self._formal_toolbar_actions.append(toolbar.addWidget(rule_widget))
 
         toolbar.addSeparator()
 
         self.numeric_linkage_checkbox = QCheckBox("数值联动")
         self.numeric_linkage_checkbox.toggled.connect(self._toggle_numeric_linkage)
-        toolbar.addWidget(self.numeric_linkage_checkbox)
+        self._formal_toolbar_actions.append(toolbar.addWidget(self.numeric_linkage_checkbox))
 
         self.graph_view_button_group = QButtonGroup(self)
         self.graph_view_button_group.setExclusive(True)
         self.formal_view_button = QPushButton("正式图")
         self.formal_view_button.setCheckable(True)
+        self.formal_view_button.setProperty("graphViewSwitch", True)
         self.formal_view_button.setChecked(True)
         self.plan_view_button = QPushButton("计划图")
         self.plan_view_button.setCheckable(True)
+        self.plan_view_button.setProperty("graphViewSwitch", True)
         self.graph_view_button_group.addButton(self.formal_view_button)
         self.graph_view_button_group.addButton(self.plan_view_button)
         self.formal_view_button.clicked.connect(
@@ -857,7 +861,7 @@ class MainWindow(QMainWindow):
         self.plan_touchidle_button.clicked.connect(
             lambda: self._set_selected_plan_topic_color(PLAN_TOUCHIDLE_COLOR)
         )
-        toolbar.addWidget(self.plan_touchidle_button)
+        self._plan_toolbar_actions.append(toolbar.addWidget(self.plan_touchidle_button))
         self.plan_touchdrag_button = QPushButton("Drag")
         self.plan_touchdrag_button.setFixedWidth(56)
         self.plan_touchdrag_button.setStyleSheet(
@@ -870,20 +874,20 @@ class MainWindow(QMainWindow):
         self.plan_touchdrag_button.clicked.connect(
             lambda: self._set_selected_plan_topic_color(PLAN_TOUCHDRAG_COLOR)
         )
-        toolbar.addWidget(self.plan_touchdrag_button)
+        self._plan_toolbar_actions.append(toolbar.addWidget(self.plan_touchdrag_button))
         self.sequence_lock_button = QPushButton("固定")
         self.sequence_lock_button.setFixedWidth(56)
         self.sequence_lock_button.setStyleSheet(
             "QPushButton { background: #C99A2E; color: #171104; font-weight: 600; }"
         )
         self.sequence_lock_button.setToolTip(
-            "正式图多选节点后点击：固定或取消固定序号；自动编号会跳过固定编号"
+            "计划图多选节点后点击：生成并固定当前序号，或取消固定；后续自动编号会跳过固定编号"
         )
         self.sequence_lock_button.setEnabled(False)
         self.sequence_lock_button.clicked.connect(
             self._toggle_selected_sequence_lock
         )
-        toolbar.addWidget(self.sequence_lock_button)
+        self._plan_toolbar_actions.append(toolbar.addWidget(self.sequence_lock_button))
 
         self.pen_color_button = QPushButton("颜色")
         self.pen_color_button.setToolTip("Ctrl+左键直接绘制；Ctrl+右键删除命中的整条笔迹")
@@ -897,10 +901,10 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.pen_width_combo)
         self.concise_mode_checkbox = QCheckBox("简洁展示")
         self.concise_mode_checkbox.toggled.connect(self._toggle_concise_display)
-        toolbar.addWidget(self.concise_mode_checkbox)
+        self._formal_toolbar_actions.append(toolbar.addWidget(self.concise_mode_checkbox))
         self.concise_settings_button = QPushButton("简洁设置")
         self.concise_settings_button.clicked.connect(self._show_concise_settings)
-        toolbar.addWidget(self.concise_settings_button)
+        self._formal_toolbar_actions.append(toolbar.addWidget(self.concise_settings_button))
 
         toolbar.addSeparator()
 
@@ -912,10 +916,10 @@ class MainWindow(QMainWindow):
         self.top_optimize_layout_button.clicked.connect(
             self._optimize_connection_layout
         )
-        toolbar.addWidget(self.top_optimize_layout_button)
+        self._formal_toolbar_actions.append(toolbar.addWidget(self.top_optimize_layout_button))
         self.group_selected_button = QPushButton("打组")
         self.group_selected_button.clicked.connect(self._group_selected_nodes)
-        toolbar.addWidget(self.group_selected_button)
+        self._formal_toolbar_actions.append(toolbar.addWidget(self.group_selected_button))
 
         self.file_directory_button = QPushButton("配置文件")
         self.file_directory_button.clicked.connect(self._show_file_directory_dialog)
@@ -931,11 +935,18 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.svn_commit_button)
 
         self.history_button = QPushButton("版本历史…")
-        self.history_button.setToolTip("在图表中查看 JSON 内保存的历史版本与修改项")
-        self.history_button.clicked.connect(self._show_document_history)
+        self.history_button.setToolTip("在图表中对比两个 SVN 已提交版本")
+        self.history_button.clicked.connect(self._show_svn_graph_diff)
         toolbar.addWidget(self.history_button)
 
+        self._sync_graph_toolbar_visibility()
         return toolbar
+
+    def _sync_graph_toolbar_visibility(self) -> None:
+        for action in self._formal_toolbar_actions:
+            action.setVisible(self._graph_view_mode == "formal")
+        for action in self._plan_toolbar_actions:
+            action.setVisible(self._graph_view_mode == "plan")
 
     def _create_card(self, object_name: str = "filePanelCard") -> tuple[QFrame, QVBoxLayout]:
         card = QFrame()
@@ -1027,6 +1038,7 @@ class MainWindow(QMainWindow):
         if previous == "plan" and normalized == "formal":
             self.controller.materialize_plan_topics()
         self._graph_view_mode = normalized
+        self._sync_graph_toolbar_visibility()
         if hasattr(self, "graph_view_stack"):
             target = self.plan_canvas if normalized == "plan" else self.canvas
             self.graph_view_stack.setCurrentWidget(target)
@@ -1067,7 +1079,7 @@ class MainWindow(QMainWindow):
                 control.setEnabled(plan_has_selection)
         if hasattr(self, "sequence_lock_button"):
             self.sequence_lock_button.setEnabled(
-                normalized == "formal"
+                normalized == "plan"
                 and self._has_sequence_lock_targets(selected_node_uuids)
             )
         if formal_only and hasattr(self, "group_selected_button"):
@@ -1099,6 +1111,8 @@ class MainWindow(QMainWindow):
         for node_uuid in node_uuids:
             node = self.controller.get_node(node_uuid)
             definition = self.controller.schema.nodes.get(node.type) if node else None
+            if node is not None and node.type == "PlanPlaceholder":
+                return True
             if (
                 node is not None
                 and definition is not None
@@ -1110,10 +1124,42 @@ class MainWindow(QMainWindow):
         return False
 
     def _toggle_selected_sequence_lock(self) -> None:
-        if self._graph_view_mode != "formal":
-            self._show_status("请在正式图中选择要固定序号的节点")
+        if self._graph_view_mode != "plan":
+            self._show_status("请在计划图中选择要固定序号的节点")
             return
-        selected = self.canvas.selected_node_uuids()
+        selected = self.plan_canvas.selected_node_uuids()
+        if not self._has_sequence_lock_targets(selected):
+            return
+        existing = self._sequence_lock_nodes(selected)
+        has_drafts = any(
+            (node := self.controller.get_node(node_uuid)) is not None
+            and node.type == "PlanPlaceholder"
+            for node_uuid in selected
+        )
+        target_locked = has_drafts or not all(node.sequence_locked for node in existing)
+        changed = False
+        self.controller.undo_stack.beginMacro("固定或取消固定计划节点序号")
+        try:
+            # Reserve the displayed numbers before allocating any new topics.
+            # Reordering a plan must not silently change the number being fixed.
+            changed = self.controller.set_nodes_sequence_locked(
+                [node.uuid for node in existing], target_locked
+            )
+            if has_drafts:
+                self.controller.materialize_plan_topics()
+                changed = self.controller.set_nodes_sequence_locked(
+                    [node.uuid for node in self._sequence_lock_nodes(selected)], True
+                ) or changed
+        finally:
+            self.controller.undo_stack.endMacro()
+        self.plan_canvas.select_node_uuids(selected)
+        if changed:
+            count = len(self._sequence_lock_nodes(selected))
+            self._show_status(f"已{'固定' if target_locked else '取消固定'} {count} 个节点的序号")
+        elif not existing:
+            self._show_status("请先用 Idle / Drag 设置要固定的节点类型")
+
+    def _sequence_lock_nodes(self, selected: list[str]) -> list[NodeRecord]:
         eligible = []
         for node_uuid in selected:
             node = self.controller.get_node(node_uuid)
@@ -1126,17 +1172,7 @@ class MainWindow(QMainWindow):
                 and node.type_slot > 0
             ):
                 eligible.append(node)
-        if not eligible:
-            self._show_status("请选择至少一个带序号的正式节点")
-            return
-        target_locked = not all(node.sequence_locked for node in eligible)
-        if self.controller.set_nodes_sequence_locked(
-            [node.uuid for node in eligible],
-            target_locked,
-        ):
-            self._show_status(
-                f"已{'固定' if target_locked else '取消固定'} {len(eligible)} 个节点的序号"
-            )
+        return eligible
 
     def _build_inspector_panel(self) -> QWidget:
         panel = QWidget()
@@ -1271,11 +1307,8 @@ class MainWindow(QMainWindow):
         if features.LISTENER_EDITOR_ENABLED:
             tools_menu.addMenu(self._listener_menu(self))
         history_action = QAction("版本历史…", self)
-        history_action.triggered.connect(self._show_document_history)
+        history_action.triggered.connect(self._show_svn_graph_diff)
         tools_menu.addAction(history_action)
-        svn_history_action = QAction("SVN 历史版本…", self)
-        svn_history_action.triggered.connect(self._show_svn_graph_diff)
-        tools_menu.addAction(svn_history_action)
         help_menu = self.help_menu
 
         self.appearance_menu = view_menu.addMenu("外观")
@@ -2939,8 +2972,6 @@ class MainWindow(QMainWindow):
     def _show_svn_graph_diff(self) -> None:
         from .svn_diff_dialog import SvnGraphDiffDialog
 
-        if not self._commit_pending_editor_changes():
-            return
         current_path = self.controller.document.path
         if not current_path or Path(current_path).suffix.lower() != ".json":
             QMessageBox.information(self, "无法查询 SVN Diff", "请先打开一个已存在的 JSON 文件。")
@@ -2959,37 +2990,28 @@ class MainWindow(QMainWindow):
             runner,
             self.controller.schema,
             file_path,
-            self.controller.document,
             self,
         )
+        runner.setParent(dialog)
         self.svn_diff_dialog = dialog
         dialog.finished.connect(lambda _result: self._clear_svn_diff_dialog(dialog))
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
 
-    def _show_document_history(self) -> None:
-        from .history_view import DocumentHistoryDialog
-
-        if not self._commit_pending_editor_changes():
-            return
-        if self.history_dialog is not None:
-            self.history_dialog.close()
-            self.history_dialog.deleteLater()
-        self.history_dialog = DocumentHistoryDialog(self.controller.schema, self.controller.document, self)
-        self.history_dialog.show()
-        self.history_dialog.raise_()
-        self.history_dialog.activateWindow()
-
     def _clear_svn_diff_dialog(self, dialog: SvnGraphDiffDialog) -> None:
         if self.svn_diff_dialog is dialog:
             self.svn_diff_dialog = None
+        runner = dialog.runner
+        if runner.is_busy:
+            # Keep QProcess alive until cancellation has finished. Deleting its
+            # parent while it is running would synchronously destroy the process.
+            runner.busyChanged.connect(lambda busy: None if busy else dialog.deleteLater())
+            runner.cancel()
+        else:
+            dialog.deleteLater()
 
     def _close_stale_svn_diff_dialog(self, path: str | None) -> None:
-        if self.history_dialog is not None and self.history_dialog.file_path != path:
-            self.history_dialog.close()
-            self.history_dialog.deleteLater()
-            self.history_dialog = None
         dialog = self.svn_diff_dialog
         if dialog is None:
             return
@@ -3053,7 +3075,7 @@ class MainWindow(QMainWindow):
                 control.setEnabled(plan_selection)
         if hasattr(self, "sequence_lock_button"):
             self.sequence_lock_button.setEnabled(
-                self._graph_view_mode == "formal"
+                self._graph_view_mode == "plan"
                 and self._has_sequence_lock_targets(list(node_uuids))
             )
         if len(node_uuids) == 1:

@@ -137,7 +137,7 @@ class CanvasModernizationTests(unittest.TestCase):
             )
             self._close(window)
 
-    def test_plan_topic_uses_semantic_zoom_instead_of_inverse_font_scaling(self) -> None:
+    def test_plan_topic_keeps_text_and_proportional_fonts_at_overview_zoom(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             window = self._window(root)
             controller = window.controller
@@ -153,7 +153,7 @@ class CanvasModernizationTests(unittest.TestCase):
             window.plan_canvas.resetTransform()
             window.plan_canvas.scale(0.35, 0.35)
             self.assertTrue(window.plan_canvas.is_overview_mode())
-            self.assertFalse(window.plan_canvas.shows_topic_text())
+            self.assertTrue(window.plan_canvas.shows_topic_text())
             self.assertEqual(font_size, topic._topic_font().pointSizeF())
 
             window.plan_canvas.resetTransform()

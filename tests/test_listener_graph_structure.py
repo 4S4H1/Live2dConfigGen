@@ -5,7 +5,6 @@ import dataclasses
 import json
 import unittest
 
-from l2d_config_editor.document_history import _reverse_delta
 from l2d_config_editor.listener_graph import (
     LISTENER_GRAPH_VERSION,
     MAX_LISTENER_CONNECTIONS,
@@ -223,14 +222,14 @@ class ListenerGraphStructureTests(unittest.TestCase):
         self.assertEqual(["source", "result"], [part.uuid for part in graph.nodes])
         self.assertEqual({"scale": 1.0, "offset_x": 0.0, "offset_y": 0.0}, graph.view)
 
-    def test_history_delta_for_field_edit_contains_only_the_changed_field(self):
+    def test_field_edit_preserves_persisted_node_and_wire_identity(self):
         before = self.graph().to_payload()
         after = copy.deepcopy(before)
         after["nodes"]["result"]["fields"]["amount"] = 3
-        delta = []
-        _reverse_delta(before, after, [], delta)
-        self.assertEqual(1, len(delta))
-        self.assertEqual(["nodes", "result", "fields", "amount"], delta[0]["path"])
+        self.assertEqual(before["node_order"], after["node_order"])
+        self.assertEqual(before["connections"], after["connections"])
+        after["nodes"]["result"]["fields"]["amount"] = 2
+        self.assertEqual(before, after)
 
 
 if __name__ == "__main__":

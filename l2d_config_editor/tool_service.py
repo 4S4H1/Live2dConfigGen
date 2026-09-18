@@ -205,7 +205,7 @@ class _DocumentSnapshotCommand(QUndoCommand):
         replacement = copy.deepcopy(document)
         # Undo changes graph content, never the last successful save or its disk
         # baseline. A save (or Save As) may have happened after this command.
-        for name in ("path", "disk_stamp", "disk_digest", "disk_observed", "history", "history_snapshot"):
+        for name in ("path", "disk_stamp", "disk_digest", "disk_observed", "history"):
             setattr(replacement, name, copy.deepcopy(getattr(controller.document, name)))
         controller.document = replacement
         controller.preferences.global_mode = controller.document.global_mode

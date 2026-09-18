@@ -16,12 +16,6 @@ from PySide6.QtWidgets import QApplication
 
 from l2d_config_editor.controller import EditorController
 from l2d_config_editor.csv_export import export_current_document_csv
-from l2d_config_editor.document_history import (
-    history_is_anchored,
-    history_snapshot,
-    revision_snapshot,
-    snapshot_payload,
-)
 from l2d_config_editor.graph_diff import diff_documents
 from l2d_config_editor.listener_catalog import new_listener_graph
 from l2d_config_editor.listener_compiler import compile_listener_graph
@@ -87,9 +81,6 @@ class ListenerIntegrationTests(unittest.TestCase):
         self.controller.save_document(str(self.path))
         # The main window marks the saved checkpoint after the successful write.
         self.controller.undo_stack.setClean()
-
-    def snapshot(self):
-        return history_snapshot(export_document_dict(self.schema, self.document))
 
     def test_default_parameter_stays_unique_after_delete_save_and_reload(self):
         first = self.add_listener()
@@ -197,12 +188,12 @@ class ListenerIntegrationTests(unittest.TestCase):
         self.save()
         saved_bytes = self.path.read_bytes()
         baseline = (self.document.path, self.document.disk_stamp, self.document.disk_digest,
-                    copy.deepcopy(self.document.history), copy.deepcopy(self.document.history_snapshot))
+                    copy.deepcopy(self.document.history))
         self.controller.undo_stack.undo()
         self.assertEqual(1.0, self.amount(owner_uuid))
         self.assertFalse(self.controller.undo_stack.isClean())
         self.assertEqual(baseline, (self.document.path, self.document.disk_stamp, self.document.disk_digest,
-                                   self.document.history, self.document.history_snapshot))
+                                   self.document.history))
         self.controller.undo_stack.redo()
         self.assertEqual(2, self.amount(owner_uuid))
         self.assertTrue(self.controller.undo_stack.isClean())
@@ -642,32 +633,29 @@ class ListenerIntegrationTests(unittest.TestCase):
         self.controller.set_listener_graph(owner_uuid, view_graph)
         self.assertTrue(diff_documents(after_fields, self.document).is_empty)
 
-    def test_history_ignores_subgraph_view_and_reconstructs_internal_edits(self):
+    def test_saved_subgraph_versions_load_without_creating_embedded_history(self):
         owner_uuid = self.add_listener()
         self.save()
-        expected = [self.snapshot()]
+        versions = [self.path.read_bytes()]
         graph = self.controller.get_node(owner_uuid).listener_graph.clone()
         graph.view.update({"scale": 1.5, "offset_x": 100, "offset_y": -50})
         self.controller.set_listener_graph(owner_uuid, graph)
         self.save()
-        self.assertEqual(1, len(self.document.history["revisions"]))
-        self.assertEqual(expected[0], self.snapshot())
+        before = load_document_payload(self.schema, versions[0])
+        self.assertTrue(diff_documents(before, self.document).is_empty)
         self.set_amount(owner_uuid, 2)
         self.save()
-        expected.append(self.snapshot())
+        versions.append(self.path.read_bytes())
         self.set_amount(owner_uuid, 4)
         self.save()
-        expected.append(self.snapshot())
-        loaded = load_document(self.schema, self.path)
-        self.assertTrue(history_is_anchored(loaded.history, loaded.history_snapshot))
-        self.assertEqual(3, len(loaded.history["revisions"]))
-        for index, snapshot in enumerate(expected):
-            restored_snapshot = revision_snapshot(loaded.history, loaded.history_snapshot, index)
-            self.assertEqual(snapshot, restored_snapshot)
-            restored = load_document_payload(self.schema, snapshot_payload(restored_snapshot))
-            self.assertEqual(snapshot, history_snapshot(export_document_dict(self.schema, restored)))
+        versions.append(self.path.read_bytes())
+        for payload, amount in zip(versions, (1, 2, 4)):
+            self.assertNotIn("history", json.loads(payload))
+            restored = load_document_payload(self.schema, payload)
             host = next(node for node in restored.nodes if node.uuid == owner_uuid)
             self.assertTrue(compile_listener_graph(host.listener_graph).valid)
+            self.assertEqual(amount, next(part.fields["value"] for part in host.listener_graph.nodes
+                                          if part.kind == "AddValue"))
 
 
 if __name__ == "__main__":

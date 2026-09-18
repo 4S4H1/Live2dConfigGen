@@ -1667,6 +1667,9 @@ class EditorController(QObject):
         rows = self.parameter_table_rows(table_id)
         if not rows:
             return None
+        if not features.LISTENER_EDITOR_ENABLED and any(row.listener_graph is not None for row in rows):
+            self.statusMessage.emit("含监听器子蓝图的参数表暂未开放新增行")
+            return None
         reference = next((node for node in rows if node.uuid == reference_node_uuid), rows[-1])
         next_order = max((parameter_table_order(row) for row in rows), default=-1) + 1
         new_node = create_node(
