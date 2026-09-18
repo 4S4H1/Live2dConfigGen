@@ -138,10 +138,12 @@ def main() -> int:
         app.setWindowIcon(QIcon(str(icon)))
 
     instance = SingleInstance(parent=app)
-    if not instance.is_primary:
-        return 0 if instance.send_to_primary(sys.argv[1:]) else 2
-
+    # Resolve relative arguments in the launching process, whose working
+    # directory can differ from that of an already-running editor.
     file_arguments = instance.normalized_file_arguments(sys.argv[1:])
+    if not instance.is_primary:
+        return 0 if instance.send_to_primary(file_arguments) else 2
+
     initial_file = Path(file_arguments[0]) if file_arguments else None
     install_root = _runtime_install_root()
     if initial_file is not None and is_path_within_install_root(initial_file.resolve(), install_root):

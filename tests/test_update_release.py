@@ -921,6 +921,24 @@ class HTTPServerTests(unittest.TestCase):
         self.assertEqual(headers["Content-Range"], "bytes */16")
         self.assertEqual(body, b"")
 
+    def test_if_range_mismatch_restarts_with_the_complete_artifact(self):
+        path = "/stable/L2DConfigEditor-Setup-1.2.0-x64.exe"
+        for etag in ('"older-installer"', 'W/"weak-validator"'):
+            with self.subTest(etag=etag):
+                status, headers, body = self.request(
+                    "GET", path, {"Range": "bytes=4-", "If-Range": etag}
+                )
+                self.assertEqual(200, status)
+                self.assertEqual(self.payload, body)
+                self.assertNotIn("Content-Range", headers)
+
+        matching = f'"{hashlib.sha256(self.payload).hexdigest()}"'
+        status, _, body = self.request(
+            "GET", path, {"Range": "bytes=4-", "If-Range": matching}
+        )
+        self.assertEqual(206, status)
+        self.assertEqual(self.payload[4:], body)
+
     def test_artifact_etag_uses_signed_manifest_digest_without_rehashing_file(self):
         with patch(
             "l2d_config_editor.update_host.sha256_file",

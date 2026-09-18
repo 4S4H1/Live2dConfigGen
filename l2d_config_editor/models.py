@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from typing import Any
 from typing import TYPE_CHECKING
@@ -183,7 +184,7 @@ class NodeRecord:
         return NodeRecord(
             uuid=self.uuid,
             type=self.type,
-            fields=dict(self.fields),
+            fields=copy.deepcopy(self.fields),
             ui_position=dict(self.ui_position),
             ui_size=dict(self.ui_size) if self.ui_size else None,
             sequence_no=self.sequence_no,

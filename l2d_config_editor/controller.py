@@ -255,8 +255,9 @@ class EditorController(QObject):
 
     def open_document(self, path: str | Path) -> None:
         with performance_recorder.measure("controller.open_document", "controller", {"path": str(path)}):
+            document = load_document(self.schema, path)
             self.undo_stack.clear()
-            self.document = load_document(self.schema, path)
+            self.document = document
             self.preferences.global_mode = self.document.global_mode
             self.selected_node_uuid = None
             self.globalModeChanged.emit(self.preferences.global_mode)
@@ -2545,15 +2546,55 @@ class EditorController(QObject):
         self.connectionsChanged.emit()
         self.refresh_derived()
 
-    def _restore_deleted_nodes(self, nodes: list[NodeRecord], connections: list[ConnectionRecord]) -> None:
-        for node in nodes:
-            self.document.nodes.append(node)
-        for connection in connections:
+    def _restore_deleted_nodes(
+        self, nodes: list[NodeRecord], connections: list[ConnectionRecord], *,
+        node_indices: dict[str, int], connection_indices: dict[tuple[str, str], int],
+    ) -> None:
+        for node in sorted(nodes, key=lambda node: node_indices[node.uuid]):
+            self.document.nodes.insert(node_indices[node.uuid], node)
+        for connection in sorted(
+            connections,
+            key=lambda connection: connection_indices[(connection.from_uuid, connection.to_uuid)],
+        ):
             if not any(current.from_uuid == connection.from_uuid and current.to_uuid == connection.to_uuid for current in self.document.connections):
-                self.document.connections.append(connection)
+                self.document.connections.insert(
+                    connection_indices[(connection.from_uuid, connection.to_uuid)], connection
+                )
         for node in nodes:
             self.nodeAdded.emit(node.uuid)
         self.connectionsChanged.emit()
+        self.refresh_derived()
+
+    def _capture_field_edit_state(self, node_uuids: list[str]) -> dict:
+        titles = {
+            topic.node_uuid: topic.plan_title for topic in self.document.plan_layout.topics
+        }
+        return {
+            node_uuid: (copy.deepcopy(node.fields), set(node.manual_fields), titles.get(node_uuid))
+            for node_uuid in node_uuids
+            if (node := self.get_node(node_uuid)) is not None
+        }
+
+    def _restore_field_edit_state(self, state: dict) -> None:
+        changed = []
+        plan_title_changed = False
+        topics = {topic.node_uuid: topic for topic in self.document.plan_layout.topics}
+        for node_uuid, (fields, manual_fields, title) in state.items():
+            node = self.get_node(node_uuid)
+            if node is None:
+                continue
+            node.fields = copy.deepcopy(fields)
+            node.manual_fields = set(manual_fields)
+            topic = topics.get(node_uuid)
+            if topic is not None and title is not None and topic.plan_title != title:
+                topic.plan_title = title
+                plan_title_changed = True
+            changed.append(node_uuid)
+        reassign_function_ids(self.schema, self.document)
+        for node_uuid in changed:
+            self.nodeUpdated.emit(node_uuid)
+        if plan_title_changed:
+            self.planLayoutChanged.emit()
         self.refresh_derived()
 
     def _set_field(self, node_uuid: str, key: str, value: Any, source_mode: str) -> None:
@@ -2777,9 +2818,17 @@ class EditorController(QObject):
         self.planLayoutChanged.emit()
         self.refresh_derived()
 
-    def _insert_canvas_images(self, images: list[CanvasImageRecord]) -> None:
+    def _insert_canvas_images(
+        self, images: list[CanvasImageRecord], *, indices: dict[str, int] | None = None,
+    ) -> None:
         existing = {image.uuid for image in self.document.canvas_images}
-        self.document.canvas_images.extend(image for image in images if image.uuid not in existing)
+        ordered = sorted(images, key=lambda image: indices[image.uuid]) if indices is not None else images
+        for image in ordered:
+            if image.uuid in existing:
+                continue
+            index = indices[image.uuid] if indices is not None else len(self.document.canvas_images)
+            self.document.canvas_images.insert(index, image)
+            existing.add(image.uuid)
         self.canvasImagesChanged.emit()
 
     def _remove_canvas_images(self, image_uuids: list[str]) -> None:
@@ -2867,7 +2916,7 @@ class EditorController(QObject):
             node.ui_position = {"x": float(position[0]), "y": float(position[1])}
             self.nodeMoved.emit(node_uuid)
 
-    def _add_connection(self, connection: ConnectionRecord) -> None:
+    def _add_connection(self, connection: ConnectionRecord, *, index: int | None = None) -> None:
         target_topic = next(
             (
                 topic
@@ -2889,7 +2938,9 @@ class EditorController(QObject):
             ]
             target_topic.parent_uuid = connection.from_uuid
             target_topic.order = len(siblings)
-        self.document.connections.append(connection)
+        self.document.connections.insert(
+            len(self.document.connections) if index is None else index, connection
+        )
         self.connectionsChanged.emit()
         self.refresh_derived()
 

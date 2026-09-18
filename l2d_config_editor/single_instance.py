@@ -7,10 +7,12 @@ import json
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QLockFile, QObject, QStandardPaths, Signal
+from PySide6.QtCore import QLockFile, QObject, QStandardPaths, QTimer, Signal
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
 from .version import PRODUCT_ID, PUBLISHER
+
+MAX_MESSAGE_BYTES = 64 * 1024
 
 
 def default_server_name() -> str:
@@ -28,6 +30,8 @@ class SingleInstance(QObject):
         super().__init__(parent)
         self.server_name = server_name or default_server_name()
         self.server = QLocalServer(self)
+        self.server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
+        self._buffers: dict[QLocalSocket, bytearray] = {}
         self.server.newConnection.connect(self._accept_connections)
         lock_root = QStandardPaths.writableLocation(
             QStandardPaths.StandardLocation.TempLocation
@@ -52,7 +56,7 @@ class SingleInstance(QObject):
         if not socket.waitForConnected(timeout_ms):
             return False
         payload = json.dumps({"args": arguments}, ensure_ascii=False).encode("utf-8")
-        if len(payload) > 64 * 1024:
+        if len(payload) > MAX_MESSAGE_BYTES:
             return False
         socket.write(len(payload).to_bytes(4, "big") + payload)
         if not socket.waitForBytesWritten(timeout_ms):
@@ -65,33 +69,48 @@ class SingleInstance(QObject):
             socket = self.server.nextPendingConnection()
             if socket is None:
                 continue
-            socket.waitForReadyRead(500)
-            data = bytes(socket.readAll())
-            if len(data) < 4:
-                socket.disconnectFromServer()
-                continue
-            size = int.from_bytes(data[:4], "big")
-            if size > 64 * 1024:
-                socket.disconnectFromServer()
-                continue
-            body = data[4:]
-            while len(body) < size and socket.waitForReadyRead(250):
-                body += bytes(socket.readAll())
-            if size != len(body):
-                socket.disconnectFromServer()
-                continue
-            try:
-                message = json.loads(body.decode("utf-8"))
-                arguments = message["args"]
-                if not isinstance(arguments, list) or not all(
-                    isinstance(item, str) for item in arguments
-                ):
-                    raise ValueError
-            except (UnicodeDecodeError, json.JSONDecodeError, KeyError, ValueError):
-                socket.disconnectFromServer()
-                continue
-            self.messageReceived.emit(arguments)
-            socket.disconnectFromServer()
+            socket.setReadBufferSize(MAX_MESSAGE_BYTES + 5)
+            self._buffers[socket] = bytearray()
+            socket.readyRead.connect(lambda socket=socket: self._socket_ready(socket))
+            socket.disconnected.connect(lambda socket=socket: self._discard_socket(socket))
+            # Bound incomplete messages without ever blocking the GUI thread.
+            timeout = QTimer(socket)
+            timeout.setSingleShot(True)
+            timeout.timeout.connect(socket.abort)
+            timeout.start(1500)
+            if socket.bytesAvailable():
+                self._socket_ready(socket)
+
+    def _discard_socket(self, socket: QLocalSocket) -> None:
+        self._buffers.pop(socket, None)
+        socket.deleteLater()
+
+    def _socket_ready(self, socket: QLocalSocket) -> None:
+        buffer = self._buffers.get(socket)
+        if buffer is None:
+            return
+        buffer.extend(bytes(socket.readAll()))
+        if len(buffer) < 4:
+            return
+        size = int.from_bytes(buffer[:4], "big")
+        if size > MAX_MESSAGE_BYTES or len(buffer) > size + 4:
+            socket.abort()
+            return
+        if len(buffer) < size + 4:
+            return
+        try:
+            message = json.loads(bytes(buffer[4:]).decode("utf-8"))
+            arguments = message.get("args") if isinstance(message, dict) else None
+            if not isinstance(arguments, list) or not all(
+                isinstance(item, str) for item in arguments
+            ):
+                raise ValueError
+        except (UnicodeDecodeError, ValueError, RecursionError):
+            socket.abort()
+            return
+        self._buffers.pop(socket, None)
+        self.messageReceived.emit(arguments)
+        socket.disconnectFromServer()
 
     @staticmethod
     def normalized_file_arguments(arguments: list[str]) -> list[str]:

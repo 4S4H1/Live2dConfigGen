@@ -380,6 +380,11 @@ class ReleaseRequestHandler(BaseHTTPRequestHandler):
             return
 
         range_header = self.headers.get("Range")
+        if_range = self.headers.get("If-Range")
+        if range_header and if_range is not None and if_range != etag:
+            # Only our exact strong ETag proves that the partial file belongs
+            # to this artifact. Otherwise restart with the full representation.
+            range_header = None
         byte_range = self._parse_range(range_header, size) if range_header else None
         if range_header and byte_range is None:
             self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)

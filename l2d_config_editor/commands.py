@@ -56,6 +56,13 @@ class RemoveNodesCommand(QUndoCommand):
         self.nodes = [node.clone() for node in nodes]
         self.connections = list(connections)
         self.groups = [group.clone() for group in (groups or [])]
+        self.node_indices = {
+            node.uuid: index for index, node in enumerate(controller.document.nodes)
+        }
+        self.connection_indices = {
+            (connection.from_uuid, connection.to_uuid): index
+            for index, connection in enumerate(controller.document.connections)
+        }
         self.plan_layout = (
             plan_layout.clone()
             if plan_layout is not None
@@ -69,75 +76,76 @@ class RemoveNodesCommand(QUndoCommand):
         self.controller._restore_deleted_nodes(
             [node.clone() for node in self.nodes],
             list(self.connections),
+            node_indices=self.node_indices,
+            connection_indices=self.connection_indices,
         )
         if self.groups:
             self.controller._set_groups([group.clone() for group in self.groups])
         self.controller._set_plan_layout(self.plan_layout.clone())
 
 
-class UpdateFieldCommand(QUndoCommand):
-    def __init__(self, controller, node_uuid, key, old_value, new_value, source_mode) -> None:
-        super().__init__("修改字段")
+class _FieldEditCommand(QUndoCommand):
+    """Restore the complete result of field rules, including override ownership."""
+
+    def __init__(self, controller, node_uuids, label):
+        super().__init__(label)
         self.controller = controller
+        self.node_uuids = list(node_uuids)
+        self.before = controller._capture_field_edit_state(self.node_uuids)
+        self.after = None
+
+    def redo(self) -> None:
+        if self.after is None:
+            self._apply_update()
+            self.after = self.controller._capture_field_edit_state(self.node_uuids)
+        else:
+            self.controller._restore_field_edit_state(self.after)
+
+    def undo(self) -> None:
+        self.controller._restore_field_edit_state(self.before)
+
+
+class UpdateFieldCommand(_FieldEditCommand):
+    def __init__(self, controller, node_uuid, key, old_value, new_value, source_mode) -> None:
+        super().__init__(controller, [node_uuid], "修改字段")
         self.node_uuid = node_uuid
         self.key = key
         self.old_value = old_value
         self.new_value = new_value
         self.source_mode = source_mode
 
-    def redo(self) -> None:
+    def _apply_update(self) -> None:
         self.controller._set_field(self.node_uuid, self.key, self.new_value, self.source_mode)
 
-    def undo(self) -> None:
-        self.controller._set_field(self.node_uuid, self.key, self.old_value, self.source_mode)
 
-
-class UpdateFieldsCommand(QUndoCommand):
+class UpdateFieldsCommand(_FieldEditCommand):
     def __init__(self, controller, node_uuid, updates, source_mode, label: str = "批量修改字段") -> None:
-        super().__init__(label)
-        self.controller = controller
+        super().__init__(controller, [node_uuid], label)
         self.node_uuid = node_uuid
         self.updates = [(key, old_value, new_value) for key, old_value, new_value in updates]
         self.source_mode = source_mode
 
-    def redo(self) -> None:
+    def _apply_update(self) -> None:
         self.controller._set_fields(
             self.node_uuid,
             {key: new_value for key, _old_value, new_value in self.updates},
             self.source_mode,
         )
 
-    def undo(self) -> None:
-        self.controller._set_fields(
-            self.node_uuid,
-            {key: old_value for key, old_value, _new_value in self.updates},
-            self.source_mode,
-        )
 
-
-class UpdateManyFieldsCommand(QUndoCommand):
+class UpdateManyFieldsCommand(_FieldEditCommand):
     def __init__(self, controller, node_updates, source_mode, label: str = "批量修改字段") -> None:
-        super().__init__(label)
-        self.controller = controller
+        super().__init__(controller, node_updates, label)
         self.node_updates = {
             node_uuid: [(key, old_value, new_value) for key, old_value, new_value in updates]
             for node_uuid, updates in node_updates.items()
         }
         self.source_mode = source_mode
 
-    def redo(self) -> None:
+    def _apply_update(self) -> None:
         self.controller._set_many_fields(
             {
                 node_uuid: {key: new_value for key, _old_value, new_value in updates}
-                for node_uuid, updates in self.node_updates.items()
-            },
-            self.source_mode,
-        )
-
-    def undo(self) -> None:
-        self.controller._set_many_fields(
-            {
-                node_uuid: {key: old_value for key, old_value, _new_value in updates}
                 for node_uuid, updates in self.node_updates.items()
             },
             self.source_mode,
@@ -319,12 +327,17 @@ class RemoveCanvasImagesCommand(QUndoCommand):
         super().__init__("删除参考图")
         self.controller = controller
         self.images = [image.clone() for image in images]
+        self.indices = {
+            image.uuid: index for index, image in enumerate(controller.document.canvas_images)
+        }
 
     def redo(self) -> None:
         self.controller._remove_canvas_images([image.uuid for image in self.images])
 
     def undo(self) -> None:
-        self.controller._insert_canvas_images([image.clone() for image in self.images])
+        self.controller._insert_canvas_images(
+            [image.clone() for image in self.images], indices=self.indices
+        )
 
 
 class MoveCanvasImagesCommand(QUndoCommand):
@@ -455,6 +468,7 @@ class RemoveConnectionCommand(QUndoCommand):
         super().__init__("删除连线")
         self.controller = controller
         self.connection = connection
+        self.index = controller.document.connections.index(connection)
         self.before_plan_layout = controller.document.plan_layout.clone()
         self.after_plan_layout = None
 
@@ -466,5 +480,5 @@ class RemoveConnectionCommand(QUndoCommand):
             self.controller._set_plan_layout(self.after_plan_layout.clone())
 
     def undo(self) -> None:
-        self.controller._add_connection(self.connection)
+        self.controller._add_connection(self.connection, index=self.index)
         self.controller._set_plan_layout(self.before_plan_layout.clone())

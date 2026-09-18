@@ -257,7 +257,7 @@ def _position(value: Any, *, field_name: str = "position") -> tuple[float, float
         )
     try:
         x, y = float(raw_x), float(raw_y)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise ToolServiceError(
             "INVALID_ARGUMENT",
             f"{field_name} must contain finite x/y coordinates",
@@ -278,11 +278,20 @@ def _position(value: Any, *, field_name: str = "position") -> tuple[float, float
 def _bounded_number(value: Any, *, field_name: str, minimum: float = 1.0) -> float:
     try:
         resolved = float(value)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise ToolServiceError("INVALID_ARGUMENT", f"{field_name} must be a number") from exc
-    if not math.isfinite(resolved) or resolved < minimum:
+    if not math.isfinite(resolved) or not minimum <= resolved <= MAX_CANVAS_COORDINATE:
         raise ToolServiceError("INVALID_ARGUMENT", f"{field_name} is out of range")
     return resolved
+
+
+def _integer(value: Any, *, field_name: str) -> int:
+    try:
+        if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+            raise ValueError("not an integer")
+        return int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ToolServiceError("INVALID_ARGUMENT", f"{field_name} must be an integer") from exc
 
 
 class EditorToolService(QObject):
@@ -1307,13 +1316,7 @@ class EditorToolService(QObject):
             if key == "default_state":
                 value = "idle0"
             elif key == "ship_skin_id":
-                try:
-                    value = int(value)
-                except (TypeError, ValueError) as exc:
-                    raise ToolServiceError(
-                        "INVALID_ARGUMENT",
-                        "ship_skin_id must be an integer",
-                    ) from exc
+                value = _integer(value, field_name="ship_skin_id")
             else:
                 value = str(value or "")
             if getattr(document.meta, key) != value:
@@ -1552,15 +1555,9 @@ class EditorToolService(QObject):
     @staticmethod
     def _normalize_tool_field(field: Any, node: NodeRecord, value: Any) -> Any:
         if field.editor == "int":
-            if isinstance(value, bool):
-                raise ToolServiceError(
-                    "INVALID_ARGUMENT",
-                    f"{field.key} must be an integer",
-                    {"node_uuid": node.uuid, "field": field.key},
-                )
             try:
-                return int(value)
-            except (TypeError, ValueError) as exc:
+                return _integer(value, field_name=field.key)
+            except ToolServiceError as exc:
                 raise ToolServiceError(
                     "INVALID_ARGUMENT",
                     f"{field.key} must be an integer",
@@ -2451,6 +2448,7 @@ class EditorToolService(QObject):
                     72.0 + depth * horizontal,
                     72.0 - total_height / 2.0 + index * vertical,
                 )
+                _position(new_position, field_name="layout position")
                 old_position = (
                     float(node.ui_position["x"]),
                     float(node.ui_position["y"]),

@@ -40,7 +40,8 @@ from .reference_images import (
     validated_reference_image_display_size,
 )
 
-RANGE_PATTERN = re.compile(r"^\{\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\}$")
+NUMBER_LITERAL_PATTERN = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
+RANGE_PATTERN = re.compile(rf"^\{{\s*({NUMBER_LITERAL_PATTERN})\s*,\s*({NUMBER_LITERAL_PATTERN})\s*\}}$")
 ACTION_NAME_PATTERN = re.compile(r"action\s*=\s*'([^']*)'")
 TARGET_IDLE_PATTERN = re.compile(r"idle\s*=\s*(-?\d+)")
 IGNORE_LIST_PATTERN = re.compile(r"ignore\s*=\s*\{\s*(?:\{\s*)?(?P<values>.*?)(?:\s*\})?\s*\}", re.IGNORECASE)
@@ -338,7 +339,8 @@ def parse_range(value: str) -> tuple[float, float] | None:
     match = RANGE_PATTERN.match(_text(value).strip())
     if not match:
         return None
-    return float(match.group(1)), float(match.group(2))
+    bounds = float(match.group(1)), float(match.group(2))
+    return bounds if all(math.isfinite(bound) for bound in bounds) else None
 
 
 def normalize_parts_data(value: str) -> list[float] | None:
@@ -354,14 +356,17 @@ def normalize_parts_data(value: str) -> list[float] | None:
     for chunk in text.split(","):
         chunk = chunk.strip()
         try:
-            result.append(float(chunk))
+            number = float(chunk)
         except ValueError:
             return None
+        if not math.isfinite(number):
+            return None
+        result.append(number)
     return result
 
 
 def _format_number(value: float) -> str:
-    return str(int(value)) if float(value).is_integer() else f"{value:g}"
+    return str(int(value)) if float(value).is_integer() else repr(value)
 
 
 def canonicalize_parts_data(value: Any) -> str:
@@ -1197,7 +1202,7 @@ def create_node(
 ) -> NodeRecord:
     fields = default_fields(schema, node_type)
     if base_node:
-        fields.update(dict(base_node.fields))
+        fields.update(copy.deepcopy(base_node.fields))
     node = NodeRecord(
         uuid=new_uuid(),
         type=node_type,
@@ -1469,7 +1474,7 @@ def _export_node_fields(node: NodeRecord) -> dict[str, Any]:
         )
     if node.type in {"TouchDrag", "ParameterTrigger"}:
         hidden_fields.add("action_trigger_active")
-    return {key: value for key, value in node.fields.items() if key not in hidden_fields}
+    return copy.deepcopy({key: value for key, value in node.fields.items() if key not in hidden_fields})
 
 
 def _derived_target_idle_from_fields(node: NodeRecord) -> int | None:
@@ -1507,7 +1512,7 @@ def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[
         payload: dict[str, Any] = {
             "uuid": node.uuid,
             "type": node.type,
-            "ui_position": node.ui_position,
+            "ui_position": dict(node.ui_position),
         }
         if node.type_slot is not None:
             payload["type_slot"] = node.type_slot
@@ -1517,7 +1522,7 @@ def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[
         if node.sequence_locked:
             payload["sequence_locked"] = True
         if node.ui_size:
-            payload["ui_size"] = node.ui_size
+            payload["ui_size"] = dict(node.ui_size)
         if node.listener_graph is not None:
             payload["listener_graph"] = node.listener_graph.to_payload()
         if node.type in function_types:
@@ -1554,7 +1559,7 @@ def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[
         "connections": [asdict(connection) for connection in document.connections],
         "canvas_view": asdict(document.canvas_view),
         "plan_layout": serialize_plan_layout(document),
-        **({"history": document.history} if document.history else {}),
+        **({"history": copy.deepcopy(document.history)} if document.history else {}),
     }
 
 
@@ -1784,7 +1789,7 @@ def load_document_payload(
     if isinstance(payload, (bytes, bytearray)):
         payload = json.loads(bytes(payload))
     elif isinstance(payload, dict):
-        payload = dict(payload)
+        payload = copy.deepcopy(payload)
     else:
         raise TypeError("Document payload must be bytes or an object")
     if not is_editor_document_payload(payload):

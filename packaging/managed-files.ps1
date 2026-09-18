@@ -48,7 +48,7 @@ if ($Mode -eq "MergeUnknown") {
         [StringComparer]::OrdinalIgnoreCase
     )
     if ($hasManifest) {
-        Get-Content -LiteralPath $manifest |
+        Get-Content -LiteralPath $manifest -Encoding UTF8 |
             ForEach-Object { [void] $managed.Add($_.Trim()) }
     }
     $legacyManaged = $env:L2D_KNOWN_FILES -split [char] 124
@@ -92,7 +92,7 @@ if (-not (Test-Path -LiteralPath $root)) {
 $manifest = [IO.Path]::Combine($root, $manifestName)
 if (Test-Path -LiteralPath $manifest) {
     $prefix = $root + [char] 92
-    $paths = @(Get-Content -LiteralPath $manifest)
+    $paths = @(Get-Content -LiteralPath $manifest -Encoding UTF8)
     foreach ($relative in $paths) {
         if ([string]::IsNullOrWhiteSpace($relative) -or
             [IO.Path]::IsPathRooted($relative)) {

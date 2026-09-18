@@ -1951,7 +1951,8 @@ class MainWindow(QMainWindow):
             if payload.get("kind") == "group":
                 return str(payload.get("group_dir") or "")
             if payload.get("kind") == "file":
-                return str(Path(str(payload.get("path") or "")).parent).replace("\\", "/").replace(".", "")
+                parent = Path(str(payload.get("path") or "")).parent.as_posix()
+                return "" if parent == "." else parent
         return ""
 
     def _create_new_file(self) -> None:
@@ -1966,16 +1967,32 @@ class MainWindow(QMainWindow):
         if not ok or not new_name.strip():
             return
         filename = new_name.strip()
-        if not filename.endswith(".json"):
+        if filename in {".", ".."} or re.search(r'[<>:"/\\|?*\x00-\x1f]', filename):
+            QMessageBox.warning(self, "无法重命名", "请输入不含路径或特殊字符的文件名。")
+            return
+        if not filename.lower().endswith(".json"):
             filename += ".json"
         new_path = old_path.parent / filename
-        old_path.rename(new_path)
-        if self.controller.document.path == str(old_path):
+        if new_path == old_path:
+            return
+        if new_path.exists():
+            QMessageBox.warning(self, "无法重命名", f"文件 {filename} 已存在，请使用其他名称。")
+            return
+        try:
+            old_path.rename(new_path)
+        except OSError as exc:
+            QMessageBox.warning(self, "无法重命名", str(exc))
+            return
+        old_key = self._session_key_for_path(old_path)
+        new_key = self._session_key_for_path(new_path)
+        is_current = self._session_key_for_path(self.controller.document.path) == old_key
+        session = self._document_sessions.pop(old_key, None)
+        if session is not None:
+            session["document"].path = str(new_path)
+            self._document_sessions[new_key] = session
+        if is_current:
             self.controller.document.path = str(new_path)
-            old_key = self._session_key_for_path(old_path)
-            if old_key:
-                self._document_sessions.pop(old_key, None)
-            self._current_session_key = self._session_key_for_path(new_path)
+            self._current_session_key = new_key
             self.controller.pathChanged.emit(str(new_path))
         self._refresh_file_list()
         self._select_file_in_list(new_path.relative_to(self.workdir).as_posix())

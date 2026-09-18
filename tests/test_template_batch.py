@@ -54,6 +54,47 @@ class TemplateBatchTests(unittest.TestCase):
         self.assertEqual("idle0", specs[1].default_state)
         dialog.close()
 
+    def test_paste_preserves_empty_first_cell_and_seven_column_shape(self) -> None:
+        for prefix in ("", "  \n", "\t\n"):
+            with self.subTest(prefix=prefix):
+                rows = parse_pasted_template_rows(
+                    prefix + "\tresource_a\t1001\t2026-07-11\t\t0\t",
+                    default_version="2026-09-19",
+                )
+                self.assertEqual([["", "resource_a", "1001", "2026-07-11", "", "0", ""]], rows)
+
+    def test_paste_does_not_discard_data_matching_one_header_alias(self) -> None:
+        rows = parse_pasted_template_rows("Name\tresource_a\t1001\tnotes", default_version="2026-07-11")
+        self.assertEqual([["Name", "resource_a", "1001", "2026-07-11", "", "0", "notes"]], rows)
+
+    def test_batch_writer_does_not_overwrite_file_created_during_staging(self) -> None:
+        schema = get_default_schema()
+        specs = [BaseTemplateSpec("2026-07-11", "", "A", "a_1", 1001)]
+        from l2d_config_editor import logic
+
+        real_save = logic.save_document
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "20260711" / "A.json"
+
+            def competing_save(active_schema, document, path):
+                real_save(active_schema, document, path)
+                target.write_text("external document", encoding="utf-8")
+
+            with patch("l2d_config_editor.logic.save_document", side_effect=competing_save):
+                with self.assertRaises(FileExistsError):
+                    create_base_template_files(schema, temp_dir, specs)
+            self.assertEqual("external document", target.read_text(encoding="utf-8"))
+            self.assertEqual([], list(Path(temp_dir).rglob("*.tmp")))
+
+    def test_batch_writer_sanitizes_windows_device_and_control_character_names(self) -> None:
+        schema = get_default_schema()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            paths = create_base_template_files(schema, temp_dir, [
+                BaseTemplateSpec("2026-07-11", "", "CON", "a_1", 1001),
+                BaseTemplateSpec("2026-07-11", "", "角色\x01名", "a_2", 1002),
+            ])
+            self.assertEqual(["_CON.json", "角色_名.json"], [path.name for path in paths])
+
     def test_dialog_rejects_duplicate_character_ids_before_writing(self) -> None:
         dialog = BatchTemplateDialog()
         for column, value in enumerate(["A", "a_1", "100", "2026-07-11", "", "0", ""]):
@@ -111,18 +152,20 @@ class TemplateBatchTests(unittest.TestCase):
             BaseTemplateSpec("2026-07-11", "asahi", "A", "a_1", 1001),
             BaseTemplateSpec("2026-07-11", "asahi", "B", "b_1", 1002),
         ]
-        real_replace = Path.replace
+        from l2d_config_editor.template_batch import _publish_staged_template
+
+        real_publish = _publish_staged_template
         calls = 0
 
-        def flaky_replace(source: Path, target: Path):
+        def flaky_publish(source: Path, target: Path):
             nonlocal calls
             calls += 1
             if calls == 2:
                 raise OSError("simulated publish failure")
-            return real_replace(source, target)
+            return real_publish(source, target)
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            with patch.object(Path, "replace", new=flaky_replace):
+            with patch("l2d_config_editor.template_batch._publish_staged_template", side_effect=flaky_publish):
                 with self.assertRaisesRegex(OSError, "publish"):
                     create_base_template_files(schema, temp_dir, specs)
             self.assertEqual([], list(Path(temp_dir).rglob("*.json")))

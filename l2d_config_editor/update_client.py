@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import logging
 import re
 import shutil
 import sys
@@ -30,6 +31,8 @@ from .update_manifest import (
     verify_manifest_signature,
 )
 from .version import VERSION
+
+logger = logging.getLogger(__name__)
 
 
 def default_update_cache() -> Path:
@@ -388,6 +391,12 @@ class UpdateClient(QObject):
 
     def download_available(self, *, cache_only: bool = False) -> None:
         self._cache_only = bool(cache_only)
+        try:
+            self._begin_download()
+        except OSError as exc:
+            self._download_io_failed(exc)
+
+    def _begin_download(self) -> None:
         if self._artifact is None or not self._artifact_url:
             self._download_error("尚未检查到可下载的更新")
             return
@@ -517,14 +526,23 @@ class UpdateClient(QObject):
     def _download_ready(self) -> None:
         if self._download_reply is None:
             return
-        self._initialize_download_stream()
-        if self._download_stream is not None:
-            self._download_stream.write(bytes(self._download_reply.readAll()))
-            if (
-                self._artifact is not None
-                and self._download_stream.tell() > self._artifact.size
-            ):
-                self._download_reply.abort()
+        try:
+            self._initialize_download_stream()
+            if self._download_stream is not None:
+                self._download_stream.write(bytes(self._download_reply.readAll()))
+                if (
+                    self._artifact is not None
+                    and self._download_stream.tell() > self._artifact.size
+                ):
+                    self._download_reply.abort()
+        except OSError as exc:
+            self._download_io_failed(exc)
+
+    def _download_io_failed(self, error: OSError) -> None:
+        # Detach the reply before aborting: finished can be emitted synchronously.
+        # A buffered stream can fail again on close after a disk-full write.
+        self.cancel_download(remove_partial=False)
+        self._download_error(f"无法写入更新缓存：{error}")
 
     def _download_progress(self, received: int, total: int) -> None:
         base = self._download_offset
@@ -540,10 +558,14 @@ class UpdateClient(QObject):
         if self._download_reply is not reply:
             return
         if self._download_stream is not None:
-            self._download_stream.flush()
-            os.fsync(self._download_stream.fileno())
-            self._download_stream.close()
-            self._download_stream = None
+            try:
+                self._download_stream.flush()
+                os.fsync(self._download_stream.fileno())
+                self._download_stream.close()
+                self._download_stream = None
+            except OSError as exc:
+                self._download_io_failed(exc)
+                return
         error = reply.error()
         error_message = reply.errorString()
         reply.deleteLater()
@@ -564,10 +586,13 @@ class UpdateClient(QObject):
             self._write_verification_files(self._download_final.parent)
             self._retain_two_versions()
         except UpdateValidationError as exc:
-            self._download_part.unlink(missing_ok=True)
-            self._download_part.with_suffix(
-                self._download_part.suffix + ".etag"
-            ).unlink(missing_ok=True)
+            try:
+                self._download_part.unlink(missing_ok=True)
+                self._download_part.with_suffix(
+                    self._download_part.suffix + ".etag"
+                ).unlink(missing_ok=True)
+            except OSError:
+                logger.warning("无效更新缓存暂时无法清理", exc_info=True)
             self._download_error(str(exc))
             return
         except OSError as exc:
@@ -614,10 +639,16 @@ class UpdateClient(QObject):
             reply.abort()
             reply.deleteLater()
         if self._download_stream is not None:
-            self._download_stream.close()
-            self._download_stream = None
+            stream, self._download_stream = self._download_stream, None
+            try:
+                stream.close()
+            except OSError:
+                logger.warning("取消下载时无法刷新缓存", exc_info=True)
         if remove_partial and self._download_part is not None:
             self._download_part.unlink(missing_ok=True)
+            self._download_part.with_suffix(
+                self._download_part.suffix + ".etag"
+            ).unlink(missing_ok=True)
         self._download_initialized = False
 
     def _retry_download(self) -> None:
@@ -700,4 +731,9 @@ class UpdateClient(QObject):
                 continue
         versions.sort(reverse=True)
         for _, obsolete in versions[2:]:
-            shutil.rmtree(obsolete)
+            try:
+                shutil.rmtree(obsolete)
+            except OSError:
+                # Windows may still hold an installer handle. The new verified
+                # release remains usable; a later download retries pruning.
+                logger.warning("旧更新缓存暂时无法清理：%s", obsolete, exc_info=True)

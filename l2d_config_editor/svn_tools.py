@@ -100,17 +100,21 @@ class SvnProcessExecutor(QObject):
         self.process.readyReadStandardError.connect(self._read_stderr)
         self.process.finished.connect(self._finished)
         self.process.errorOccurred.connect(self._error)
+        self._cancel_timer = QTimer(self)
+        self._cancel_timer.setSingleShot(True)
+        self._cancel_timer.timeout.connect(self._kill_if_running)
 
     def start(self, executable: str | Path, arguments: list[str]) -> None:
         if self.process.state() != QProcess.ProcessState.NotRunning:
             raise RuntimeError("SVN process is already running")
+        self._cancel_timer.stop()
         self.process.start(str(executable), list(arguments))
 
     def cancel(self) -> None:
         if self.process.state() == QProcess.ProcessState.NotRunning:
             return
+        self._cancel_timer.start(1000)
         self.process.terminate()
-        QTimer.singleShot(1000, self._kill_if_running)
 
     def kill(self) -> None:
         if self.process.state() != QProcess.ProcessState.NotRunning:
@@ -131,6 +135,7 @@ class SvnProcessExecutor(QObject):
             self.stderrReceived.emit(chunk)
 
     def _finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
+        self._cancel_timer.stop()
         self._read_stdout()
         self._read_stderr()
         self.finished.emit(exit_code, exit_status)

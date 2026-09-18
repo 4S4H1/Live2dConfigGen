@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import os
 import re
 import uuid
 from dataclasses import dataclass
@@ -85,7 +86,7 @@ def create_base_template_files(schema: Any, workspace: str | Path, specs: list[B
             save_document(schema, document, temp_path)
             staged.append(temp_path)
         for temp_path, target, _document in plans:
-            temp_path.replace(target)
+            _publish_staged_template(temp_path, target)
             staged.remove(temp_path)
             published.append(target)
     except Exception:
@@ -97,8 +98,27 @@ def create_base_template_files(schema: Any, workspace: str | Path, specs: list[B
     return published
 
 
+def _publish_staged_template(source: Path, target: Path) -> None:
+    """Atomically publish a complete file without replacing a competing writer."""
+
+    if os.name == "nt":
+        # Windows rename is atomic and refuses an already existing destination.
+        source.rename(target)
+    else:
+        # POSIX rename replaces destinations, so create a no-clobber hard link
+        # within the same directory before removing the staging name.
+        os.link(source, target)
+        try:
+            source.unlink()
+        except OSError:
+            target.unlink(missing_ok=True)
+            raise
+
+
 def _available_output_path(directory: Path, char_name: str, reserved: set[Path]) -> Path:
-    stem = re.sub(r'[<>:"/\\|?*]+', "_", str(char_name or "").strip()).strip(" ._") or "config"
+    from .csv_export import sanitize_csv_identifier
+
+    stem = sanitize_csv_identifier(char_name, fallback="config")
     index = 1
     while True:
         suffix = "" if index == 1 else f"_{index}"
@@ -149,10 +169,12 @@ def _header_mapping(row: list[str]) -> dict[int, str]:
 def parse_pasted_template_rows(text: str, *, default_version: str | None = None) -> list[list[str]]:
     """Parse current seven-column and legacy four-column copied tables."""
 
-    source = str(text or "").strip()
-    if not source:
+    # Tabs at the boundaries represent empty cells; stripping them shifts
+    # every field and can also mistake a seven-column row for the legacy form.
+    source = str(text or "").strip("\r\n")
+    if not source.strip():
         return []
-    first_line = source.splitlines()[0]
+    first_line = next(line for line in source.splitlines() if line.strip())
     delimiter = "\t" if "\t" in first_line else ("|" if "|" in first_line else ",")
     raw_rows = [
         [str(value or "").strip() for value in row]
@@ -193,7 +215,9 @@ def parse_pasted_template_rows(text: str, *, default_version: str | None = None)
 
 
 def _looks_like_header(row: list[str]) -> bool:
-    return bool(_header_mapping(row))
+    # One alias may be a real character name or note (e.g. "Name" or "tips").
+    # A header must identify multiple distinct columns to avoid dropping data.
+    return len(set(_header_mapping(row).values())) >= 2
 
 
 class BatchTemplateDialog(QDialog):

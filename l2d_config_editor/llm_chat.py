@@ -513,6 +513,8 @@ class LLMChatPanel(QWidget):
         self._busy = False
         self._stream_preview = ""
         self._active_identity: str | None = None
+        self._history_write_failed = False
+        self._turn_serial = 0
         self._build_ui()
         self._load_settings()
         self._render_history()
@@ -604,6 +606,8 @@ class LLMChatPanel(QWidget):
         self._set_status("模型设置已保存（密钥值未保存）")
 
     def _set_status(self, message: str) -> None:
+        if self._history_write_failed:
+            message += "（本地对话历史保存失败，本次对话仍保留在内存中）"
         self.status_label.setText(message)
         self.statusChanged.emit(message)
 
@@ -632,6 +636,7 @@ class LLMChatPanel(QWidget):
         except ValueError as exc:
             self._set_status(str(exc))
             return
+        self._turn_serial += 1
         self.input_edit.clear()
         self._messages.append({"role": "user", "content": text})
         self._save_history()
@@ -712,6 +717,7 @@ class LLMChatPanel(QWidget):
             reply.abort()
 
     def _on_reply_finished(self) -> None:
+        turn_serial = self._turn_serial
         self._timeout_timer.stop()
         reply = self._reply
         stream = self._stream
@@ -776,7 +782,7 @@ class LLMChatPanel(QWidget):
             self._render_history()
             if content:
                 self.assistantMessageAdded.emit(content)
-            self._execute_tool_round(tool_calls)
+            self._execute_tool_round(tool_calls, turn_serial=turn_serial)
             return
         self._messages.append(assistant)
         self._save_history()
@@ -803,7 +809,31 @@ class LLMChatPanel(QWidget):
             raise ValueError("工具参数必须是 JSON 对象")
         return name, arguments
 
-    def _execute_tool_round(self, tool_calls: list[dict[str, Any]]) -> None:
+    def _execute_tool_round(
+        self, tool_calls: list[dict[str, Any]], *, turn_serial: int,
+    ) -> None:
+        round_identity = self._identity
+
+        def round_is_active() -> bool:
+            return (
+                self._busy
+                and self._turn_serial == turn_serial
+                and not self._cancelled
+                and self._active_identity == round_identity
+                and self._identity == round_identity
+            )
+
+        def abandon_round() -> None:
+            for item in decoded:
+                self.tool_service.discard_prepared_preview(item["preview_token"])
+            if self._identity == round_identity and self._turn_serial == turn_serial:
+                # Remove incomplete tool-call pairs without touching a newly
+                # opened graph's conversation.
+                self._save_history()
+                self._render_history()
+
+        if not round_is_active():
+            return
         if self._tool_round >= MAX_TOOL_ROUNDS:
             self._append_local_notice("已达到工具调用轮次上限")
             self._finish_busy("已达到工具调用轮次上限")
@@ -867,6 +897,12 @@ class LLMChatPanel(QWidget):
         if previews and not requires_single_transaction:
             accepted = self._confirm_changes(previews)
 
+        # A modal confirmation runs a nested event loop. Cancel and document
+        # switching may happen before it returns, including after acceptance.
+        if not round_is_active():
+            abandon_round()
+            return
+
         round_start_revision = self.tool_service.revision
         for item in decoded:
             if item["decode_error"]:
@@ -918,6 +954,9 @@ class LLMChatPanel(QWidget):
                     )
                 else:
                     result = self.tool_service.invoke_tool(item["name"], arguments)
+            if not round_is_active():
+                abandon_round()
+                return
             self._messages.append(
                 {
                     "role": "tool",
@@ -970,7 +1009,14 @@ class LLMChatPanel(QWidget):
 
     def _save_history(self) -> None:
         self._messages = self.history_store.bounded_messages(self._messages)
-        self.history_store.save(self._identity, self._messages)
+        try:
+            self.history_store.save(self._identity, self._messages)
+        except OSError:
+            # A full disk or unavailable user-data directory must not discard
+            # the current prompt or strand an otherwise successful request.
+            self._history_write_failed = True
+        else:
+            self._history_write_failed = False
 
     def clear_history(self) -> None:
         if self._busy:
@@ -1032,8 +1078,9 @@ class LLMChatPanel(QWidget):
                 try:
                     parsed = json.loads(content)
                     if isinstance(parsed, dict):
+                        error = parsed.get("error")
                         status = "成功" if parsed.get("ok") else str(
-                            (parsed.get("error") or {}).get("code") or "失败"
+                            (error.get("code") if isinstance(error, dict) else None) or "失败"
                         )
                         content = f"{message.get('name')}: {status}"
                 except json.JSONDecodeError:
@@ -1043,6 +1090,7 @@ class LLMChatPanel(QWidget):
                     str((call.get("function") or {}).get("name") or "")
                     for call in message["tool_calls"]
                     if isinstance(call, dict)
+                    and isinstance(call.get("function"), dict)
                 ]
                 content = "调用工具：" + "、".join(filter(None, names))
             blocks.append(
