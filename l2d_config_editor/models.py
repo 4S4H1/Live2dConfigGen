@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .listener_graph import ListenerGraph
 
 
 @dataclass
@@ -173,6 +177,7 @@ class NodeRecord:
     sequence_locked: bool = False
     numeric_linkage_enabled: bool = False
     manual_fields: set[str] = field(default_factory=set)
+    listener_graph: ListenerGraph | None = None
 
     def clone(self) -> "NodeRecord":
         return NodeRecord(
@@ -188,6 +193,7 @@ class NodeRecord:
             sequence_locked=self.sequence_locked,
             numeric_linkage_enabled=self.numeric_linkage_enabled,
             manual_fields=set(self.manual_fields),
+            listener_graph=self.listener_graph.clone() if self.listener_graph is not None else None,
         )
 
 

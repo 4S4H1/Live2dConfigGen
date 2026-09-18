@@ -37,6 +37,8 @@ uv run python -m l2d_config_editor.main
 
 - 唯一 `idle0` 根节点，以及 `TouchIdle`、`TouchDrag`、
   `ParameterTrigger`、返回默认待机和备注等节点。
+- 监听器子蓝图暂未开放：创建和编辑入口已隐藏，已有子图数据仍可读取和保存。
+  [开发说明与运行时依据](docs/LISTENER_BLUEPRINTS.md)。
 - 快速创建和连接、贝塞尔曲线、持久化分组、可自由调整大小且带外框的参考图片、撤销/重做、
   搜索、CSV 预览与当前图表直接导出。
 - 无开关画笔：`Ctrl+左键` 直接自由绘制，按住 `Ctrl+右键` 滑过的笔迹会即时
@@ -79,7 +81,10 @@ uv run python -m l2d_config_editor.main
 
 ## JSON 格式
 
-当前写出格式为 `format_version: 5`。v5 增加独立的计划图画笔层、计划主题
+普通图继续写出 `format_version: 5`；包含监听器子蓝图时写出 `format_version: 6`，
+在宿主内增加 `listener_graph`，内部组件不会成为主图节点或单独 CSV 行。
+新版仍能读取 v1–v5；旧编辑器会拒绝打开 v6，以防重存时丢失子图。
+v5 增加独立的计划图画笔层、计划主题
 正式化状态和内部 `PlanPlaceholder` 虚节点：
 
 ```json

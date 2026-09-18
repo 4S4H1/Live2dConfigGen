@@ -52,6 +52,7 @@ from PySide6.QtWidgets import (
 )
 
 from .app_settings import create_app_settings
+from . import features
 from .canvas import NodeCanvasView
 from .constants import CLIPBOARD_MIME
 from .controller import EditorController
@@ -503,6 +504,7 @@ class MainWindow(QMainWindow):
         self.svn_commit_dialog: SvnCommitDialog | None = None
         self.svn_diff_dialog: SvnGraphDiffDialog | None = None
         self.history_dialog = None
+        self.listener_dialog = None
         self._update_client: UpdateClient | None = None
         self._update_progress: QProgressDialog | None = None
         self._update_check_is_manual = False
@@ -549,9 +551,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(PRODUCT_NAME)
         self.resize(1680, 980)
         self._build_ui()
-        self.tool_service.beforeInvocation.connect(
-            self._commit_pending_editor_changes
-        )
+        self.tool_service.before_invocation = self._commit_pending_editor_changes
         self._build_actions()
         self._build_ai_chat_dock()
         self._apply_ui_theme(self.theme_mode, persist=False)
@@ -779,6 +779,7 @@ class MainWindow(QMainWindow):
         self.inspector_form = NodeFormWidget(self.controller.schema, inline=False, parent=self._inspector_compat_host)
         self.inspector_form.fieldCommitted.connect(self._commit_inspector_field)
         self.inspector_form.fieldsCommitted.connect(self._commit_inspector_fields)
+        self.inspector_form.listenerEditRequested.connect(self._show_listener_editor)
         self.validation_summary = ValidationSummaryWidget(self._inspector_compat_host)
         self.validation_summary.jumpRequested.connect(self._jump_to_validation_node)
         compat_layout.addWidget(self.inspector_meta)
@@ -836,6 +837,13 @@ class MainWindow(QMainWindow):
         )
         toolbar.addWidget(self.formal_view_button)
         toolbar.addWidget(self.plan_view_button)
+
+        self.listener_button = QPushButton("监听器…")
+        self.listener_button.setToolTip("编辑选中节点的监听器；也可新建独立监听器子蓝图")
+        listener_menu = self._listener_menu(self.listener_button)
+        self.listener_button.setMenu(listener_menu)
+        self._listener_toolbar_action = toolbar.addWidget(self.listener_button)
+        self._listener_toolbar_action.setVisible(features.LISTENER_EDITOR_ENABLED)
 
         self.plan_touchidle_button = QPushButton("Idle")
         self.plan_touchidle_button.setFixedWidth(56)
@@ -975,7 +983,9 @@ class MainWindow(QMainWindow):
         self.canvas = NodeCanvasView(self.controller.schema, self.controller)
         self.canvas.selectionSummaryChanged.connect(self._handle_selection_summary)
         self.canvas.interactionBusyChanged.connect(self._handle_canvas_busy_changed)
+        self.canvas.listenerEditRequested.connect(self._show_listener_editor)
         self.plan_canvas = PlanCanvasView(self.controller.schema, self.controller)
+        self.plan_canvas.listenerEditRequested.connect(self._show_listener_editor)
         self.plan_canvas.selectionSummaryChanged.connect(
             self._handle_selection_summary
         )
@@ -1228,6 +1238,7 @@ class MainWindow(QMainWindow):
         self.inspector_placeholder.setObjectName("inspectorPlaceholder")
         self.inspector_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.inspector_form = NodeFormWidget(self.controller.schema, inline=False)
+        self.inspector_form.listenerEditRequested.connect(self._show_listener_editor)
         self.inspector_form.fieldCommitted.connect(self._commit_inspector_field)
         self.inspector_form.fieldsCommitted.connect(self._commit_inspector_fields)
         self.validation_summary = ValidationSummaryWidget()
@@ -1257,6 +1268,8 @@ class MainWindow(QMainWindow):
         edit_menu = self.edit_menu
         view_menu = self.view_menu
         tools_menu = self.tools_menu
+        if features.LISTENER_EDITOR_ENABLED:
+            tools_menu.addMenu(self._listener_menu(self))
         history_action = QAction("版本历史…", self)
         history_action.triggered.connect(self._show_document_history)
         tools_menu.addAction(history_action)
@@ -1479,10 +1492,14 @@ class MainWindow(QMainWindow):
         self.settings.sync()
 
     def _trigger_undo(self) -> None:
+        if self.listener_dialog is not None and not self.listener_dialog.commit_pending_edits():
+            return
         if self.controller.undo_stack.canUndo():
             self.controller.undo_stack.undo()
 
     def _trigger_redo(self) -> None:
+        if self.listener_dialog is not None and not self.listener_dialog.commit_pending_edits():
+            return
         if self.controller.undo_stack.canRedo():
             self.controller.undo_stack.redo()
 
@@ -1988,7 +2005,8 @@ class MainWindow(QMainWindow):
             self._select_file_in_list(relative_path)
 
     def _save_current_file(self, silent: bool = False, *, allow_incomplete: bool = False) -> str | None:
-        self._commit_pending_editor_changes()
+        if not self._commit_pending_editor_changes():
+            return None
         allowed, reason = self.controller.can_create_graph_content()
         if not allow_incomplete and not allowed:
             self._focus_initial_node_guidance(reason)
@@ -2044,7 +2062,13 @@ class MainWindow(QMainWindow):
             self._refresh_file_list_after_save = False
         return saved
 
-    def _commit_pending_editor_changes(self) -> None:
+    def _commit_pending_editor_changes(self) -> bool:
+        dialog = self.listener_dialog
+        if dialog is not None and not dialog.commit_pending_edits():
+            dialog.show()
+            dialog.raise_()
+            self._show_status("请先完成监听器子蓝图中的输入，再保存或切换文档")
+            return False
         if hasattr(self, "inspector_form"):
             self.inspector_form.commit_pending_edits()
         if hasattr(self, "canvas"):
@@ -2055,6 +2079,77 @@ class MainWindow(QMainWindow):
             for item in list(self.canvas.node_items.values()):
                 item.commit_pending_inline_edit()
                 item.form.commit_pending_edits()
+        return True
+
+    def _listener_menu(self, parent):
+        from PySide6.QtWidgets import QMenu
+        menu = QMenu("监听器子蓝图", parent)
+        menu.addAction("新建监听器子蓝图", self._create_listener)
+        menu.addAction("编辑选中节点的监听器…", lambda: self._show_listener_editor())
+        return menu
+
+    def _create_listener(self) -> None:
+        if not features.LISTENER_EDITOR_ENABLED:
+            return
+        if not self._commit_pending_editor_changes():
+            return
+        canvas = self._active_canvas()
+        position = canvas.mapToScene(canvas.viewport().rect().center())
+        node_uuid = self.controller.create_node("Listener", (position.x(), position.y()))
+        if node_uuid:
+            self.controller.set_selected_node(node_uuid)
+            self._show_listener_editor(node_uuid)
+
+    def _show_listener_editor(self, node_uuid: str | None = None) -> None:
+        if not features.LISTENER_EDITOR_ENABLED:
+            return
+        if not self._commit_pending_editor_changes():
+            return
+        node_uuid = node_uuid or self.controller.selected_node_uuid
+        node = self.controller.get_node(node_uuid) if node_uuid else None
+        if node is None or (node.type != "Listener" and self.controller.schema.nodes[node.type].category != "function"):
+            self._show_status("请选择一个交互节点，或使用“新建监听器子蓝图”")
+            return
+        dialog = self.listener_dialog
+        if dialog is not None and dialog.owner_uuid == node_uuid:
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+            return
+        if node.listener_graph is None:
+            if node.locked:
+                self._show_status("请先解锁节点，再创建监听器子蓝图")
+                return
+            from .listener_catalog import new_listener_graph
+            from .listener_compiler import import_listener_graph, compile_listener_graph
+            try:
+                raw = str(node.fields.get("listener_data") or "").strip()
+                if raw and raw not in {"{}", "0"}:
+                    graph = import_listener_graph(raw, node.fields)
+                else:
+                    graph = new_listener_graph(str(node.fields.get("parameter") or f"listener_value{node.sequence_no}"))
+                    # The legacy importer also maps runtime persistence and
+                    # parameter limits, retaining the selected host's values.
+                    graph = import_listener_graph(compile_listener_graph(graph).listener_data, node.fields)
+            except ValueError as exc:
+                QMessageBox.warning(self, "无法转换监听器", str(exc))
+                return
+            if not self.controller.set_listener_graph(node_uuid, graph, "创建监听器子蓝图"):
+                return
+        if dialog is not None:
+            dialog.close()
+        from .listener_editor import ListenerGraphDialog
+        dialog = ListenerGraphDialog(self.controller, node_uuid, self)
+        self.listener_dialog = dialog
+        dialog.saveRequested.connect(self._save_current_file)
+        dialog.finished.connect(lambda _result: self._clear_listener_dialog(dialog))
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _clear_listener_dialog(self, dialog) -> None:
+        if self.listener_dialog is dialog:
+            self.listener_dialog = None
 
     def _handle_file_list_item_clicked(self, item: QListWidgetItem) -> None:
         payload = item.data(Qt.ItemDataRole.UserRole)
@@ -2153,7 +2248,7 @@ class MainWindow(QMainWindow):
         connect_from = None
         if len(node_uuids) == 1:
             source_node = self.controller.get_node(node_uuids[0])
-            if source_node and source_node.type not in {"Comment", "Initial"}:
+            if source_node and source_node.type not in {"Comment", "Initial", "Listener"}:
                 connect_from = source_node.uuid
         self._last_paste_payload = payload
         self._paste_repeat_count = 0
@@ -2297,7 +2392,8 @@ class MainWindow(QMainWindow):
     def _export_current_graph_csv(self) -> Path | None:
         """Export the current in-memory chart without saving or clearing dirty state."""
 
-        self._commit_pending_editor_changes()
+        if not self._commit_pending_editor_changes():
+            return None
         try:
             output_path = export_current_document_csv(
                 self.controller.schema,
@@ -2843,7 +2939,8 @@ class MainWindow(QMainWindow):
     def _show_svn_graph_diff(self) -> None:
         from .svn_diff_dialog import SvnGraphDiffDialog
 
-        self._commit_pending_editor_changes()
+        if not self._commit_pending_editor_changes():
+            return
         current_path = self.controller.document.path
         if not current_path or Path(current_path).suffix.lower() != ".json":
             QMessageBox.information(self, "无法查询 SVN Diff", "请先打开一个已存在的 JSON 文件。")
@@ -2874,7 +2971,8 @@ class MainWindow(QMainWindow):
     def _show_document_history(self) -> None:
         from .history_view import DocumentHistoryDialog
 
-        self._commit_pending_editor_changes()
+        if not self._commit_pending_editor_changes():
+            return
         if self.history_dialog is not None:
             self.history_dialog.close()
             self.history_dialog.deleteLater()
@@ -3033,7 +3131,8 @@ class MainWindow(QMainWindow):
         if not self.controller.document.path:
             return True
         self._auto_save_timer.stop()
-        self._commit_pending_editor_changes()
+        if not self._commit_pending_editor_changes():
+            return False
         self._auto_save_timer.stop()
         if not self._is_dirty():
             return True
@@ -3257,7 +3356,8 @@ class MainWindow(QMainWindow):
         if Path(chosen).resolve() == current.resolve() or self._is_install_owned_path(Path(chosen).resolve()):
             self._show_status("请选择原文件和安装目录以外的副本路径")
             return
-        self._commit_pending_editor_changes()
+        if not self._commit_pending_editor_changes():
+            return
         try:
             self.controller.save_document(chosen)
             self._document_sessions.pop(self._session_key_for_path(current), None)
@@ -3271,6 +3371,8 @@ class MainWindow(QMainWindow):
         # Saving commits/destroys inline widgets. Delay background saves until
         # the user leaves them, including while a Chinese IME has preedit text.
         if QApplication.activeModalWidget() is not None:
+            return True
+        if self.listener_dialog is not None and self.listener_dialog.is_busy():
             return True
         focus = QApplication.focusWidget()
         if isinstance(focus, (QLineEdit, QPlainTextEdit)) and not focus.isReadOnly():
@@ -3289,7 +3391,8 @@ class MainWindow(QMainWindow):
         if current and target_path and Path(current).resolve() == Path(target_path).resolve():
             return True
         self._auto_save_timer.stop()
-        self._commit_pending_editor_changes()
+        if not self._commit_pending_editor_changes():
+            return False
         if not self._is_dirty():
             return True
         close_policy = str(os.environ.get("L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY") or "").strip().lower()
@@ -3340,7 +3443,8 @@ class MainWindow(QMainWindow):
 
     def _confirm_safe_to_close(self) -> bool:
         self._auto_save_timer.stop()
-        self._commit_pending_editor_changes()
+        if not self._commit_pending_editor_changes():
+            return False
         close_policy = str(
             os.environ.get("L2D_CONFIG_EDITOR_TEST_CLOSE_EVENT_POLICY")
             or os.environ.get("L2D_CONFIG_EDITOR_TEST_CLOSE_POLICY")

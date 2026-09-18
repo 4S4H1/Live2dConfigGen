@@ -1,6 +1,7 @@
 """Lightweight mind-map style plan view for the current formal graph."""
 
 from __future__ import annotations
+from . import features
 
 import math
 from collections import defaultdict
@@ -485,6 +486,11 @@ class PlanTopicItem(QGraphicsObject):
 
     def mouseDoubleClickEvent(self, event: QGraphicsSceneMouseEvent) -> None:
         if not self.virtual:
+            node = self.view.controller.get_node(self.node_uuid)
+            if features.LISTENER_EDITOR_ENABLED and node is not None and (node.type == "Listener" or node.listener_graph is not None):
+                self.view.listenerEditRequested.emit(self.node_uuid)
+                event.accept()
+                return
             self.view.edit_topic_title(self.node_uuid)
             event.accept()
             return
@@ -496,6 +502,7 @@ class PlanCanvasView(QGraphicsView):
 
     selectionSummaryChanged = Signal(object, object)
     interactionBusyChanged = Signal(bool)
+    listenerEditRequested = Signal(str)
     COLUMN_GAP = 96.0
     SIBLING_GAP = 28.0
     REORDER_HORIZONTAL_SLOP = 72.0

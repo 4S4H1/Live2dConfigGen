@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .logic import csv_template_header_rows, document_to_csv_rows, write_csv_rows_atomic
+from .logic import csv_template_header_rows, document_to_csv_rows, validate_listener_export, write_csv_rows_atomic
 from .models import DocumentModel
 from .schema import EditorSchema
 
@@ -145,6 +145,7 @@ def export_current_document_csv(
         raise NotADirectoryError(f"CSV export workspace does not exist: {root}")
 
     snapshot = copy.deepcopy(document)
+    validate_listener_export(snapshot, schema)
     timestamp = (_now or datetime.now)()
     header_rows = csv_template_header_rows(schema, tuple(template_search_roots))
     preview_rows = document_to_csv_rows(schema, snapshot)

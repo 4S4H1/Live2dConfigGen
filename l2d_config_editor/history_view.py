@@ -1,5 +1,6 @@
 """Read-only, navigable graph comparisons for embedded and SVN history."""
 from __future__ import annotations
+from . import features
 
 import base64
 import copy
@@ -8,7 +9,7 @@ import json
 from collections import defaultdict
 from datetime import datetime
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QPointF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QGraphicsItem, QGraphicsRectItem, QGraphicsScene,
@@ -36,6 +37,8 @@ def display_value(value) -> str:
 
 
 class HistoryCanvas(QGraphicsView):
+    objectActivated = Signal(object)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setScene(QGraphicsScene(self))
@@ -50,6 +53,16 @@ class HistoryCanvas(QGraphicsView):
             self.scale(factor, factor)
         event.accept()
 
+    def mouseDoubleClickEvent(self, event):
+        item = self.itemAt(event.position().toPoint())
+        while item is not None and item.data(0) is None:
+            item = item.parentItem()
+        if item is not None and item.data(0) is not None:
+            self.objectActivated.emit(item.data(0))
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
 
 class GraphComparisonWidget(QWidget):
     """Detached scene: no editable proxies, controllers, save or undo callbacks."""
@@ -61,6 +74,8 @@ class GraphComparisonWidget(QWidget):
         self.entries_by_key = {}
         self._selecting = False
         self._decorations = []
+        self._selected_owner_uuid = None
+        self._listener_history_dialogs = []
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         row = QHBoxLayout()
@@ -70,14 +85,23 @@ class GraphComparisonWidget(QWidget):
         self.mode_combo.addItems(["正式图", "计划图"])
         self.mode_combo.currentIndexChanged.connect(self._render_graph)
         row.addWidget(self.mode_combo)
+        self.before_listener_button = QPushButton("查看修改前子蓝图")
+        self.after_listener_button = QPushButton("查看修改后子蓝图")
+        self.before_listener_button.clicked.connect(lambda: self.open_listener_graph("before"))
+        self.after_listener_button.clicked.connect(lambda: self.open_listener_graph("after"))
+        for button in (self.before_listener_button, self.after_listener_button):
+            button.setVisible(features.LISTENER_EDITOR_ENABLED)
+            button.setEnabled(False)
+            row.addWidget(button)
         fit = QPushButton("显示全图")
         fit.clicked.connect(self.fit_graph)
         row.addWidget(fit)
         layout.addLayout(row)
-        layout.addWidget(QLabel("绿色 新增  ·  红色虚线 删除  ·  金色 修改  |  滚轮缩放，拖动平移，点击修改项定位。只读预览。"))
+        layout.addWidget(QLabel("绿色 新增  ·  红色虚线 删除  ·  金色 修改  |  滚轮缩放，拖动平移，点击修改项定位；双击监听器查看只读子蓝图。"))
         splitter = QSplitter()
         self.canvas = HistoryCanvas()
         self.canvas.scene().selectionChanged.connect(self._scene_selected)
+        self.canvas.objectActivated.connect(self._open_listener_key)
         splitter.addWidget(self.canvas)
         side = QWidget()
         side_layout = QVBoxLayout(side)
@@ -86,6 +110,7 @@ class GraphComparisonWidget(QWidget):
         self.changes.setHeaderLabels(["变化 / 对象", "字段"])
         self.changes.setUniformRowHeights(True)
         self.changes.currentItemChanged.connect(self._change_selected)
+        self.changes.itemDoubleClicked.connect(self._open_listener_row)
         side_layout.addWidget(self.changes, 3)
         self.detail = QPlainTextEdit()
         self.detail.setReadOnly(True)
@@ -99,6 +124,7 @@ class GraphComparisonWidget(QWidget):
 
     def set_documents(self, before, after):
         self.before, self.after = before, after
+        self._select_listener_owner(None)
         self.diff = diff_documents(before, after)
         counts = self.diff.counts()
         self.summary.setText(f"新增 {counts['added']} · 删除 {counts['deleted']} · 修改 {counts['modified']} 项")
@@ -132,6 +158,8 @@ class GraphComparisonWidget(QWidget):
 
     def _field_label(self, entry):
         node = self._nodes.get(entry.identity)
+        if entry.field_path.startswith("listener_graph"):
+            return self._listener_field_label(entry)
         if node and entry.field_path.startswith("fields."):
             key = entry.field_path.removeprefix("fields.")
             schema = self.schema.nodes.get(node.type)
@@ -145,6 +173,88 @@ class GraphComparisonWidget(QWidget):
                   "CharName": "角色名称", "author": "作者", "locked": "锁定", "sequence_locked": "固定序号"}
         parts = entry.field_path.split(".")
         return ".".join([labels.get(parts[0], parts[0]), *parts[1:]])
+
+    def _listener_field_label(self, entry):
+        from .listener_catalog import COMPONENTS
+
+        path = entry.field_path
+        if path == "listener_graph":
+            return "监听器子蓝图"
+        if path == "listener_graph.node_order":
+            return "子蓝图组件顺序"
+        if path == "listener_graph.connection_order":
+            return "子蓝图连线顺序"
+        for document in (self.after, self.before):
+            owner = next((node for node in document.nodes if node.uuid == entry.identity), None)
+            if owner is None or owner.listener_graph is None:
+                continue
+            for part in owner.listener_graph.nodes:
+                prefix = f"listener_graph.nodes.{part.uuid}"
+                if path != prefix and not path.startswith(prefix + "."):
+                    continue
+                spec = COMPONENTS.get(part.kind)
+                label = spec.title if spec else part.kind
+                suffix = path.removeprefix(prefix).lstrip(".")
+                if suffix.startswith("fields.") and spec:
+                    field_key = suffix.removeprefix("fields.")
+                    field = next((field for field in spec.fields if field.key == field_key), None)
+                    suffix = field.label if field else field_key
+                elif suffix.startswith("ui_position"):
+                    suffix = "位置" + suffix.removeprefix("ui_position")
+                return "子蓝图 · " + label + (" · " + suffix if suffix else "")
+            if path.startswith("listener_graph.connections."):
+                return "子蓝图连线"
+        return path.replace("listener_graph", "子蓝图", 1)
+
+    def _listener_owner(self, side, owner_uuid):
+        document = self.before if side == "before" else self.after
+        if document is None:
+            return None
+        return next((node for node in document.nodes if node.uuid == owner_uuid and node.listener_graph is not None), None)
+
+    def _select_listener_owner(self, owner_uuid):
+        self._selected_owner_uuid = owner_uuid
+        self.before_listener_button.setEnabled(self._listener_owner("before", owner_uuid) is not None)
+        self.after_listener_button.setEnabled(self._listener_owner("after", owner_uuid) is not None)
+
+    def _open_listener_key(self, key):
+        if not isinstance(key, (tuple, list)) or len(key) != 2 or key[0] not in {"nodes", "plan_topics"}:
+            return
+        self._select_listener_owner(key[1])
+        side = "after" if self._listener_owner("after", key[1]) is not None else "before"
+        return self.open_listener_graph(side, key[1])
+
+    def _open_listener_row(self, row, _column):
+        entry = row.data(0, Qt.ItemDataRole.UserRole)
+        if entry is not None:
+            return self._open_listener_key((entry.category, entry.identity))
+
+    def open_listener_graph(self, side="after", owner_uuid=None):
+        """Inspect a historical snapshot in an entirely detached controller."""
+        if not features.LISTENER_EDITOR_ENABLED:
+            return None
+        from .controller import EditorController
+        from .listener_editor import ListenerGraphDialog
+
+        owner_uuid = owner_uuid or self._selected_owner_uuid
+        owner = self._listener_owner(side, owner_uuid)
+        if owner is None:
+            return None
+        detached = EditorController()
+        detached.schema = self.schema
+        detached.document = copy.deepcopy(self.before if side == "before" else self.after)
+        dialog = ListenerGraphDialog(detached, owner_uuid, self, read_only=True)
+        detached.setParent(dialog)
+        label = "修改前" if side == "before" else "修改后"
+        dialog.setWindowTitle(f"{label} · {node_title(self.schema, owner)} · 子蓝图只读预览")
+        self._listener_history_dialogs.append((dialog, detached))
+
+        def release(*_args):
+            self._listener_history_dialogs[:] = [pair for pair in self._listener_history_dialogs if pair[0] is not dialog]
+
+        dialog.destroyed.connect(release)
+        dialog.show()
+        return dialog
 
     def _status(self, key):
         entries = self.entries_by_key.get(key, [])
@@ -198,6 +308,8 @@ class GraphComparisonWidget(QWidget):
                     lines.append(html.escape(f"{self._field_label(entry)}: {before} → {after}"))
             if len(entries) > 4:
                 lines.append(f"另有 {len(entries) - 4} 项变化，点击查看")
+            if node.listener_graph is not None:
+                lines.append("双击查看监听器子蓝图")
             card = QGraphicsRectItem()
             text = QGraphicsTextItem(card)
             text.setTextWidth(270)
@@ -301,10 +413,12 @@ class GraphComparisonWidget(QWidget):
 
     def _change_selected(self, row, _previous):
         if row is None:
+            self._select_listener_owner(None)
             return
         entry = row.data(0, Qt.ItemDataRole.UserRole)
         self.detail.setPlainText(f"{CATEGORY_LABELS.get(entry.category, entry.category)} · {self._object_label(entry)}\n{self._field_label(entry)}\n\n修改前\n{display_value(entry.before)}\n\n修改后\n{display_value(entry.after)}")
         key = (entry.category, entry.identity)
+        self._select_listener_owner(entry.identity if entry.category in {"nodes", "plan_topics"} else None)
         if entry.category == "plan_strokes" and self.mode_combo.currentIndex() != 1:
             self.mode_combo.setCurrentIndex(1)
         elif entry.category in {"formal_strokes", "groups", "images"} and self.mode_combo.currentIndex() != 0:
@@ -323,8 +437,10 @@ class GraphComparisonWidget(QWidget):
             return
         items = self.canvas.scene().selectedItems()
         if not items:
+            self._select_listener_owner(None)
             return
         key = items[0].data(0)
+        self._select_listener_owner(key[1] if key and key[0] in {"nodes", "plan_topics"} else None)
         entries = self.entries_by_key.get(key, [])
         if key and key[0] == "nodes":
             entries = [*entries, *self.entries_by_key.get(("plan_topics", key[1]), [])]

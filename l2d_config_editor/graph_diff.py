@@ -93,6 +93,11 @@ def canonical_graph_snapshot(document: DocumentModel) -> dict[str, dict[str, Any
         for node in document.nodes
         if node.type != "DrawFrame"
     }
+    for node in document.nodes:
+        if node.uuid in nodes and node.listener_graph is not None:
+            graph = node.listener_graph.to_payload()
+            graph.pop("view", None)
+            nodes[node.uuid]["listener_graph"] = _json_value(graph)
     connections = {
         f"{connection.from_uuid}->{connection.to_uuid}": {
             "from_uuid": connection.from_uuid,

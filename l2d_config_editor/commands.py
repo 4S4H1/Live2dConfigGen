@@ -2,7 +2,28 @@
 
 from __future__ import annotations
 
+import copy
+
 from PySide6.QtGui import QUndoCommand
+
+
+class SetListenerGraphCommand(QUndoCommand):
+    """One subgraph edit, including the generated fields on its owner."""
+
+    def __init__(self, controller, node_uuid, before, after, old_fields, new_fields, label):
+        super().__init__(label)
+        self.controller = controller
+        self.node_uuid = node_uuid
+        self.before = before.clone() if before is not None else None
+        self.after = after.clone() if after is not None else None
+        self.old_fields = copy.deepcopy(old_fields)
+        self.new_fields = copy.deepcopy(new_fields)
+
+    def redo(self):
+        self.controller._replace_listener_graph(self.node_uuid, self.after, self.new_fields)
+
+    def undo(self):
+        self.controller._replace_listener_graph(self.node_uuid, self.before, self.old_fields)
 
 
 class AddNodesCommand(QUndoCommand):

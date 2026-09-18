@@ -1,6 +1,7 @@
 """Graphics scene and node canvas widgets."""
 
 from __future__ import annotations
+from . import features
 
 import math
 from bisect import bisect_left
@@ -904,7 +905,7 @@ class NodeItem(QGraphicsObject):
         return self.node.type == "DrawFrame"
 
     def _supports_connections(self) -> bool:
-        return self.node.type != "DrawFrame"
+        return self.node.type not in {"DrawFrame", "Listener"}
 
     def _supports_input_connection(self) -> bool:
         definition = self.schema.nodes.get(self.node.type)
@@ -1113,8 +1114,14 @@ class NodeItem(QGraphicsObject):
         self.form = NodeFormWidget(self.schema, inline=True)
         self.form.fieldCommitted.connect(self._commit_field)
         self.form.fieldsCommitted.connect(self._commit_fields)
+        self.form.listenerEditRequested.connect(self._request_listener_edit)
         self.proxy = QGraphicsProxyWidget(self)
         self.proxy.setWidget(self.form)
+
+    def _request_listener_edit(self, node_uuid: str) -> None:
+        view = self._canvas_view()
+        if view is not None:
+            view.listenerEditRequested.emit(node_uuid)
 
     def _sync_form_proxy_geometry(
         self,
@@ -2562,6 +2569,9 @@ class NodeItem(QGraphicsObject):
     def _begin_card_field_edit(self, field_key: str) -> bool:
         if self.node.locked or not self._uses_compact_card():
             return False
+        if self.form._listener_owns_field(field_key):
+            self._request_listener_edit(self.node.uuid)
+            return False
         schema_field = self._schema_field(field_key)
         if schema_field is None or schema_field.read_only:
             return False
@@ -3559,6 +3569,7 @@ class ParameterTableItem(QGraphicsObject):
 class NodeCanvasView(QGraphicsView):
     selectionSummaryChanged = Signal(object, object)
     interactionBusyChanged = Signal(bool)
+    listenerEditRequested = Signal(str)
     THUMBNAIL_SCALE_THRESHOLD = 0.45
     DETAILED_CONNECTION_EFFECT_LIMIT = 24
 
@@ -4429,6 +4440,11 @@ class NodeCanvasView(QGraphicsView):
             node_item = self._node_item_at_view_point(event.position())
             if node_item:
                 local_pos = node_item.mapFromScene(self.mapToScene(event.position().toPoint()))
+                if features.LISTENER_EDITOR_ENABLED and node_item.node.type == "Listener" and not node_item._proxy_contains(local_pos):
+                    self._clear_pending_display_toggle()
+                    self.listenerEditRequested.emit(node_item.node.uuid)
+                    event.accept()
+                    return
                 if node_item.node.type == "Comment" and node_item.comment_title_contains(local_pos):
                     self._clear_pending_display_toggle()
                     node_item.begin_comment_edit()
@@ -4597,7 +4613,7 @@ class NodeCanvasView(QGraphicsView):
         menu = QMenu(self)
         actions = {}
         for type_name, definition in self.schema.nodes.items():
-            if type_name in {"Initial", "DrawFrame"} or not definition.quick_create:
+            if type_name in {"Initial", "DrawFrame", "Listener"} or not definition.quick_create:
                 continue
             actions[type_name] = menu.addAction(f"添加 {definition.title}")
         selected = menu.exec(event.globalPos())
@@ -5126,7 +5142,7 @@ class NodeCanvasView(QGraphicsView):
         menu = QMenu(self)
         actions = {}
         for type_name, definition in self.schema.nodes.items():
-            if type_name in {"Initial", "DrawFrame"} or not definition.quick_create:
+            if type_name in {"Initial", "DrawFrame", "Listener"} or not definition.quick_create:
                 continue
             actions[type_name] = menu.addAction(f"创建并连接 {definition.title}")
         selected = menu.exec(global_pos)

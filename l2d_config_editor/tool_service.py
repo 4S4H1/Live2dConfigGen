@@ -6,6 +6,7 @@ paths, processes, shell commands, update functions, or LAN services.
 """
 
 from __future__ import annotations
+from . import features
 
 import copy
 import csv
@@ -305,9 +306,12 @@ class EditorToolService(QObject):
             | None
         ) = None,
         parent: QObject | None = None,
+        *,
+        before_invocation: Callable[[], bool | None] | None = None,
     ) -> None:
         super().__init__(parent)
         self.controller = controller
+        self.before_invocation = before_invocation
         self._workspace_provider = workspace_root
         self._revision = 1
         self._current_view = "formal"
@@ -711,7 +715,7 @@ class EditorToolService(QObject):
             handler = handlers.get(str(name))
             if handler is None:
                 raise ToolServiceError("TOOL_NOT_FOUND", f"Unknown editor tool: {name}")
-            self.beforeInvocation.emit()
+            self._finish_pending_input()
             result = handler(dict(arguments))
             envelope = {
                 "ok": True,
@@ -729,6 +733,14 @@ class EditorToolService(QObject):
                     {"exception_type": type(exc).__name__},
                 )
             )
+
+    def _finish_pending_input(self) -> None:
+        """A Qt signal cannot propagate a failed editor commit to this call."""
+        if self.before_invocation is not None:
+            if self.before_invocation() is False:
+                raise ToolServiceError("PENDING_EDITOR_INPUT", "请先完成监听器子蓝图中的输入")
+        else:
+            self.beforeInvocation.emit()
 
     def _error_response(self, error: ToolServiceError) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -788,7 +800,7 @@ class EditorToolService(QObject):
                     "title": node_schema.title,
                     "category": node_schema.category,
                     "copyable": node_schema.copyable,
-                    "creatable": node_schema.category not in {"root", "meta"},
+                    "creatable": node_schema.category not in {"root", "meta"} and (type_name != "Listener" or features.LISTENER_EDITOR_ENABLED),
                     "fields": fields,
                 }
             )
@@ -805,6 +817,7 @@ class EditorToolService(QObject):
                 "edges_to_root": False,
                 "multiple_parents": True,
                 "cycles": True,
+                "edges_to_or_from_listener_hosts": False,
             },
             "apply_operation_types": [
                 "set_metadata",
@@ -1032,6 +1045,9 @@ class EditorToolService(QObject):
             "type": node.type,
             "title": node_title(self.controller.schema, node),
             "fields": copy.deepcopy(node.fields),
+            "listener_graph": node.listener_graph.to_payload() if node.listener_graph is not None else None,
+            "listener_owned_fields": (["listener_data", "parameter", "range", "start_value", "save_parameter"]
+                                      if node.listener_graph is not None else []),
             "position": {
                 "x": float(node.ui_position["x"]),
                 "y": float(node.ui_position["y"]),
@@ -1312,6 +1328,8 @@ class EditorToolService(QObject):
         client_ids: dict[str, str],
     ) -> dict[str, Any]:
         node_type = str(operation.get("node_type", operation.get("type", ""))).strip()
+        if node_type == "Listener" and not features.LISTENER_EDITOR_ENABLED:
+            raise ToolServiceError("FEATURE_DISABLED", "监听器子蓝图暂未开放创建")
         definition = self.controller.schema.nodes.get(node_type)
         if definition is None:
             raise ToolServiceError("INVALID_NODE_TYPE", f"Unknown node type: {node_type}")
@@ -1482,6 +1500,14 @@ class EditorToolService(QObject):
         }
         normalized: dict[str, Any] = {}
         for key, value in fields.items():
+            if node.listener_graph is not None and key in {
+                "listener_data", "parameter", "range", "start_value", "save_parameter",
+            }:
+                raise ToolServiceError(
+                    "FIELD_NOT_WRITABLE",
+                    "This field is managed by the listener subgraph; edit it in the listener editor",
+                    {"node_uuid": node.uuid, "field": key},
+                )
             field = definitions.get(str(key))
             if field is None or field.read_only or definition.category in {"root", "meta"}:
                 raise ToolServiceError(
@@ -1638,6 +1664,11 @@ class EditorToolService(QObject):
         from_node: NodeRecord,
         to_node: NodeRecord,
     ) -> None:
+        if from_node.type == "Listener" or to_node.type == "Listener":
+            raise ToolServiceError(
+                "INVALID_CONNECTION",
+                "Listener hosts have no external graph ports; connect components inside their subgraph",
+            )
         if from_node.uuid == to_node.uuid:
             raise ToolServiceError(
                 "INVALID_CONNECTION",
@@ -1976,14 +2007,15 @@ class EditorToolService(QObject):
         client_ids: dict[str, str],
     ) -> list[str]:
         topic = self._plan_topic(document, node_uuid)
+        node = self._node(document, node_uuid)
+        has_listener = node is not None and (node.type == "Listener" or node.listener_graph is not None)
         changed: list[str] = []
         if "plan_title" in values or "title" in values:
             topic.plan_title = str(
                 values.get("plan_title", values.get("title", "")) or ""
             )
-            if topic.formalization_state in {"formal", "virtual", "materialized"}:
+            if not has_listener and topic.formalization_state in {"formal", "virtual", "materialized"}:
                 topic.formalization_state = "draft"
-            node = self._node(document, node_uuid)
             if node is not None and node.type == "PlanPlaceholder":
                 node.fields.update(
                     placeholder_fields_for_title(topic.plan_title)
@@ -1993,6 +2025,9 @@ class EditorToolService(QObject):
             topic.collapsed = bool(values["collapsed"])
             changed.append("collapsed")
         if "branch_color" in values:
+            if has_listener:
+                raise ToolServiceError("FIELD_NOT_WRITABLE", "Listener subgraphs cannot be retyped through plan colors",
+                                       {"field": "branch_color", "node_uuid": node_uuid})
             topic.branch_color = str(values["branch_color"] or "")
             topic.formalization_state = "draft"
             changed.append("branch_color")
@@ -2272,12 +2307,23 @@ class EditorToolService(QObject):
                 _position(node.ui_position)
             except ToolServiceError:
                 errors.append({"code": "INVALID_POSITION", "node_uuid": node.uuid})
+            if node.listener_graph is not None:
+                definition = self.controller.schema.nodes.get(node.type)
+                if node.type != "Listener" and (definition is None or definition.category != "function"):
+                    errors.append({"code": "INVALID_LISTENER_OWNER", "node_uuid": node.uuid})
+                try:
+                    node.listener_graph.to_payload()
+                except (ValueError, TypeError, AttributeError):
+                    errors.append({"code": "INVALID_LISTENER_GRAPH", "node_uuid": node.uuid})
+            elif node.type == "Listener":
+                errors.append({"code": "MISSING_LISTENER_GRAPH", "node_uuid": node.uuid})
         idle0 = [node for node in document.nodes if node.type == "Idle0"]
         if len(idle0) != 1:
             errors.append({"code": "INVALID_ROOT_COUNT", "count": len(idle0)})
 
         edge_pairs: set[tuple[str, str]] = set()
         root_ids = {node.uuid for node in idle0}
+        listener_ids = {node.uuid for node in document.nodes if node.type == "Listener"}
         for edge in document.connections:
             pair = (edge.from_uuid, edge.to_uuid)
             if edge.from_uuid not in node_ids or edge.to_uuid not in node_ids:
@@ -2288,7 +2334,8 @@ class EditorToolService(QObject):
                         "to_uuid": edge.to_uuid,
                     }
                 )
-            elif edge.from_uuid == edge.to_uuid or edge.to_uuid in root_ids:
+            elif (edge.from_uuid == edge.to_uuid or edge.to_uuid in root_ids
+                  or edge.from_uuid in listener_ids or edge.to_uuid in listener_ids):
                 errors.append(
                     {
                         "code": "INVALID_CONNECTION",
@@ -2534,12 +2581,13 @@ class EditorToolService(QObject):
         """Commit a single-use, revision-bound graph preview."""
 
         try:
-            prepared_entry = self._prepared_previews.pop(str(token), None)
+            prepared_entry = self._prepared_previews.get(str(token))
             if prepared_entry is None:
                 raise ToolServiceError(
                     "PREVIEW_EXPIRED",
                     "The confirmed preview is missing, expired, or already used",
                 )
+            self._finish_pending_input()
             if prepared_entry["revision"] != self._revision:
                 raise ToolServiceError(
                     "REVISION_CONFLICT",
@@ -2549,6 +2597,7 @@ class EditorToolService(QObject):
                         "actual_revision": self._revision,
                     },
                 )
+            self._prepared_previews.pop(str(token), None)
             prepared = prepared_entry["prepared"]
             self.controller.undo_stack.push(
                 _DocumentSnapshotCommand(
@@ -2595,7 +2644,7 @@ class EditorToolService(QObject):
                     "revision": self._revision,
                     "result": {"confirmation_required": False},
                 }
-            self.beforeInvocation.emit()
+            self._finish_pending_input()
             self._expect_revision(arguments)
             if name == "apply_graph_edits":
                 stabilized = self._stabilized_graph_edit_arguments(arguments)

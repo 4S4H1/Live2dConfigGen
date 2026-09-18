@@ -48,6 +48,7 @@ TRAILING_INT_PATTERN = re.compile(r"(-?\d+)\s*$")
 PARTS_DATA_PATTERN = re.compile(r"^\{\s*parts\s*=\s*\{(?P<values>.*)\}\s*\}$", re.IGNORECASE)
 REACT_CONDITION_PATTERN = re.compile(r"^\{\s*idle_on\s*=\s*\{(?P<values>.*)\}\s*\}$", re.IGNORECASE)
 HIDDEN_NODE_FIELDS = {
+    "listener_graph",
     "target_idle",
     "action_trigger_kind_ui",
     "action_trigger_reserved_ui",
@@ -61,7 +62,7 @@ HIDDEN_NODE_FIELDS = {
     "_table_text_color",
 }
 EDITOR_DOCUMENT_SIGNATURE = "l2d_config_editor/v1"
-EDITOR_DOCUMENT_FORMAT_VERSION = 5
+EDITOR_DOCUMENT_FORMAT_VERSION = 6
 CANVAS_STROKE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 CANVAS_STROKE_COLOR_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
 MAX_CANVAS_STROKES = 10_000
@@ -516,6 +517,11 @@ def _function_nodes(schema: EditorSchema, document: DocumentModel) -> list[NodeR
     return [node for node in document.nodes if node.type in node_types]
 
 
+def _exportable_nodes(schema: EditorSchema, document: DocumentModel) -> list[NodeRecord]:
+    kinds = set(function_node_types(schema)) | {"Listener"}
+    return [node for node in document.nodes if node.type in kinds]
+
+
 def _next_available_slot(used_slots: set[int]) -> int:
     slot = 1
     while slot in used_slots:
@@ -571,7 +577,7 @@ def allocate_export_slot(document: DocumentModel, *, exclude_uuid: str | None = 
 
 
 def backfill_slots(schema: EditorSchema, document: DocumentModel) -> None:
-    function_types = set(function_node_types(schema))
+    function_types = set(function_node_types(schema)) | {"Listener"}
     seen_type_slots: dict[str, set[int]] = {}
     seen_export_slots: set[int] = set()
     for node in document.nodes:
@@ -1083,6 +1089,40 @@ def apply_auto_rules(
     source_mode: str = "simple",
     changed_key: str | None = None,
     force_generated: bool = False,
+    refresh_only: bool = False,
+) -> None:
+    if node.listener_graph is None:
+        _apply_auto_rules(schema, document, node, source_mode=source_mode,
+                          changed_key=changed_key, force_generated=force_generated)
+        return
+    # Refresh/export must retain an imported host's original action settings.
+    # Explicit edits still run the host's ordinary rules (e.g. hard-cut return),
+    # with the child graph retaining ownership of its parameter state.
+    owned = {key: copy.deepcopy(node.fields[key]) for key in
+             ("listener_data", "parameter", "range", "start_value", "save_parameter")
+             if key in node.fields}
+    try:
+        if refresh_only and not force_generated:
+            if "parts_data" in node.fields:
+                node.fields["parts_data"] = canonicalize_parts_data(node.fields["parts_data"])
+            _update_drag_offsets(node, changed_key, source_mode)
+            _update_range_abs(node)
+            _refresh_trigger_interface_fields(node)
+        else:
+            _apply_auto_rules(schema, document, node, source_mode=source_mode,
+                              changed_key=changed_key, force_generated=force_generated)
+    finally:
+        node.fields.update(owned)
+
+
+def _apply_auto_rules(
+    schema: EditorSchema,
+    document: DocumentModel,
+    node: NodeRecord,
+    *,
+    source_mode: str = "simple",
+    changed_key: str | None = None,
+    force_generated: bool = False,
 ) -> None:
     if node.type == "Initial":
         return
@@ -1205,7 +1245,40 @@ def create_node(
     apply_node_appearance_defaults(schema, node)
     sync_comment_legacy_appearance(node)
     ensure_parameter_table_metadata(node)
+    if node_type == "Listener":
+        from .listener_catalog import new_listener_graph
+        node.listener_graph = (base_node.listener_graph.remap_ids()
+                               if base_node and base_node.listener_graph is not None
+                               else new_listener_graph(_available_listener_parameter(document)))
+        node.export_slot = allocate_export_slot(document)
+    elif base_node and base_node.listener_graph is not None:
+        node.listener_graph = base_node.listener_graph.remap_ids()
+    if node.listener_graph is not None:
+        sync_listener_fields(node)
     return node
+
+
+def _available_listener_parameter(document: DocumentModel) -> str:
+    used = {str(node.fields.get("parameter", "")) for node in document.nodes}
+    used.update(str(part.fields.get("parameter", ""))
+                for node in document.nodes if node.listener_graph is not None
+                for part in node.listener_graph.nodes if part.kind == "ValueState")
+    index = 1
+    while f"listener_value{index}" in used:
+        index += 1
+    return f"listener_value{index}"
+
+
+def sync_listener_fields(node: NodeRecord) -> None:
+    """Keep the compiled cache coherent without replacing a host interaction."""
+    if node.listener_graph is None:
+        return
+    from .listener_compiler import compile_listener_graph
+    result = compile_listener_graph(node.listener_graph)
+    if result.valid:
+        owned = {"listener_data", "parameter", "range", "start_value", "save_parameter"}
+        node.fields.update({key: value for key, value in result.fields.items()
+                            if node.type == "Listener" or key in owned})
 
 
 def sync_meta_from_initial(document: DocumentModel) -> None:
@@ -1350,12 +1423,12 @@ def reassign_function_ids(schema: EditorSchema, document: DocumentModel) -> None
     base = document.meta.ship_skin_id or 0
     backfill_slots(schema, document)
     for node in document.nodes:
-        if node.type not in function_node_types(schema):
+        if node.type not in function_node_types(schema) and node.type != "Listener":
             continue
         export_slot = node.export_slot or allocate_export_slot(document, exclude_uuid=node.uuid)
         node.export_slot = export_slot
         node.fields["id"] = int(f"{base}{export_slot:02d}") if base else export_slot
-        apply_auto_rules(schema, document, node, source_mode="advanced", force_generated=False)
+        apply_auto_rules(schema, document, node, source_mode="advanced", force_generated=False, refresh_only=True)
     recompute_document_state(schema, document)
 
 
@@ -1445,6 +1518,8 @@ def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[
             payload["sequence_locked"] = True
         if node.ui_size:
             payload["ui_size"] = node.ui_size
+        if node.listener_graph is not None:
+            payload["listener_graph"] = node.listener_graph.to_payload()
         if node.type in function_types:
             payload["numeric_linkage_enabled"] = bool(node.numeric_linkage_enabled)
         if node.manual_fields:
@@ -1466,7 +1541,7 @@ def export_document_dict(schema: EditorSchema, document: DocumentModel) -> dict[
         ]
     return {
         "editor_signature": EDITOR_DOCUMENT_SIGNATURE,
-        "format_version": EDITOR_DOCUMENT_FORMAT_VERSION,
+        "format_version": 6 if any(node.listener_graph is not None or node.type == "Listener" for node in document.nodes) else 5,
         "global_mode": document.global_mode,
         "interaction_creation_mode": document.interaction_creation_mode,
         "editor_settings": asdict(document.editor_settings),
@@ -1812,6 +1887,7 @@ def load_document_payload(
                 "sequence_locked",
                 "numeric_linkage_enabled",
                 "manual_fields",
+                "listener_graph",
             }
         }
         if node_type == "Idle0":
@@ -1843,6 +1919,14 @@ def load_document_payload(
             ),
             manual_fields={str(key) for key in raw.get("manual_fields", []) if str(key or "").strip()},
         )
+        if "listener_graph" in raw:
+            if node.type != "Listener" and node.type not in function_types:
+                raise ValueError(f"{node.type} 不能承载监听器子蓝图")
+            from .listener_graph import ListenerGraph
+            node.listener_graph = ListenerGraph.from_payload(raw["listener_graph"])
+            sync_listener_fields(node)
+        elif node.type == "Listener":
+            raise ValueError("监听器节点缺少子蓝图数据，无法安全读取")
         if (
             node.type == "ReturnDefaultIdle"
             and node.fields.get("transition_type", "animated") != "hard"
@@ -1860,7 +1944,7 @@ def load_document_payload(
             infer_manual_fields(schema, node, document)
         if node.uuid in legacy_return_action_uuids:
             node.manual_fields.discard("action_trigger")
-        apply_auto_rules(schema, document, node, source_mode="advanced", force_generated=False)
+        apply_auto_rules(schema, document, node, source_mode="advanced", force_generated=False, refresh_only=True)
         document.nodes.append(node)
         if raw is existing_idle:
             preferred_root_node = node
@@ -1966,10 +2050,24 @@ def _csv_value_for_mapping(mapping, document: DocumentModel, node: NodeRecord) -
 def document_to_csv_rows(schema: EditorSchema, document: DocumentModel) -> list[CsvPreviewRow]:
     reassign_function_ids(schema, document)
     rows: list[CsvPreviewRow] = []
-    for row_index, node in enumerate(_function_nodes(schema, document)):
+    for row_index, node in enumerate(_exportable_nodes(schema, document)):
         values = {column: "" for column in schema.csv_columns}
         for mapping in schema.csv_mapping:
             values[mapping.column] = _csv_value_for_mapping(mapping, document, node)
+        if node.listener_graph is not None:
+            from .listener_compiler import compile_listener_graph
+            compiled = compile_listener_graph(node.listener_graph)
+            if compiled.valid:
+                overrides = compiled.fields if node.type == "Listener" else {
+                    key: value for key, value in compiled.fields.items()
+                    if key in {"listener_data", "parameter", "range", "start_value", "save_parameter"}
+                }
+                values.update({key: value for key, value in overrides.items() if key in values})
+                values["listener_data"] = compiled.listener_data
+            else:
+                # Incomplete subgraphs are editable drafts; strict export rejects
+                # them before opening a CSV file, while preview remains usable.
+                values["listener_data"] = "[监听器子图未完成，请查看校验提示]"
         if row_index > 0:
             values["react_condition"] = ""
         rows.append(CsvPreviewRow(values=values))
@@ -2002,9 +2100,29 @@ def export_documents_to_csv(
 ) -> Path:
     rows = csv_template_header_rows(schema, template_search_roots)
     for document in documents:
+        validate_listener_export(document, schema)
         for preview_row in document_to_csv_rows(schema, copy.deepcopy(document)):
             rows.append([preview_row.values.get(column, "") for column in schema.csv_columns])
     return write_csv_rows_atomic(output_path, rows)
+
+
+def validate_listener_export(document: DocumentModel, schema: EditorSchema) -> None:
+    from .listener_compiler import compile_listener_graph
+
+    problems = []
+    function_types = set(function_node_types(schema))
+    for node in document.nodes:
+        if node.type == "Listener" and node.listener_graph is None:
+            problems.append(f"{node.fields.get('tips', '监听器')}：缺少子蓝图")
+        elif node.listener_graph is not None:
+            if node.type != "Listener" and node.type not in function_types:
+                problems.append(f"{node.type} 不能承载监听器子蓝图")
+                continue
+            result = compile_listener_graph(node.listener_graph)
+            problems.extend(f"{node.fields.get('tips') or node.type}：{issue.message}"
+                            for issue in result.issues if issue.severity == "error")
+    if problems:
+        raise ValueError("监听器子蓝图尚不能导出：\n" + "\n".join(problems[:15]))
 
 
 def write_csv_rows_atomic(output_path: str | Path, rows: Iterable[list[Any]]) -> Path:
@@ -2111,6 +2229,19 @@ def _draw_conflict_issues(schema: EditorSchema, group: list[NodeRecord]) -> list
 
 def validate_document(schema: EditorSchema, document: DocumentModel) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
+    from .listener_compiler import compile_listener_graph
+
+    for node in document.nodes:
+        if node.type == "Listener" and node.listener_graph is None:
+            issues.append(ValidationIssue(node.uuid, "监听器缺少子蓝图", "error"))
+        elif node.listener_graph is not None:
+            if node.type != "Listener" and node.type not in function_node_types(schema):
+                issues.append(ValidationIssue(node.uuid, f"{node.type} 不能承载监听器子蓝图", "error"))
+                continue
+            result = compile_listener_graph(node.listener_graph)
+            issues.extend(ValidationIssue(node.uuid, issue.message, issue.severity,
+                                          field_keys=["listener_graph"])
+                          for issue in result.issues)
     idle0_nodes = [node for node in document.nodes if node.type == "Idle0"]
     if len(idle0_nodes) != 1:
         issues.extend(_issue_for_group(schema, "Idle0 root must be unique", [], idle0_nodes))
@@ -2118,7 +2249,7 @@ def validate_document(schema: EditorSchema, document: DocumentModel) -> list[Val
     function_types = set(function_node_types(schema))
     function_nodes = [node for node in document.nodes if node.type in function_types]
     duplicate_parameters: dict[str, list[NodeRecord]] = {}
-    for node in function_nodes:
+    for node in _exportable_nodes(schema, document):
         parameter_value = _display_field_value(schema, node, "parameter")
         if parameter_value and parameter_value.lower() != "empty":
             duplicate_parameters.setdefault(parameter_value, []).append(node)

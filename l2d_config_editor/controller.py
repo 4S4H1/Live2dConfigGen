@@ -1,6 +1,7 @@
 """Controller layer for editor state and commands."""
 
 from __future__ import annotations
+from . import features
 
 import copy
 import json
@@ -13,6 +14,7 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QUndoStack
 
 from .commands import (
+    SetListenerGraphCommand,
     AddConnectionCommand,
     AddCanvasImagesCommand,
     AddCanvasStrokesCommand,
@@ -494,6 +496,9 @@ class EditorController(QObject):
             return None
         if parent_uuid is not None and self.get_node(parent_uuid) is None:
             return None
+        if parent_uuid is not None and self.get_node(parent_uuid).type == "Listener":
+            self.statusMessage.emit("请进入监听器子蓝图添加组件")
+            return None
         resolved_title = str(title or "").strip() or "新主题"
         old_layout = self.ensure_plan_layout().clone()
         siblings = list(plan_children_map(self.document).get(parent_uuid, ()))
@@ -569,6 +574,8 @@ class EditorController(QObject):
         topic = self.plan_topic(node_uuid)
         if topic is None:
             return False
+        node = self.get_node(node_uuid)
+        has_listener = node is not None and (node.type == "Listener" or node.listener_graph is not None)
         resolved = str(title or "").strip()
         if topic.plan_title == resolved:
             return False
@@ -577,10 +584,9 @@ class EditorController(QObject):
         for record in new_layout.topics:
             if record.node_uuid == node_uuid:
                 record.plan_title = resolved
-                if record.formalization_state in {"formal", "virtual", "materialized"}:
+                if not has_listener and record.formalization_state in {"formal", "virtual", "materialized"}:
                     record.formalization_state = "draft"
                 break
-        node = self.get_node(node_uuid)
         placeholder_updates: list[tuple[str, Any, Any]] = []
         if node is not None and node.type == "PlanPlaceholder":
             for key, value in placeholder_fields_for_title(resolved).items():
@@ -612,6 +618,8 @@ class EditorController(QObject):
         """Convert all pending plan topics as one undoable transaction."""
 
         old_layout = self.ensure_plan_layout().clone()
+        protected_ids = {node.uuid for node in self.document.nodes
+                         if node.type == "Listener" or node.listener_graph is not None}
         inferred = {
             topic.node_uuid: node_type
             for topic in old_layout.topics
@@ -620,7 +628,7 @@ class EditorController(QObject):
         candidates = [
             topic
             for topic in old_layout.topics
-            if (
+            if topic.node_uuid not in protected_ids and (
                 # Green/purple topics are plan-owned generated nodes.  Include
                 # materialized nodes as well so title edits, plan reordering,
                 # and newly added siblings cannot leave stale formal fields or
@@ -1041,6 +1049,10 @@ class EditorController(QObject):
     def set_plan_topic_color(self, node_uuid: str, color: str) -> bool:
         """Set one plan node's explicit TouchIdle/TouchDrag semantic color."""
 
+        node = self.get_node(node_uuid)
+        if node is not None and (node.type == "Listener" or node.listener_graph is not None):
+            self.statusMessage.emit("含监听器子蓝图的节点不能转换为其他计划节点类型")
+            return False
         resolved = str(color or "").strip().upper()
         if resolved not in {PLAN_TOUCHIDLE_COLOR, PLAN_TOUCHDRAG_COLOR}:
             return False
@@ -1128,6 +1140,11 @@ class EditorController(QObject):
         if topic is None or node_uuid == root_uuid:
             return False
         if new_parent_uuid is not None and self.get_node(new_parent_uuid) is None:
+            return False
+        node = self.get_node(node_uuid)
+        parent = self.get_node(new_parent_uuid) if new_parent_uuid is not None else None
+        if parent is not None and (parent.type == "Listener" or (node is not None and node.type == "Listener")):
+            self.statusMessage.emit("监听器宿主独立监听事件，请在子蓝图内连接组件")
             return False
         if new_parent_uuid == node_uuid or (
             new_parent_uuid is not None
@@ -1456,12 +1473,15 @@ class EditorController(QObject):
         self.metaActionBlocked.emit(reason)
 
     def _apply_simple_touchidle_defaults(self, node: NodeRecord) -> None:
-        if self.preferences.global_mode != "simple" or node.type != "TouchIdle":
+        if self.preferences.global_mode != "simple" or node.type != "TouchIdle" or node.listener_graph is not None:
             return
         node.fields["parameter"] = "empty"
         node.manual_fields.add("parameter")
 
     def create_node(self, node_type: str, position: tuple[float, float], base_node: NodeRecord | None = None) -> str | None:
+        if not features.LISTENER_EDITOR_ENABLED and (node_type == "Listener" or (base_node and base_node.listener_graph is not None)):
+            self.statusMessage.emit("监听器子蓝图暂未开放创建")
+            return None
         definition = self.schema.nodes.get(node_type)
         if definition is None or definition.category in {"root", "meta"}:
             return None
@@ -1478,6 +1498,9 @@ class EditorController(QObject):
     def create_node_with_connection(self, from_uuid: str, node_type: str, position: tuple[float, float]) -> str | None:
         definition = self.schema.nodes.get(node_type)
         if definition is None or definition.category in {"root", "meta"} or self.get_node(from_uuid) is None:
+            return None
+        if node_type == "Listener" or self.get_node(from_uuid).type == "Listener":
+            self.statusMessage.emit("监听器宿主独立监听事件，请在子蓝图内连接组件")
             return None
         allowed, reason = self.can_create_graph_content()
         if not allowed:
@@ -1690,9 +1713,52 @@ class EditorController(QObject):
         ]
         self.undo_stack.push(RemoveNodesCommand(self, nodes, connections, self.group_records()))
 
+    def set_listener_graph(self, node_uuid: str, graph, label: str = "编辑监听器子蓝图") -> bool:
+        if not features.LISTENER_EDITOR_ENABLED:
+            return False
+        from .listener_graph import ListenerGraph
+        from .listener_compiler import compile_listener_graph
+
+        node = self.get_node(node_uuid)
+        if node is None or node.locked:
+            return False
+        if node.type != "Listener" and node.type not in function_node_types(self.schema):
+            return False
+        normalized = ListenerGraph.from_payload(graph.to_payload())
+        if node.listener_graph == normalized:
+            return False
+        result = compile_listener_graph(normalized)
+        fields = copy.deepcopy(node.fields)
+        if result.valid:
+            owned = {"parameter", "range", "start_value", "save_parameter", "listener_data"}
+            fields.update({key: value for key, value in result.fields.items()
+                           if key in owned or node.type == "Listener"})
+            fields["listener_data"] = result.listener_data
+        self.undo_stack.push(SetListenerGraphCommand(self, node_uuid, node.listener_graph,
+                                                    normalized, node.fields, fields, label))
+        return True
+
+    def _replace_listener_graph(self, node_uuid: str, graph, fields: dict) -> None:
+        node = self.get_node(node_uuid)
+        if node is None:
+            return
+        node.listener_graph = graph.clone() if graph is not None else None
+        node.fields = copy.deepcopy(fields)
+        self.nodeUpdated.emit(node_uuid)
+        self.refresh_derived()
+
+    @staticmethod
+    def _listener_owns_field(node, key: str) -> bool:
+        return node.listener_graph is not None and key in {
+            "listener_data", "parameter", "range", "start_value", "save_parameter"
+        }
+
     def update_field(self, node_uuid: str, key: str, value: Any, source_mode: str | None = None) -> None:
         node = self.get_node(node_uuid)
         if not node:
+            return
+        if self._listener_owns_field(node, key):
+            self.statusMessage.emit("此字段由监听器子蓝图生成，请打开子蓝图编辑")
             return
         definition = self.schema.nodes[node.type]
         if definition.category in {"root", "meta"}:
@@ -1719,6 +1785,9 @@ class EditorController(QObject):
     def update_fields(self, node_uuid: str, values: dict[str, Any], source_mode: str | None = None, label: str = "批量修改字段") -> None:
         node = self.get_node(node_uuid)
         if not node or not values:
+            return
+        values = {key: value for key, value in values.items() if not self._listener_owns_field(node, key)}
+        if not values:
             return
         definition = self.schema.nodes[node.type]
         if definition.category in {"root", "meta"}:
@@ -1778,6 +1847,8 @@ class EditorController(QObject):
                 }
             updates: list[tuple[str, Any, Any]] = []
             for key, value in editable_values.items():
+                if key == "listener_graph" or self._listener_owns_field(node, key):
+                    continue
                 normalized_value = normalize_field_input(self.schema, node, key, value)
                 old_value = node.fields.get(key)
                 if old_value != normalized_value:
@@ -1849,6 +1920,9 @@ class EditorController(QObject):
         to_node = self.get_node(to_uuid)
         if not from_node or not to_node or self.schema.nodes[to_node.type].category == "root":
             return
+        if from_node.type == "Listener" or to_node.type == "Listener":
+            self.statusMessage.emit("监听器宿主独立监听事件，请在子蓝图内连接组件")
+            return
         if any(connection.from_uuid == from_uuid and connection.to_uuid == to_uuid for connection in self.document.connections):
             return
         self.undo_stack.push(AddConnectionCommand(self, ConnectionRecord(from_uuid=from_uuid, to_uuid=to_uuid)))
@@ -1916,8 +1990,7 @@ class EditorController(QObject):
         }
         return json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
-    @staticmethod
-    def _decode_clipboard_document(payload: bytes) -> dict[str, Any]:
+    def _decode_clipboard_document(self, payload: bytes) -> dict[str, Any]:
         try:
             raw = json.loads(payload.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
@@ -1962,6 +2035,14 @@ class EditorController(QObject):
                 raise ValueError("节点剪贴板手工字段列表无效")
             normalized = dict(item)
             normalized["ui_position"] = {"x": position_x, "y": position_y}
+            if "listener_graph" in item:
+                definition = self.schema.nodes.get(node_type)
+                if node_type != "Listener" and (definition is None or definition.category != "function"):
+                    raise ValueError("只有功能节点和监听器宿主可以承载监听器子蓝图")
+                from .listener_graph import ListenerGraph
+                normalized["listener_graph"] = ListenerGraph.from_payload(item["listener_graph"]).to_payload()
+            elif node_type == "Listener":
+                raise ValueError("节点剪贴板中的监听器缺少子蓝图")
             if ui_size is not None:
                 try:
                     width = float(ui_size.get("width", 0.0))
@@ -1974,6 +2055,7 @@ class EditorController(QObject):
             nodes.append(normalized)
 
         connections: list[dict[str, str]] = []
+        listener_hosts = {node["uuid"] for node in nodes if node["type"] == "Listener"}
         for item in raw_connections:
             if not isinstance(item, dict):
                 raise ValueError("节点剪贴板包含无效连线")
@@ -1981,6 +2063,8 @@ class EditorController(QObject):
             to_uuid = item.get("to_uuid")
             if not isinstance(from_uuid, str) or not from_uuid or not isinstance(to_uuid, str) or not to_uuid:
                 raise ValueError("节点剪贴板连线端点无效")
+            if from_uuid in listener_hosts or to_uuid in listener_hosts:
+                raise ValueError("监听器宿主不能通过普通节点连线连接")
             connections.append({"from_uuid": from_uuid, "to_uuid": to_uuid})
 
         plan_topics: list[dict[str, Any]] = []
@@ -2009,6 +2093,8 @@ class EditorController(QObject):
                 not isinstance(parent_uuid, str) or not parent_uuid
             ):
                 raise ValueError("节点剪贴板计划父主题无效")
+            if parent_uuid is not None and (node_uuid in listener_hosts or parent_uuid in listener_hosts):
+                raise ValueError("监听器宿主不能建立普通计划父子连线")
             if isinstance(order, bool) or not isinstance(order, int) or order < 0:
                 raise ValueError("节点剪贴板计划顺序无效")
             if not isinstance(title, str) or len(title) > PLAN_TITLE_MAX_LENGTH:
@@ -2131,6 +2217,7 @@ class EditorController(QObject):
                         "export_slot",
                         "copy_source_type_slot",
                         "copy_source_sequence_no",
+                        "listener_graph",
                     }
                 },
                 ui_position={"x": 0.0, "y": 0.0},
@@ -2144,6 +2231,9 @@ class EditorController(QObject):
                 ),
                 manual_fields=set(item.get("manual_fields", [])),
             )
+            if "listener_graph" in item:
+                from .listener_graph import ListenerGraph
+                template.listener_graph = ListenerGraph.from_payload(item["listener_graph"])
             if template.type == "ParameterTrigger":
                 old_table_id = str(template.fields.get(TABLE_ID_FIELD) or "").strip()
                 if old_table_id:
@@ -2163,6 +2253,8 @@ class EditorController(QObject):
             )
             new_node.ui_size = dict(template.ui_size) if template.ui_size else None
             new_node.locked = template.locked
+            if template.listener_graph is not None:
+                new_node.listener_graph = template.listener_graph.remap_ids()
             new_node.numeric_linkage_enabled = template.numeric_linkage_enabled
             generated_keys = {
                 "id",
@@ -2190,6 +2282,9 @@ class EditorController(QObject):
             else:
                 new_node.fields.update(template.fields)
                 new_node.manual_fields = set(template.manual_fields)
+            if new_node.listener_graph is not None:
+                from .logic import sync_listener_fields
+                sync_listener_fields(new_node)
             staging_document.nodes.append(new_node)
             nodes.append(new_node)
             uuid_map[old_uuid] = new_node.uuid
@@ -2272,6 +2367,19 @@ class EditorController(QObject):
         )
         if not nodes:
             return []
+        if not features.LISTENER_EDITOR_ENABLED and any(node.type == "Listener" or node.listener_graph is not None for node in nodes):
+            self.statusMessage.emit("监听器子蓝图暂未开放复制创建")
+            return []
+        hosts = {node.uuid for node in [*self.document.nodes, *nodes] if node.type == "Listener"}
+        if any(edge.from_uuid in hosts or edge.to_uuid in hosts for edge in connections):
+            self.statusMessage.emit("监听器宿主不能通过普通节点连线连接")
+            return []
+        if len(nodes) == 1:
+            requested_parents = [connect_from, plan_parent_uuid if override_plan_parent else None]
+            if any(parent is not None and (parent in hosts or nodes[0].uuid in hosts)
+                   for parent in requested_parents):
+                self.statusMessage.emit("监听器宿主不能建立普通计划父子连线")
+                return []
         if connect_from and len(nodes) == 1:
             connections = list(connections)
             if not any(
@@ -2375,6 +2483,8 @@ class EditorController(QObject):
         }
         if node.ui_size:
             payload["ui_size"] = dict(node.ui_size)
+        if node.listener_graph is not None:
+            payload["listener_graph"] = node.listener_graph.to_payload()
         if self.schema.nodes[node.type].category == "function":
             payload["numeric_linkage_enabled"] = bool(node.numeric_linkage_enabled)
         if node.manual_fields:

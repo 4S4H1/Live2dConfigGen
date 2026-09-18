@@ -30,6 +30,13 @@ def _indexed(items: list, key: str | None) -> dict:
 def history_snapshot(payload: dict) -> dict:
     value = copy.deepcopy({key: item for key, item in payload.items()
                            if key not in {"history", "canvas_view", "global_mode"}})
+    # Subgraph zoom/pan is editor navigation, like the two main canvas views.
+    # Components/connections are already identity-keyed by ListenerGraph, so a
+    # one-field edit remains a small nested delta instead of a full graph copy.
+    for node in value.get("nodes", []):
+        graph = node.get("listener_graph")
+        if isinstance(graph, dict):
+            graph.pop("view", None)
     for name, key in _COLLECTIONS.items():
         value[name] = _indexed(value.get(name, []), key)
     plan = value.get("plan_layout", {})

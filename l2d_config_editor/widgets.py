@@ -1,6 +1,7 @@
 """Reusable PyQt widgets for node editing."""
 
 from __future__ import annotations
+from . import features
 
 import copy
 from dataclasses import dataclass
@@ -623,6 +624,8 @@ class ValidationSummaryWidget(QFrame):
 class NodeFormWidget(QFrame):
     fieldCommitted = Signal(str, object)
     fieldsCommitted = Signal(object)
+    listenerEditRequested = Signal(str)
+    LISTENER_OWNED_FIELDS = {"listener_data", "parameter", "range", "start_value", "save_parameter"}
     APPEARANCE_KEYS = {
         "theme_body_color",
         "theme_border_color",
@@ -692,6 +695,11 @@ class NodeFormWidget(QFrame):
         layout.setSpacing(10)
         layout.addWidget(self._header_widget)
         layout.addWidget(self._summary_widget)
+        self._listener_button = QPushButton("打开监听器子蓝图")
+        self._listener_button.setToolTip("用触发源、参数操作和结果组件编辑监听逻辑")
+        self._listener_button.clicked.connect(self._request_listener_edit)
+        self._listener_button.hide()
+        layout.addWidget(self._listener_button)
         layout.addLayout(self._form)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self._appearance_button: QPushButton | None = None
@@ -748,7 +756,7 @@ class NodeFormWidget(QFrame):
             if value != binding.model_value:
                 binding.setter(value)
                 binding.model_value = copy.deepcopy(value)
-            binding.read_only_setter(bool(self.node.locked))
+            binding.read_only_setter(bool(self.node.locked) or self._listener_owns_field(key))
         self._apply_inline_visibility()
 
     def _clear_form(self) -> None:
@@ -761,6 +769,9 @@ class NodeFormWidget(QFrame):
         self._appearance_button = None
 
     def _sync_header(self) -> None:
+        self._listener_button.setVisible(bool(features.LISTENER_EDITOR_ENABLED and self.node and (
+            self.node.type == "Listener" or getattr(self.node, "listener_graph", None) is not None
+            or self.node.fields.get("listener_data"))))
         if not self.node:
             self._title.setText("未选择节点")
             self._subtitle.setText("")
@@ -810,7 +821,9 @@ class NodeFormWidget(QFrame):
                 model_value=copy.deepcopy(self.node.fields.get(field.key, field.default)),
             )
             setter(self.node.fields.get(field.key, field.default))
-            read_only_setter(bool(self.node.locked))
+            read_only_setter(bool(self.node.locked) or self._listener_owns_field(field.key))
+            if self._listener_owns_field(field.key):
+                widget.setToolTip("由监听器子蓝图生成；点击“打开监听器子蓝图”编辑。")
         self._add_appearance_row()
         self._apply_inline_visibility()
         self.adjustSize()
@@ -827,6 +840,15 @@ class NodeFormWidget(QFrame):
             if field_visible(field, self.node.fields, self.global_mode):
                 result.append(field)
         return result
+
+    def _listener_owns_field(self, key: str) -> bool:
+        return bool(self.node and getattr(self.node, "listener_graph", None) is not None
+                    and key in self.LISTENER_OWNED_FIELDS)
+
+    def _request_listener_edit(self) -> None:
+        if features.LISTENER_EDITOR_ENABLED and self.node is not None:
+            self.commit_pending_edits()
+            self.listenerEditRequested.emit(self.node.uuid)
 
     def _add_appearance_row(self) -> None:
         if not self.node or self.node.type in APPEARANCE_BUTTON_HIDDEN_NODE_TYPES:
@@ -882,6 +904,9 @@ class NodeFormWidget(QFrame):
                 header_height += 2 + self._subtitle.sizeHint().height()
             total += header_height
 
+        if self._listener_button.isVisible():
+            total += layout.spacing() + self._listener_button.sizeHint().height()
+
         row_heights: list[int] = []
         for label_widget, field_widget in self._form_row_widgets:
             if not label_widget.isVisible() or not field_widget.isVisible():
@@ -923,6 +948,8 @@ class NodeFormWidget(QFrame):
         # regenerate fields, or replace a placeholder's entire form.
         values = {}
         for key, binding in self._bindings.items():
+            if self._listener_owns_field(key):
+                continue
             widget = binding.widget
             if isinstance(widget, (QLineEdit, QPlainTextEdit)) and widget.isReadOnly():
                 continue

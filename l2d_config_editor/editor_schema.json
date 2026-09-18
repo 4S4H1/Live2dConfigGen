@@ -330,6 +330,20 @@
     }
   ],
   "nodes": {
+    "Listener": {
+      "title": "监听器子蓝图",
+      "category": "listener",
+      "copyable": true,
+      "quick_create": true,
+      "resizable": false,
+      "header_color": "#6E558F",
+      "body_color": "#292039",
+      "accent_color": "#BB97EF",
+      "fields": [
+        {"key": "tips", "label": "名称 / 备注", "editor": "text", "default": "监听器", "show_in_modes": ["simple", "advanced"]},
+        {"key": "desc", "label": "说明", "editor": "text", "default": "", "show_in_modes": ["simple", "advanced"]}
+      ]
+    },
     "Idle0": {
       "title": "idle0（默认待机）",
       "category": "root",
