@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
     [string]$KeyDirectory = "$env:LOCALAPPDATA\4S4H1\release-keys",
-    [string]$Notes = "1.4.3：暂时隐藏监听器入口，修复备注漏导、计划图文字与工具栏，版本历史改为 SVN 提交之间的图形对比。",
+    [string]$Notes = "1.4.4：修复数据精度、撤销恢复、文件重命名、AI 取消与异常处理、更新下载及安装文件管理问题。",
     [string]$MinimumSupportedVersion = "1.0.0"
 )
 

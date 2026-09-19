@@ -54,7 +54,7 @@ QSettings 指向一次性的 INI 目录，不读写开发机注册表偏好。
 也可直接执行：
 
 ```powershell
-.\scripts\Build-Release.ps1 -Notes "1.4.3：隐藏监听器入口，修复备注漏导、计划图显示与工具栏，历史改为 SVN 提交之间的图形对比"
+.\scripts\Build-Release.ps1 -Notes "1.4.4：修复数据精度、撤销恢复、文件操作、AI 对话、更新下载及安装文件管理"
 ```
 
 后续版本默认仍允许从 `1.0.0` 升级；只有确实放弃旧客户端时才显式传入
@@ -85,8 +85,8 @@ QSettings 指向一次性的 INI 目录，不读写开发机注册表偏好。
 
 产物位于 `dist\release`：
 
-- `L2DConfigEditor-Setup-1.4.3-x64.exe`
-- `L2DConfigEditor-1.4.3.l2dupdate`
+- `L2DConfigEditor-Setup-1.4.4-x64.exe`
+- `L2DConfigEditor-1.4.4.l2dupdate`
 - `SHA256SUMS.txt`
 - `THIRD_PARTY_NOTICES.md` 和 `licenses\`
 
@@ -105,7 +105,7 @@ Host 的 HTTP 端口可配置；自动发现使用独立的固定 UDP `48765`。
 
 ```powershell
 .\scripts\Publish-Release.ps1 `
-  -Bundle .\dist\release\L2DConfigEditor-1.4.3.l2dupdate
+  -Bundle .\dist\release\L2DConfigEditor-1.4.4.l2dupdate
 ```
 
 更新主机拒绝清单或签名过大、ZIP 路径穿越、重复成员、符号链接、哈希/大小不符、
